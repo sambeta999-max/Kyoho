@@ -70,6 +70,7 @@ add_library(shader_recompiler STATIC
     frontend/ampere/translate/impl/control.cpp
     frontend/ampere/translate/impl/conversion.cpp
     frontend/ampere/translate/impl/floating_point.cpp
+    frontend/ampere/translate/impl/half_floating_point.cpp
     frontend/ampere/translate/impl/impl.cpp
     frontend/ampere/translate/impl/impl.h
     frontend/ampere/translate/impl/integer.cpp

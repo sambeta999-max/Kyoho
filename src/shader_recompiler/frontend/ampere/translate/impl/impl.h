@@ -83,6 +83,15 @@ struct TranslatorVisitor {
     void FSEL(Instruction insn);
     void MUFU(Instruction insn);
 
+    // Half precision pairs
+    void HADD2(Instruction insn);
+    void HMUL2(Instruction insn);
+    void HFMA2(Instruction insn);
+    void HMNMX2(Instruction insn);
+    void HSET2(Instruction insn);
+    void HSETP2(Instruction insn);
+    void F2FP(Instruction insn);
+
     // Moves and constants
     void MOV(Instruction insn);
     void UMOV(Instruction insn);

@@ -82,6 +82,50 @@ cases += [
      None),
 ]
 
+HALF = ("t_half.cubin", "hadd2", 4, 0x0000000700077230, 0x004fca0000000000)
+HMUL2 = ("t_half.cubin", "hmul2", 4, 0x0000000700077232, 0x004fca0000000000)
+HFMA2 = ("t_half.cubin", "hfma2", 4, 0x0000000700077231, 0x004fca0000000006)
+HSET2 = ("t_half.cubin", "hset2", 4, 0x0000000700077233, 0x004fca0003804080)
+HMNMX2 = ("t_half.cubin", "hmax2", 4, 0x0000000700077240, 0x004fca0007800000)
+F2FP = ("t_half.cubin", "f2fp", 4, 0x000000000707723e, 0x004fca00000000ff)
+
+SPECIAL_HALVES = [0x0000, 0x8000, 0x0001, 0x03ff, 0x0400, 0x3c00, 0xbc00, 0x3555, 0x7bff,
+                  0xfbff, 0x7c00, 0xfc00, 0x7e00, 0x3800, 0xc500, 0x5640]
+
+
+def half_inputs():
+    rows = []
+    for _ in range(24):
+        row = []
+        for _ in range(3):
+            lo = rng.choice(SPECIAL_HALVES) if rng.random() < 0.4 else rng.getrandbits(15) & 0x7bff | (rng.getrandbits(1) << 15)
+            hi = rng.choice(SPECIAL_HALVES) if rng.random() < 0.4 else rng.getrandbits(15) & 0x7bff | (rng.getrandbits(1) << 15)
+            row.append((hi << 16) | lo)
+        rows.append(row)
+    return rows
+
+
+cases += [
+    ("HADD2", HALF, HALF[3], HALF[4], [0, 7, 6], "half"),
+    ("HADD2.NEG_B", HALF, HALF[3] | (1 << 63), HALF[4], [0, 7, 6], "half"),
+    ("HADD2.A_H1_H1", HALF, HALF[3], field(HALF[4], 10, 2, 3), [0, 7, 6], "half"),
+    ("HADD2.SAT", HALF, HALF[3], field(HALF[4], 13, 1, 1), [0, 7, 6], "half"),
+    ("HMUL2", HMUL2, HMUL2[3], HMUL2[4], [0, 7, 6], "half"),
+    ("HMUL2.B_H0_H0", HMUL2, field(HMUL2[3], 60, 2, 2), HMUL2[4], [0, 7, 6], "half"),
+    ("HFMA2", HFMA2, HFMA2[3], HFMA2[4], [0, 7, 6], "half"),
+    ("HFMA2.NEG_C", HFMA2, HFMA2[3], field(HFMA2[4], 20, 1, 1), [0, 7, 6], "half"),
+    ("HFMA2.SAT", HFMA2, HFMA2[3], field(HFMA2[4], 13, 1, 1), [0, 7, 6], "half"),
+    ("HSET2.BF.GT", HSET2, HSET2[3], HSET2[4], [0, 7, 6], "half"),
+    ("HSET2.GT", HSET2, HSET2[3], field(HSET2[4], 7, 1, 0), [0, 7, 6], "half"),
+    ("HSET2.BF.LE", HSET2, HSET2[3], field(HSET2[4], 12, 4, 3), [0, 7, 6], "half"),
+    ("HSET2.BF.NEU", HSET2, HSET2[3], field(HSET2[4], 12, 4, 0xd), [0, 7, 6], "half"),
+    ("HMNMX2.MAX", HMNMX2, HMNMX2[3], HMNMX2[4], [0, 7, 6], "half"),
+    ("HMNMX2.MIN", HMNMX2, HMNMX2[3], field(HMNMX2[4], 26, 1, 0), [0, 7, 6], "half"),
+    ("F2FP.PACK_AB", F2FP, F2FP[3], F2FP[4], [0, 7], FLOATS),
+    ("F2FP.PACK_AB.RZ", F2FP, F2FP[3], field(F2FP[4], 15, 2, 3), [0, 7], FLOATS),
+]
+
+
 def int_inputs(count):
     rows = [[rng.getrandbits(32) for _ in range(count)] for _ in range(12)]
     rows += [[0x80ff7f01, 0x0000d3a8, 0x12345678], [0xffffffff, 0xfedcba98, 0], [1, 0x7531, 2]]
@@ -91,6 +135,10 @@ out = open(OUT, "w", newline="\n")
 for name, (cubin, kernel, words, find_lo, find_hi), lo, hi, regs, values in cases:
     if values is None:
         rows = int_inputs(len(regs))
+    elif values == "half":
+        rows = half_inputs()
+    elif len(regs) == 2:
+        rows = [[a, b] for a, b in zip(values, values[7:] + values[:7])]
     else:
         rows = [[v] for v in values]
     threads = len(rows)

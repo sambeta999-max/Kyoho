@@ -54,6 +54,7 @@ mkdir hw && cd hw
 nvcc -O2 -o oracle ../oracle.cpp -lcuda
 nvcc -arch=sm_86 -cubin -O3 -o t_ops.cubin ../templates/t_ops.cu
 nvcc -arch=sm_86 -cubin -O3 -o t_f2i.cubin ../templates/t_f2i.cu
+nvcc -arch=sm_86 -cubin -O3 -o t_half.cubin ../templates/t_half.cu
 python3 ../gen_hw_vectors.py . ../hwrun.py ../../../src/tests/shader_recompiler/ampere_hardware_vectors.inc
 ```
 

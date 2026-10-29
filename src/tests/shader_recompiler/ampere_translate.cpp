@@ -5,6 +5,7 @@
 #include <array>
 #include <bit>
 #include <cmath>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -181,16 +182,16 @@ f32 RoundToF32(f64 value, IR::FpRounding rounding) {
     }
 }
 
-u64 F32ToF16(f32 value, IR::FpRounding rounding) {
-    const u32 bits{std::bit_cast<u32>(value)};
-    const u32 sign{(bits >> 16) & 0x8000};
+// Rounds an exact value to half precision in the given direction
+u64 F64ToF16(f64 value, IR::FpRounding rounding) {
+    const u32 sign{std::signbit(value) ? 0x8000u : 0u};
     if (std::isnan(value)) {
-        return sign | 0x7e00 | ((bits >> 13) & 0x3ff);
+        return sign | 0x7e00;
     }
     if (std::isinf(value)) {
         return sign | 0x7c00;
     }
-    const f64 magnitude{std::fabs(static_cast<f64>(value))};
+    const f64 magnitude{std::fabs(value)};
     // Scale to units of the smallest half denormal, then round to an integer of 2^-24
     const auto round_units{[&](f64 units) {
         switch (rounding) {
@@ -218,6 +219,14 @@ u64 F32ToF16(f32 value, IR::FpRounding rounding) {
         return sign | (to_infinity ? 0x7c00 : 0x7bff);
     }
     return sign | result;
+}
+
+u64 F32ToF16(f32 value, IR::FpRounding rounding) {
+    if (std::isnan(value)) {
+        const u32 bits{std::bit_cast<u32>(value)};
+        return ((bits >> 16) & 0x8000) | 0x7e00 | ((bits >> 13) & 0x3ff);
+    }
+    return F64ToF16(static_cast<f64>(value), rounding);
 }
 
 f32 F16ToF32(u16 half) {
@@ -258,7 +267,48 @@ u64 Eval(const IR::Value& value) {
     const auto f32_arg{[&](size_t index) { return std::bit_cast<f32>(u32_arg(index)); }};
     const auto f32_bits{[](f32 result) { return u64{std::bit_cast<u32>(result)}; }};
     const auto u32_bits{[](auto result) { return u64{static_cast<u32>(result)}; }};
+    const auto f16_arg{[&](size_t index) {
+        return static_cast<f64>(F16ToF32(static_cast<u16>(arg(index))));
+    }};
+    const auto f16_bits{[](f64 result) { return F64ToF16(result, IR::FpRounding::RN); }};
+    // Comparisons: ordered ones are false and unordered ones true when an operand is NaN
+    const auto compare{[&](bool is_16, auto relation, bool ordered) -> u64 {
+        const f64 a{is_16 ? f16_arg(0) : static_cast<f64>(f32_arg(0))};
+        const f64 b{is_16 ? f16_arg(1) : static_cast<f64>(f32_arg(1))};
+        if (std::isnan(a) || std::isnan(b)) {
+            return ordered ? 0 : 1;
+        }
+        return relation(a, b) ? 1 : 0;
+    }};
+    // Saturation is max(x, +0) then min(x, 1): NaN and -0 become +0
+    const auto saturate{[](f64 x) { return std::isnan(x) || x <= 0.0 ? 0.0 : std::min(x, 1.0); }};
     switch (inst.GetOpcode()) {
+#define COMPARE(name, rel)                                                                             case IR::Opcode::FPOrd##name##16:                                                                      return compare(true, rel, true);                                                               case IR::Opcode::FPUnord##name##16:                                                                    return compare(true, rel, false);                                                              case IR::Opcode::FPOrd##name##32:                                                                      return compare(false, rel, true);                                                              case IR::Opcode::FPUnord##name##32:                                                                    return compare(false, rel, false);
+        COMPARE(Equal, std::equal_to<>{})
+        COMPARE(NotEqual, std::not_equal_to<>{})
+        COMPARE(LessThan, std::less<>{})
+        COMPARE(LessThanEqual, std::less_equal<>{})
+        COMPARE(GreaterThan, std::greater<>{})
+        COMPARE(GreaterThanEqual, std::greater_equal<>{})
+#undef COMPARE
+    case IR::Opcode::FPAdd16:
+        return f16_bits(f16_arg(0) + f16_arg(1));
+    case IR::Opcode::FPMul16:
+        return f16_bits(f16_arg(0) * f16_arg(1));
+    case IR::Opcode::FPFma16:
+        return f16_bits(std::fma(f16_arg(0), f16_arg(1), f16_arg(2)));
+    case IR::Opcode::FPAbs16:
+        return arg(0) & 0x7fff;
+    case IR::Opcode::FPNeg16:
+        return arg(0) ^ 0x8000;
+    case IR::Opcode::FPSaturate16:
+        return f16_bits(saturate(f16_arg(0)));
+    case IR::Opcode::FPSaturate32:
+        return f32_bits(static_cast<f32>(saturate(f32_arg(0))));
+    case IR::Opcode::FPMin32:
+        return f32_bits(std::fmin(f32_arg(0), f32_arg(1)));
+    case IR::Opcode::FPMax32:
+        return f32_bits(std::fmax(f32_arg(0), f32_arg(1)));
     case IR::Opcode::Identity:
     case IR::Opcode::BitCastU32F32:
     case IR::Opcode::BitCastF32U32:
@@ -353,8 +403,6 @@ u64 Eval(const IR::Value& value) {
         return f32_bits(std::fmin(std::fmax(f32_arg(0), f32_arg(1)), f32_arg(2)));
     case IR::Opcode::FPIsNan32:
         return std::isnan(f32_arg(0)) ? 1 : 0;
-    case IR::Opcode::FPOrdGreaterThanEqual32:
-        return f32_arg(0) >= f32_arg(1) ? 1 : 0;
     case IR::Opcode::ConvertS32F32:
         return u32_bits(static_cast<s32>(f32_arg(0)));
     case IR::Opcode::ConvertU32F32:
@@ -550,12 +598,22 @@ bool SameResult(std::string_view name, u32 result, u32 expected) {
     if (result == expected) {
         return true;
     }
-    if (name.starts_with("F2F.F16")) {
-        return (result >> 16) == (expected >> 16) && IsF16NaN(result & 0xffff) &&
-               IsF16NaN(expected & 0xffff);
+    const bool packed_halves{name.starts_with("F2F.F16") || name.starts_with("H") ||
+                             name.starts_with("F2FP")};
+    if (!packed_halves) {
+        return (name.starts_with("F2F.F32") || name.starts_with("I2F")) && IsF32NaN(result) &&
+               IsF32NaN(expected);
     }
-    if (name.starts_with("F2F.F32") || name.starts_with("I2F")) {
-        return IsF32NaN(result) && IsF32NaN(expected);
+    {
+        // Packed halves, compared lane by lane
+        for (const u32 shift : {0u, 16u}) {
+            const u32 a{(result >> shift) & 0xffff};
+            const u32 b{(expected >> shift) & 0xffff};
+            if (a != b && !(IsF16NaN(a) && IsF16NaN(b))) {
+                return false;
+            }
+        }
+        return true;
     }
     return false;
 }

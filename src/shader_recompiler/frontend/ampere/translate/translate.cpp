@@ -108,6 +108,20 @@ void Dispatch(TranslatorVisitor& v, Opcode opcode, Instruction insn) {
         return v.FSEL(insn);
     case Opcode::MUFU:
         return v.MUFU(insn);
+    case Opcode::HADD2:
+        return v.HADD2(insn);
+    case Opcode::HMUL2:
+        return v.HMUL2(insn);
+    case Opcode::HFMA2:
+        return v.HFMA2(insn);
+    case Opcode::HMNMX2:
+        return v.HMNMX2(insn);
+    case Opcode::HSET2:
+        return v.HSET2(insn);
+    case Opcode::HSETP2:
+        return v.HSETP2(insn);
+    case Opcode::F2FP:
+        return v.F2FP(insn);
     case Opcode::MOV:
         return v.MOV(insn);
     case Opcode::UMOV:
