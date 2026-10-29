@@ -331,6 +331,7 @@ public:
             {51, &IVi2Session::ConfigureRequestGroups, "ConfigureRequestGroups"},
             {101, &IVi2Session::OpenDisplay, "OpenDisplay"},
             {102, &IVi2Session::CloseDisplay, "CloseDisplay"},
+            {103, &IVi2Session::QueryDisplayRefreshRate, "QueryDisplayRefreshRate"},
             {111, &IVi2Session::OpenEndpoint, "OpenEndpoint"},
             {112, &IVi2Session::CloseEndpoint, "CloseEndpoint"},
             {201, &IVi2Session::RegisterClientState, "RegisterClientState"},
@@ -419,6 +420,20 @@ private:
                   name, packet[4], m_display_references, result.raw);
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(result.raw);
+    }
+    // nn::vi::QueryDisplayRefreshRate. The SDK maps 1 to 60 Hz, 2 to 120 Hz and
+    // 0x8000000000000000 to an unknown rate; the emulated display runs at 60 Hz.
+    void QueryDisplayRefreshRate(HLERequestContext& ctx) {
+        const auto* packet = ctx.CommandBuffer();
+        const u64 name = u64{packet[2]} | (u64{packet[3]} << 32);
+        Result result = Kernel::ResultInvalidCombination;
+        if (packet[0] == 0x77 && packet[1] == 2) {
+            result = name == 0x00746c7561666564ULL || GetPlayerDisplayIndex(name)
+                         ? ResultSuccess : Kernel::ResultNotFound;
+        }
+        IPC::ResponseBuilder rb{ctx, 4};
+        rb.Push(result.raw);
+        rb.Push<u64>(result.IsSuccess() ? 1 : 0);
     }
     void CloseDisplay(HLERequestContext& ctx) {
         const auto* packet = ctx.CommandBuffer();
