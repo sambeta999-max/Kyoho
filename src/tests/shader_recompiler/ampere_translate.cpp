@@ -797,6 +797,27 @@ TEST_CASE("Ampere translate: attribute store", "[shader][ampere]") {
                                    IR::Attribute::Generic0Z, IR::Attribute::Generic0W});
 }
 
+TEST_CASE("Ampere translate: warp match", "[shader][ampere]") {
+    // MATCH.ANY R0, R4; MATCH.ALL.U64 P0, R1, R2; AST.64 a[0x80], R0
+    std::vector<u64> words;
+    for (const Encoding& insn :
+         {Encoding{0x3a1}.Set(16, 8, 0).Set(24, 8, 4).Set(79, 1, 1),
+          Encoding{0x3a1}.Set(16, 8, 1).Set(24, 8, 2).Set(73, 1, 1).Set(81, 3, 0),
+          Encoding{0x322}.Set(24, 8, RZ).Set(32, 8, 0).Set(64, 8, RZ).Set(40, 10, 0x80)
+              .Set(74, 2, 1),
+          Exit()}) {
+        words.push_back(insn.lo);
+        words.push_back(insn.hi);
+    }
+    Translation t;
+    TestEnvironment env{words, Stage::VertexB};
+    Translate(t, env);
+    const auto opcodes{Opcodes(t.program)};
+    REQUIRE(Contains(opcodes, IR::Opcode::ShuffleIndex));
+    REQUIRE(Contains(opcodes, IR::Opcode::SubgroupBallot));
+    REQUIRE(Contains(opcodes, IR::Opcode::VoteAll));
+}
+
 namespace {
 // tools/ampere-sm86/templates/converge.cu compiled with nvcc -arch=sm_86 -O3
 const std::vector<u64> CONVERGE_KERNEL{

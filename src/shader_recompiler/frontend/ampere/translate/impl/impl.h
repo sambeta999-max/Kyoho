@@ -81,6 +81,7 @@ struct TranslatorVisitor {
     void VOTE(Instruction insn);
     void VOTEU(Instruction insn);
     void REDUX(Instruction insn);
+    void MATCH(Instruction insn);
 
     // Floating point
     void FADD(Instruction insn);

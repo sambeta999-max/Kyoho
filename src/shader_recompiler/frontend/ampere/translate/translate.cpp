@@ -96,6 +96,8 @@ void Dispatch(TranslatorVisitor& v, Opcode opcode, Instruction insn) {
         return v.VOTEU(insn);
     case Opcode::REDUX:
         return v.REDUX(insn);
+    case Opcode::MATCH:
+        return v.MATCH(insn);
     case Opcode::ATOMG:
         return v.ATOMG(insn);
     case Opcode::RED:

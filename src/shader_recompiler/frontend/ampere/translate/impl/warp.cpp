@@ -106,7 +106,22 @@ void TranslatorVisitor::VOTE(Instruction insn) {
     X(Reg(insn.Dest()), ballot);
 }
 
-// Warp-wide reduction into a uniform register, as a butterfly over the full warp.
+namespace {
+IR::U32 ReadLane(IR::IREmitter& ir, const IR::U32& value, const IR::U32& lane) {
+    return ir.ShuffleIndex(value, lane, ir.Imm32(31), ir.Imm32(0));
+}
+
+IR::U1 IsLaneActive(IR::IREmitter& ir, const IR::U32& active, u32 lane) {
+    return ir.INotEqual(ir.BitwiseAnd(active, ir.Imm32(1u << lane)), ir.Imm32(0));
+}
+
+IR::U32 FirstActiveLane(IR::IREmitter& ir, const IR::U32& active) {
+    return ir.FindUMsb(ir.BitwiseAnd(active, IR::U32{ir.INeg(active)}));
+}
+} // Anonymous namespace
+
+// Warp-wide reduction into a uniform register over the active lanes; reading an inactive lane is
+// undefined, so each lane is read and masked by the active ballot.
 // Operation at [78..81): and, or, xor, sum, min, max; signed min and max at bit 73.
 void TranslatorVisitor::REDUX(Instruction insn) {
     const u64 op{insn.Bits(78, 3)};
@@ -130,12 +145,54 @@ void TranslatorVisitor::REDUX(Instruction insn) {
             return ir.IMax(a, b, is_signed);
         }
     }};
-    IR::U32 value{SrcA(insn)};
-    for (u32 lane_mask = 16; lane_mask > 0; lane_mask >>= 1) {
-        value = combine(value, ir.ShuffleButterfly(value, ir.Imm32(lane_mask), ir.Imm32(31),
-                                                   ir.Imm32(0)));
+    const IR::U32 value{SrcA(insn)};
+    const IR::U32 active{ir.SubgroupBallot(ir.Imm1(true))};
+    // The first active lane seeds the result, the other active lanes are combined into it
+    const IR::U32 first{FirstActiveLane(ir, active)};
+    IR::U32 result{ReadLane(ir, value, first)};
+    for (u32 lane = 0; lane < 32; ++lane) {
+        const IR::U32 other{ReadLane(ir, value, ir.Imm32(lane))};
+        const IR::U1 take{
+            ir.LogicalAnd(IsLaneActive(ir, active, lane), ir.INotEqual(first, ir.Imm32(lane)))};
+        result = IR::U32{ir.Select(take, combine(result, other), result)};
     }
-    X(UReg(insn.Bits(16, 6)), value);
+    X(UReg(insn.Bits(16, 6)), result);
+}
+
+// MATCH.ALL writes whether the value at [24..32) is equal in every active lane to the predicate at
+// [81..84), and the active mask or zero to the destination; MATCH.ANY (bit 79) writes the mask of
+// active lanes holding the same value. .U64 at bit 73 compares a register pair.
+void TranslatorVisitor::MATCH(Instruction insn) {
+    const bool is_any{insn.Bit(79)};
+    const bool is_64{insn.Bit(73)};
+    const IR::Reg src{Reg(insn.SrcA())};
+    const IR::U32 low{X(src)};
+    const IR::U32 high{is_64 ? X(src + 1) : ir.Imm32(0)};
+    const auto equal{[&](const IR::U32& lane) {
+        IR::U1 result{ir.IEqual(ReadLane(ir, low, lane), low)};
+        if (is_64) {
+            result = ir.LogicalAnd(result, ir.IEqual(ReadLane(ir, high, lane), high));
+        }
+        return result;
+    }};
+    const IR::U32 active{ir.SubgroupBallot(ir.Imm1(true))};
+    const IR::Reg dest{Reg(insn.Dest())};
+    if (is_any) {
+        IR::U32 mask{ir.Imm32(0)};
+        for (u32 lane = 0; lane < 32; ++lane) {
+            const IR::U1 same{ir.LogicalAnd(IsLaneActive(ir, active, lane), equal(ir.Imm32(lane)))};
+            mask = IR::U32{ir.Select(same, ir.BitwiseOr(mask, ir.Imm32(1u << lane)), mask)};
+        }
+        X(dest, mask);
+        return;
+    }
+    // Comparing against the first active lane is enough for all-equal
+    const IR::U32 first{FirstActiveLane(ir, active)};
+    const IR::U1 all_equal{ir.VoteAll(equal(first))};
+    if (insn.Bits(81, 3) != PT) {
+        SetP(insn.Bits(81, 3), all_equal);
+    }
+    X(dest, IR::U32{ir.Select(all_equal, active, ir.Imm32(0))});
 }
 
 void TranslatorVisitor::VOTEU(Instruction insn) {
