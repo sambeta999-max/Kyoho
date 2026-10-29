@@ -121,6 +121,9 @@ void KeplerCompute::ConsumeSinkImpl(Core::System& system) {
 }
 
 void KeplerCompute::CallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call) {
+    if (executing_macro != 0 && !IsMacroData(method)) {
+        FlushPendingMacro(system);
+    }
     if (method >= MACRO_REGISTERS_START && is_ampere) {
         ProcessMacro(system, method, &method_argument, 1, is_last_call);
         return;
@@ -211,6 +214,9 @@ void KeplerCompute::CallMethod(Core::System& system, u32 method, u32 method_argu
 }
 
 void KeplerCompute::CallMultiMethod(Core::System& system, u32 method, const u32* base_start, u32 amount, u32 methods_pending) {
+    if (executing_macro != 0 && !IsMacroData(method)) {
+        FlushPendingMacro(system);
+    }
     if (method >= MACRO_REGISTERS_START && is_ampere) {
         ProcessMacro(system, method, base_start, amount, amount == methods_pending);
         return;
@@ -232,15 +238,25 @@ void KeplerCompute::CallMultiMethod(Core::System& system, u32 method, const u32*
 
 void KeplerCompute::ProcessMacro(Core::System& system, u32 method, const u32* base_start, u32 amount,
                                  bool is_last_call) {
-    if (executing_macro == 0) {
-        if ((method - MACRO_REGISTERS_START) % 2 != 0) {
-            LOG_ERROR(HW_GPU, "Compute macro data {:#x} without a macro call", method * sizeof(u32));
-            return;
-        }
+    // As in the 3D engine, the call method starts a macro, data methods feed its FIFO, and
+    // the macro runs once a method other than data arrives.
+    if ((method - MACRO_REGISTERS_START) % 2 == 0) {
+        FlushPendingMacro(system);
         executing_macro = method;
+    } else if (executing_macro == 0) {
+        LOG_ERROR(HW_GPU, "Compute macro data {:#x} without a macro call", method * sizeof(u32));
+        return;
     }
     macro_params.insert(macro_params.end(), base_start, base_start + amount);
-    if (!is_last_call) {
+}
+
+bool KeplerCompute::IsMacroData(u32 method) const {
+    return is_ampere && method >= MACRO_REGISTERS_START &&
+           (method - MACRO_REGISTERS_START) % 2 == 1;
+}
+
+void KeplerCompute::FlushPendingMacro(Core::System& system) {
+    if (executing_macro == 0) {
         return;
     }
     const u32 entry = ((executing_macro - MACRO_REGISTERS_START) >> 1) %

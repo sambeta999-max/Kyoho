@@ -25,7 +25,6 @@ class Memory;
 namespace Kernel { class KProcess; }
 
 namespace Tegra {
-struct NativeMacroContext;
 namespace Control {
 struct ChannelState;
 }
@@ -63,7 +62,7 @@ public:
     void OnClose(DeviceFD fd) override;
 
     Kernel::KEvent* QueryEvent(u32 event_id) override;
-    NvResult BindToTsg(DeviceFD group, Kernel::KProcess* process, std::shared_ptr<Tegra::NativeMacroContext> macros);
+    NvResult BindToTsg(DeviceFD group, Kernel::KProcess* process);
     void UnbindFromTsg(DeviceFD group);
 
 private:

@@ -7,7 +7,6 @@
 #include <memory>
 #include "core/hle/service/nvdrv/devices/nvdevice.h"
 
-namespace Tegra { struct NativeMacroContext; }
 namespace Kernel { class KProcess; }
 namespace Service::Nvidia { class Module; }
 
@@ -27,7 +26,6 @@ public:
     void OnOpen(NvCore::SessionId session, DeviceFD fd) override;
     void OnClose(DeviceFD fd) override;
 private:
-    std::shared_ptr<Tegra::NativeMacroContext> native_macros;
     Module& module;
     NvCore::Container& core;
     Kernel::KProcess* process{};

@@ -252,6 +252,22 @@ bool Maxwell3D::IsMethodExecutable(u32 method) {
 }
 
 void Maxwell3D::ProcessMacro(Core::System& system, u32 method, const u32* base_start, u32 amount, bool is_last_call) {
+    if (is_ampere) {
+        // The call method starts a macro and every data method feeds its FIFO, whichever
+        // macro index it names. The macro runs once a method other than data arrives.
+        if ((method - MacroRegistersStart) % 2 == 0) {
+            FlushPendingMacro(system);
+            executing_macro = method;
+        } else if (executing_macro == 0) {
+            LOG_ERROR(HW_GPU, "Macro data {:#x} without a macro call", method * sizeof(u32));
+            return;
+        }
+        macro_params.insert(macro_params.end(), base_start, base_start + amount);
+        macro_segments.emplace_back(current_dma_segment, amount);
+        current_macro_dirty |= current_dirty;
+        current_dirty = false;
+        return;
+    }
     if (executing_macro == 0) {
         // A macro call must begin by writing the macro method's register, not its argument.
         ASSERT((method % 2) == 0 && "Can't start macro execution by writing to the ARGS register");
@@ -271,6 +287,21 @@ void Maxwell3D::ProcessMacro(Core::System& system, u32 method, const u32* base_s
         macro_segments.clear();
         current_macro_dirty = false;
     }
+}
+
+bool Maxwell3D::IsMacroData(u32 method) const {
+    return method >= MacroRegistersStart && (method - MacroRegistersStart) % 2 == 1;
+}
+
+void Maxwell3D::FlushPendingMacro(Core::System& system) {
+    if (executing_macro == 0) {
+        return;
+    }
+    ConsumeSink(system);
+    CallMacroMethod(system, executing_macro, macro_params);
+    macro_params.clear();
+    macro_segments.clear();
+    current_macro_dirty = false;
 }
 
 void Maxwell3D::RefreshParametersImpl() {
@@ -515,7 +546,9 @@ void Maxwell3D::CallMacroMethod(Core::System& system, u32 method, const std::vec
 void Maxwell3D::CallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call) {
     // It is an error to write to a register other than the current macro's ARG register before
     // it has finished execution.
-    if (executing_macro != 0) {
+    if (is_ampere && executing_macro != 0 && !IsMacroData(method)) {
+        FlushPendingMacro(system);
+    } else if (executing_macro != 0) {
         ASSERT(method == executing_macro + 1);
     }
 
@@ -533,6 +566,9 @@ void Maxwell3D::CallMethod(Core::System& system, u32 method, u32 method_argument
 }
 
 void Maxwell3D::CallMultiMethod(Core::System& system, u32 method, const u32* base_start, u32 amount, u32 methods_pending) {
+    if (HasPendingMacro() && !IsMacroData(method)) {
+        FlushPendingMacro(system);
+    }
     // Methods after 0xE00 are special, they're actually triggers for some microcode that was
     // uploaded to the GPU during initialization.
     if (method >= MacroRegistersStart) {

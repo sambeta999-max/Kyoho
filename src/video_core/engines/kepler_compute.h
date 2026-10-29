@@ -214,6 +214,13 @@ public:
     /// Write multiple values to the register identified by method.
     void CallMultiMethod(Core::System& system, u32 method, const u32* base_start, u32 amount, u32 methods_pending) override;
 
+    bool HasPendingMacro() const override {
+        return executing_macro != 0;
+    }
+    bool IsMacroData(u32 method) const override;
+    /// Runs a deferred native macro call with the parameters it has received.
+    void FlushPendingMacro(Core::System& system) override;
+
     std::optional<GPUVAddr> GetIndirectComputeAddress() const {
         return indirect_compute;
     }

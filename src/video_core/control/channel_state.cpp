@@ -48,7 +48,7 @@ ChannelState::Payload::Payload(Core::System& system, MemoryManager& memory_manag
 {}
 
 ChannelState::ChannelState(s32 bind_id_)
-    : bind_id{bind_id_}
+    : native_macro_context{std::make_shared<NativeMacroContext>()}, bind_id{bind_id_}
 {}
 
 void ChannelState::Init(Core::System& system, u64 program_id_) {

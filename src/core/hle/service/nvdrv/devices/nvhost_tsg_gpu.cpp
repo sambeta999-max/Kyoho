@@ -6,7 +6,6 @@
 #include <cstring>
 #include "common/logging.h"
 #include "core/core.h"
-#include "video_core/macro_turing.h"
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/service/nvdrv/nvdrv.h"
 #include "core/hle/service/nvdrv/devices/nvhost_gpu.h"
@@ -15,7 +14,7 @@
 namespace Service::Nvidia::Devices {
 
 nvhost_tsg_gpu::nvhost_tsg_gpu(Core::System& system, Module& module_, NvCore::Container& core_)
-    : nvdevice{system, Type::GpuTsg}, native_macros{std::make_shared<Tegra::NativeMacroContext>()}, module{module_}, core{core_} {}
+    : nvdevice{system, Type::GpuTsg}, module{module_}, core{core_} {}
 
 nvhost_tsg_gpu::~nvhost_tsg_gpu() { OnClose(0); }
 
@@ -53,7 +52,7 @@ NvResult nvhost_tsg_gpu::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> 
         const auto device = module.GetDevice<nvdevice>(channel_fd);
         if (!device || device->GetType() != Type::GpuChannel) { return NvResult::BadParameter; }
         const auto channel = std::static_pointer_cast<nvhost_gpu>(device);
-        const auto result = channel->BindToTsg(fd, process, native_macros);
+        const auto result = channel->BindToTsg(fd, process);
         if (result != NvResult::Success) { return result; }
         channels.emplace(channel_fd, channel);
     } else {

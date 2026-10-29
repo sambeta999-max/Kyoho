@@ -526,7 +526,7 @@ Kernel::KEvent* nvhost_gpu::QueryEvent(u32 event_id) {
     }
 }
 
-NvResult nvhost_gpu::BindToTsg(DeviceFD group, Kernel::KProcess* process, std::shared_ptr<Tegra::NativeMacroContext> macros) {
+NvResult nvhost_gpu::BindToTsg(DeviceFD group, Kernel::KProcess* process) {
     const std::scoped_lock lock{tsg_mutex};
     if (tsg_group) { return NvResult::Busy; }
     bool owned{};
@@ -535,13 +535,6 @@ NvResult nvhost_gpu::BindToTsg(DeviceFD group, Kernel::KProcess* process, std::s
         owned |= session && session->process == process;
     }
     if (!owned) { return NvResult::AccessDenied; }
-    if (channel_state->native_abi) {
-        channel_state->native_macro_context = std::move(macros);
-        if (channel_state->payload) {
-            channel_state->payload->maxwell_3d.SetNativeMacroContext(channel_state->native_macro_context);
-            channel_state->payload->kepler_compute.SetNativeMacroContext(channel_state->native_macro_context);
-        }
-    }
     tsg_group = group;
     return NvResult::Success;
 }

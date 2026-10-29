@@ -75,9 +75,9 @@ private:
     size_t fifo_position{};
 };
 
-/// Macros shared by the channels of a TSG: NVN uploads them once for all of its channels. The 3D
-/// and compute classes share one instruction RAM and table of macro start positions: Welcome Tour
-/// calls on its compute subchannel the macros it uploaded through the 3D class.
+/// The MME of one channel, shared by its 3D and compute subchannels: one instruction RAM, table
+/// of macro start positions and data RAM. Each channel has its own. Welcome Tour uploads its 3D
+/// and compute macros on different channels of one TSG, both starting at instruction 0.
 struct NativeMacroContext {
     TuringMacroEngine engine;
     std::array<u32, 0x80> positions{};

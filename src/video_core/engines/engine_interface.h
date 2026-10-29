@@ -37,6 +37,17 @@ public:
     /// Write multiple values to the register identified by method.
     virtual void CallMultiMethod(Core::System& system, u32 method, const u32* base_start, u32 amount, u32 methods_pending) = 0;
 
+    /// Turing and later MMEs read their parameter FIFO as data arrives, so one macro call can
+    /// span several method headers. An engine that defers such a call until its data ends
+    /// reports it here, and the pusher flushes it before any method that is not more data.
+    virtual bool HasPendingMacro() const {
+        return false;
+    }
+    virtual bool IsMacroData(u32 method) const {
+        return false;
+    }
+    virtual void FlushPendingMacro(Core::System& system) {}
+
     void ConsumeSink(Core::System& system) {
         if (!method_sink.empty()) {
             ConsumeSinkImpl(system);

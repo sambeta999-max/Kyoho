@@ -56,6 +56,7 @@ struct ChannelState {
         Engines::Nv01Timer nv01_timer;
         DmaPusher dma_pusher;
     };
+    /// MME shared by the 3D and compute subchannels of this channel
     std::shared_ptr<NativeMacroContext> native_macro_context;
     std::shared_ptr<MemoryManager> memory_manager_owner;
     std::optional<Payload> payload;

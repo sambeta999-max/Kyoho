@@ -4,6 +4,8 @@
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <bit>
+
 #include "common/settings.h"
 #include "core/core.h"
 #include "video_core/dma_pusher.h"
@@ -36,6 +38,8 @@ void DmaPusher::DispatchCalls() {
             break;
         }
     }
+    // A macro whose data may continue in a later submission cannot wait for it.
+    FlushPendingMacros();
     system.GPU().FlushCommands();
     system.GPU().OnCommandListEnd();
 }
@@ -185,7 +189,26 @@ void DmaPusher::SetState(const CommandHeader& command_header) {
     dma_state.method_count = command_header.method_count;
 }
 
+void DmaPusher::FlushPendingMacros(u32 subchannel, u32 method) {
+    for (u32 mask = pending_macro_mask; mask != 0; mask &= mask - 1) {
+        const u32 index = static_cast<u32>(std::countr_zero(mask));
+        auto* const engine = subchannels[index];
+        if (index == subchannel && method >= non_puller_methods && engine->IsMacroData(method)) {
+            continue;
+        }
+        engine->FlushPendingMacro(system);
+        pending_macro_mask &= ~(1U << index);
+    }
+}
+
+void DmaPusher::FlushPendingMacros() {
+    FlushPendingMacros(max_subchannels, 0);
+}
+
 void DmaPusher::CallMethod(u32 argument) {
+    if (pending_macro_mask != 0) {
+        FlushPendingMacros(dma_state.subchannel, dma_state.method);
+    }
     if (dma_state.method < non_puller_methods) {
         puller.CallPullerMethod(*this, Engines::Puller::MethodCall{
             dma_state.method,
@@ -201,11 +224,17 @@ void DmaPusher::CallMethod(u32 argument) {
             subchannel->ConsumeSink(system);
             subchannel->current_dma_segment = dma_state.dma_get + dma_state.dma_word_offset;
             subchannel->CallMethod(system, dma_state.method, argument, dma_state.is_last_call);
+            if (subchannel->HasPendingMacro()) {
+                pending_macro_mask |= 1U << dma_state.subchannel;
+            }
         }
     }
 }
 
 void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
+    if (pending_macro_mask != 0) {
+        FlushPendingMacros(dma_state.subchannel, dma_state.method);
+    }
     if (dma_state.method < non_puller_methods) {
         puller.CallMultiMethod(*this, dma_state.method, dma_state.subchannel, base_start, num_methods, dma_state.method_count);
     } else {
@@ -213,6 +242,9 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
         subchannel->ConsumeSink(system);
         subchannel->current_dma_segment = dma_state.dma_get + dma_state.dma_word_offset;
         subchannel->CallMultiMethod(system, dma_state.method, base_start, num_methods, dma_state.method_count);
+        if (subchannel->HasPendingMacro()) {
+            pending_macro_mask |= 1U << dma_state.subchannel;
+        }
     }
 }
 

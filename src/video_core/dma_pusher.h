@@ -153,6 +153,10 @@ private:
     void CallMethod(u32 argument);
     void CallMultiMethod(const u32* base_start, u32 num_methods);
 
+    /// Runs deferred macro calls, except the one this method feeds with data.
+    void FlushPendingMacros(u32 subchannel, u32 method);
+    void FlushPendingMacros();
+
 public:
     Common::ScratchBuffer<CommandHeader> command_headers; ///< Buffer for list of commands fetched at once
 
@@ -177,6 +181,7 @@ public:
     DmaState dma_state{};
     std::array<Engines::EngineInterface*, max_subchannels> subchannels{};
     std::array<Engines::EngineTypes, max_subchannels> subchannel_type;
+    u32 pending_macro_mask{}; ///< Subchannels holding a deferred macro call
 
     Engines::Puller puller;
     std::mutex sync_mutex;
