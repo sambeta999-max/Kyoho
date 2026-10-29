@@ -37,6 +37,20 @@ constexpr size_t MaxNroInfos = 0x100; // Up to 256 NROs
 constexpr u64 InvalidProcessId = 0xffffffffffffffffULL;
 constexpr u64 InvalidContextId = 0xffffffffffffffffULL;
 
+// The fields of an NRR that follow its certification and signature. The NS2 SDK signs NRRs with
+// 3072-bit keys, which moves these fields from 0x330 to 0x4b0; the hash list follows them.
+struct NrrLayout {
+    u64 program_id;
+    u32 size;
+    u8 nrr_kind;
+    INSERT_PADDING_BYTES_NOINIT(3);
+    u32 hashes_offset;
+    u32 num_hashes;
+    INSERT_PADDING_BYTES_NOINIT(8);
+};
+static_assert(sizeof(NrrLayout) == 0x20, "NrrLayout has wrong size");
+constexpr std::array<u64, 2> NrrLayoutOffsets{0x330, 0x4b0};
+
 // Types.
 using Sha256Hash = std::array<u8, 32>;
 
@@ -353,9 +367,21 @@ public:
         Kernel::KProcess* process = context->GetProcess();
         R_UNLESS(process != nullptr, RO::ResultInvalidProcess);
 
-        // Read NRR.
-        NrrHeader header{};
-        process->GetMemory().ReadBlock(nrr_address, std::addressof(header), sizeof(header));
+        // Read NRR. The layout whose hash list starts after it and fits in the NRR is the one used.
+        const NrrLayout* layout = nullptr;
+        std::array<NrrLayout, NrrLayoutOffsets.size()> candidates{};
+        for (size_t i = 0; i < candidates.size() && layout == nullptr; ++i) {
+            NrrLayout& candidate = candidates[i];
+            process->GetMemory().ReadBlock(nrr_address + NrrLayoutOffsets[i],
+                                           std::addressof(candidate), sizeof(candidate));
+            const u64 hashes_end =
+                u64{candidate.hashes_offset} + u64{candidate.num_hashes} * sizeof(Sha256Hash);
+            if (candidate.hashes_offset >= NrrLayoutOffsets[i] + sizeof(NrrLayout) &&
+                hashes_end <= candidate.size && candidate.size <= nrr_size) {
+                layout = std::addressof(candidate);
+            }
+        }
+        R_UNLESS(layout != nullptr, RO::ResultInvalidNrr);
 
         // Set NRR info.
         context->SetNrrInfoInUse(nrr_info, true);
@@ -363,10 +389,10 @@ public:
         nrr_info->nrr_heap_size = nrr_size;
 
         // Read NRR hash list.
-        nrr_info->hashes.resize(header.GetNumHashes());
-        process->GetMemory().ReadBlock(nrr_address + header.GetHashesOffset(),
+        nrr_info->hashes.resize(layout->num_hashes);
+        process->GetMemory().ReadBlock(nrr_address + layout->hashes_offset,
                                        nrr_info->hashes.data(),
-                                       sizeof(Sha256Hash) * header.GetNumHashes());
+                                       sizeof(Sha256Hash) * layout->num_hashes);
 
         R_SUCCEED();
     }
