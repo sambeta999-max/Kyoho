@@ -274,6 +274,7 @@ private:
     Result RegisterNativeInputMemory(u8 mode, u32 parameter0, u32 parameter1, u32 parameter2,
                                      ClientAppletResourceUserId aruid, u64 size,
                                      InCopyHandle<Kernel::KTransferMemory> memory);
+    Result Unknown3112(u32 value, ClientAppletResourceUserId aruid);
     Result RegisterJcmsMemory(ClientAppletResourceUserId aruid, u64 size,
                               InCopyHandle<Kernel::KTransferMemory> memory);
     Result SetMergedNmouseSourceTypes(u32 source_types, ClientAppletResourceUserId aruid);

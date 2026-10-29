@@ -239,6 +239,10 @@ IHidServer::IHidServer(Core::System& system_, std::shared_ptr<ResourceManager> r
         {3014, nullptr, "GetDebugPadKeyboardMap"}, //21.0.0+
         {3015, nullptr, "SetDebugPadKeyboardMap"}, //21.0.0+
         {3110, C<&IHidServer::RegisterJcmsMemory>, "RegisterJcmsMemory"},
+        {3112, C<&IHidServer::Unknown3112>, "Unknown3112"},
+        // The NS2 SDK of Welcome Tour sends these as 3132 and 3133
+        {3132, C<&IHidServer::SetNmouseButtonConfigJoyLeftJcms>, "SetNmouseButtonConfigJoyLeftJcms"},
+        {3133, C<&IHidServer::SetNmouseButtonConfigJoyRightJcms>, "SetNmouseButtonConfigJoyRightJcms"},
         {3136, C<&IHidServer::SetNmouseButtonConfigJoyLeftJcms>, "SetNmouseButtonConfigJoyLeftJcms"},
         {3137, C<&IHidServer::SetNmouseButtonConfigJoyRightJcms>, "SetNmouseButtonConfigJoyRightJcms"},
         {3138, C<&IHidServer::SetMergedNmouseSourceTypes>, "SetMergedNmouseSourceTypes"},
@@ -1509,6 +1513,13 @@ Result IHidServer::RegisterNativeInputMemory(
     native_input_memories.push_back({memory.Get(), aruid.pid, size, {mode, parameter0, parameter1, parameter2}});
     // Retain the real guest-owned input buffer. No Joy-Con mouse samples are
     // produced while those devices are disconnected.
+    R_SUCCEED();
+}
+
+Result IHidServer::Unknown3112(u32 value, ClientAppletResourceUserId aruid) {
+    // Welcome Tour sends it twice per index after SetNmouseButtonConfigJoyLeftJcms, with the
+    // index and with the index | 0x100
+    LOG_WARNING(Service_HID, "(STUBBED) called, value={:#x}, aruid={}", value, aruid.pid);
     R_SUCCEED();
 }
 
