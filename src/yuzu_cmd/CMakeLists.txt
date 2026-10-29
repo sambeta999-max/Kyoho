@@ -56,7 +56,8 @@ endif()
 if(WIN32)
     # compile as a win32 gui application instead of a console application
     if(MSVC)
-        set_target_properties(yuzu-cmd PROPERTIES LINK_FLAGS_RELEASE "/SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup")
+        # UNICODE is defined, so SDL_main.h provides wmain
+        set_target_properties(yuzu-cmd PROPERTIES LINK_FLAGS_RELEASE "/SUBSYSTEM:WINDOWS /ENTRY:wmainCRTStartup")
     elseif(MINGW)
         set_target_properties(yuzu-cmd PROPERTIES LINK_FLAGS_RELEASE "-Wl,--subsystem,windows")
     endif()
