@@ -173,6 +173,17 @@ public:
             {11, &IVi2Session::GetNotificationEvent, "GetNotificationEvent"},
             {13, &IVi2Session::ReleaseNotificationEvent, "ReleaseNotificationEvent"},
             {21, &IVi2Session::GetNotifications, "GetNotifications"},
+            {31, &IVi2Session::GetRequestGroupEvent, "GetRequestGroupEvent"},
+            {263, &IVi2Session::BindDisplayEvent, "BindDisplayEvent"},
+            {264, &IVi2Session::UnbindDisplayEvent, "UnbindDisplayEvent"},
+            {265, &IVi2Session::BindDisplayEvent, "BindDisplayEvent"},
+            {266, &IVi2Session::UnbindDisplayEvent, "UnbindDisplayEvent"},
+            {267, &IVi2Session::BindDisplayEvent, "BindDisplayEvent"},
+            {268, &IVi2Session::UnbindDisplayEvent, "UnbindDisplayEvent"},
+            {269, &IVi2Session::BindDisplayEvent, "BindDisplayEvent"},
+            {270, &IVi2Session::UnbindDisplayEvent, "UnbindDisplayEvent"},
+            {271, &IVi2Session::BindDisplayEvent, "BindDisplayEvent"},
+            {272, &IVi2Session::UnbindDisplayEvent, "UnbindDisplayEvent"},
             {3, &IVi2Session::GetSessionLimit, "GetSessionLimit"},
             {5, &IVi2Session::GetSessionLimit, "GetRequestGroupLimit"},
             {51, &IVi2Session::ConfigureRequestGroups, "ConfigureRequestGroups"},
@@ -194,6 +205,7 @@ public:
 
     ~IVi2Session() override {
         if (m_release_poll) system.CoreTiming().UnscheduleEvent(m_release_poll);
+        if (m_vsync_poll) system.CoreTiming().UnscheduleEvent(m_vsync_poll);
         if (m_display_service) {
             for (auto& state : m_client_states) {
                 if (state.layer) m_display_service->GetContainer()->DestroyManagedLayer(*state.layer);
@@ -201,6 +213,9 @@ public:
         }
         if (m_default_display) { m_display_service->CloseDisplay(*m_default_display); }
         m_context.CloseEvent(m_event);
+        for (Kernel::KEvent* event : m_request_group_events) {
+            if (event) m_context.CloseEvent(event);
+        }
     }
 
     Result HandleSyncRequest(Kernel::KServerSession& session, HLERequestContext& ctx) override {
@@ -666,6 +681,85 @@ private:
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(result.raw);
     }
+    // Command 31 takes one index and returns a handle; next to the notification event commands
+    // it is taken to be the event of a request group. This is inferred from the call made at
+    // boot, not documented.
+    void GetRequestGroupEvent(HLERequestContext& ctx) {
+        const auto* packet = ctx.CommandBuffer();
+        Result result = Kernel::ResultInvalidCombination;
+        Kernel::KReadableEvent* readable{};
+        const u32 index = packet[2];
+        if (packet[0] == 0x2f && packet[1] == 1 && index < m_request_group_events.size()) {
+            auto& event = m_request_group_events[index];
+            if (!event) {
+                event = m_context.CreateEvent("Vi2RequestGroup");
+            }
+            result = event ? ResultSuccess : Kernel::ResultOutOfResource;
+            if (event) {
+                readable = &event->GetReadableEvent();
+                readable->Open(kernel);
+            }
+        }
+        LOG_WARNING(Service_AM, "VI2 request group event index={}, result={:#x}", index, result.raw);
+        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+        rb.Push(result.raw);
+        ctx.AddMoveObject(readable);
+    }
+    // Commands 263 to 272 take a display name and the index of a request group event (command
+    // 31), and reply with a result only. They come in pairs; the odd command binds the event to
+    // one kind of display notification and the even one unbinds it. This is inferred from the
+    // requests made at boot and the proxies in the SDK; the kinds are not identified. The first
+    // kind (263) is taken to be vsync and signalled at 60 Hz.
+    void BindDisplayEvent(HLERequestContext& ctx) {
+        const auto* packet = ctx.CommandBuffer();
+        const u32 command = ctx.GetCommand();
+        const u64 name = u64{packet[2]} | (u64{packet[3]} << 32);
+        const u32 index = packet[4];
+        const u32 kind = (command - 263) / 2;
+        Result result = Kernel::ResultInvalidCombination;
+        if (packet[0] == 16 + command && packet[1] == 3) {
+            result = index < m_request_group_events.size() && m_request_group_events[index]
+                         ? ResultSuccess
+                         : Kernel::ResultNotFound;
+        }
+        if (result.IsSuccess() && kind == 0) {
+            m_vsync_events |= 1U << index;
+            if (!m_vsync_poll) {
+                m_vsync_poll = Core::Timing::CreateEvent(
+                    "NativeViVsync",
+                    [this](s64, std::chrono::nanoseconds) -> std::optional<std::chrono::nanoseconds> {
+                        const auto guard = LockService();
+                        for (u32 i = 0; i < m_request_group_events.size(); ++i) {
+                            if ((m_vsync_events >> i) & 1) m_request_group_events[i]->Signal(kernel);
+                        }
+                        return std::nullopt;
+                    });
+                constexpr auto period = std::chrono::nanoseconds{1'000'000'000 / 60};
+                system.CoreTiming().ScheduleLoopingEvent(period, period, m_vsync_poll);
+            }
+        }
+        LOG_WARNING(Service_AM, "VI2 bind display event command={}, kind={}, display={:#x}, index={}, result={:#x}",
+                    command, kind, name, index, result.raw);
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(result.raw);
+    }
+    void UnbindDisplayEvent(HLERequestContext& ctx) {
+        const auto* packet = ctx.CommandBuffer();
+        const u32 command = ctx.GetCommand();
+        const u32 index = packet[4];
+        const u32 kind = (command - 264) / 2;
+        Result result = Kernel::ResultInvalidCombination;
+        if (packet[0] == 16 + command && packet[1] == 3) {
+            result = ResultSuccess;
+            if (kind == 0 && index < 32) {
+                m_vsync_events &= ~(1U << index);
+            }
+        }
+        LOG_WARNING(Service_AM, "VI2 unbind display event command={}, kind={}, index={}, result={:#x}",
+                    command, kind, index, result.raw);
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(result.raw);
+    }
     void GetNotificationEvent(HLERequestContext& ctx) {
         const auto* packet = ctx.CommandBuffer();
         Result result = Kernel::ResultInvalidCombination;
@@ -703,6 +797,10 @@ private:
     const u64 m_aruid;
     KernelHelpers::ServiceContext m_context;
     Kernel::KEvent* m_event{};
+    std::array<Kernel::KEvent*, 8> m_request_group_events{};
+    /// Request group events bound to display vsync (command 263)
+    u32 m_vsync_events{};
+    std::shared_ptr<Core::Timing::EventType> m_vsync_poll;
 };
 
 } // namespace
