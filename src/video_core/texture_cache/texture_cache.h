@@ -802,22 +802,34 @@ template <class P>
 std::pair<typename P::ImageView*, bool> TextureCache<P>::TryFindFramebufferImageView(
     const Tegra::FramebufferConfig& config, DAddr cpu_addr) {
     // TODO: Properly implement this
-    const auto it = page_table.find(cpu_addr >> YUZU_PAGEBITS);
-    if (it == page_table.end()) {
-        return {};
-    }
-    const auto& image_map_ids = it->second;
     boost::container::small_vector<ImageId, 4> valid_image_ids;
-    for (const ImageMapId map_id : image_map_ids) {
-        const ImageMapView& map = slot_map_views[map_id];
-        const ImageBase& image = slot_images[map.image_id];
-        if (image.cpu_addr != cpu_addr) {
-            continue;
+    if (const auto it = page_table.find(cpu_addr >> YUZU_PAGEBITS); it != page_table.end()) {
+        for (const ImageMapId map_id : it->second) {
+            const ImageMapView& map = slot_map_views[map_id];
+            const ImageBase& image = slot_images[map.image_id];
+            if (image.cpu_addr != cpu_addr) {
+                continue;
+            }
+            if (image.image_view_ids.empty()) {
+                continue;
+            }
+            valid_image_ids.push_back(map.image_id);
         }
-        if (image.image_view_ids.empty()) {
-            continue;
+    }
+    if (valid_image_ids.empty()) {
+        // The display and the GPU can pin the same memory through different handles, which
+        // gives it different device addresses (native vi2 images and their GPU mappings).
+        // Match such aliases by the physical memory behind the framebuffer.
+        constexpr DAddr device_end = DAddr{1} << Tegra::MaxwellDeviceMemoryManager::AS_BITS;
+        const PAddr physical = device_memory.GetPhysicalRawAddressFromDAddr(cpu_addr);
+        for (auto [image_id, image] : slot_images) {
+            if (physical == 0 || image->cpu_addr >= device_end || image->image_view_ids.empty()) {
+                continue;
+            }
+            if (device_memory.GetPhysicalRawAddressFromDAddr(image->cpu_addr) == physical) {
+                valid_image_ids.push_back(image_id);
+            }
         }
-        valid_image_ids.push_back(map.image_id);
     }
 
     const auto view_format = [&]() {
@@ -1219,9 +1231,6 @@ ImageId TextureCache<P>::FindImage(const ImageInfo& info, GPUVAddr gpu_addr,
     std::optional<DAddr> cpu_addr = gpu_memory->GpuToCpuAddress(gpu_addr);
     if (!cpu_addr) {
         cpu_addr = gpu_memory->GpuToCpuAddress(gpu_addr, CalculateGuestSizeInBytes(info));
-        if (!cpu_addr) {
-            return ImageId{};
-        }
     }
     const bool broken_views =
         runtime.HasBrokenTextureViewFormats() || True(options & RelaxedOptions::ForceBrokenViews);
@@ -1254,7 +1263,14 @@ ImageId TextureCache<P>::FindImage(const ImageInfo& info, GPUVAddr gpu_addr,
         }
         return false;
     };
-    ForEachImageInRegion(*cpu_addr, CalculateGuestSizeInBytes(info), lambda);
+    if (cpu_addr) {
+        ForEachImageInRegion(*cpu_addr, CalculateGuestSizeInBytes(info), lambda);
+    } else {
+        // Memory the GPU allocates for itself, such as the backed sparse regions of the native
+        // GPU session, has no device address. Its images are only found by their GPU address.
+        ForEachImageInRegionGPU(channel_state->gpu_memory.GetID(), gpu_addr,
+                                CalculateGuestSizeInBytes(info), lambda);
+    }
     if (image_ids.size() <= 1) [[likely]] {
         return image_id;
     }
