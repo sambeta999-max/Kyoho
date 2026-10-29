@@ -43,6 +43,8 @@ INST(LDSET, "LDSET", "1z111000AR1sssss001100nnnnnttttt")
 INST(SWPB, "SWPB", "00111000AR1sssss100000nnnnnttttt")
 INST(SWPH, "SWPH", "01111000AR1sssss100000nnnnnttttt")
 INST(SWP, "SWP", "1z111000AR1sssss100000nnnnnttttt")
+// The other atomic memory operations of FEAT_LSE, of any size, after the forms above
+INST(LDATOMIC, "LDATOMIC", "zz111000AR1sssss0ooo00nnnnnttttt")
 INST(XPAC_1, "XPAC", "110110101100000101000D11111ddddd")
 INST(HINT, "HINT", "11010101000000110010MMMMooo11111")
 INST(SXTB_1, "SXTB (32-bit)", "0001001100000000000111nnnnnddddd")

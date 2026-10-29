@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: 0BSD
  */
 
+#include <array>
 #include <optional>
 
 #include "dynarmic/frontend/A64/translate/impl/impl.h"
@@ -50,17 +51,19 @@ bool TranslatorVisitor::LDAPR(Imm<2> size, Reg Rn, Reg Rt) {
     return LDAR(size, Rn, Rt);
 }
 
-enum class AtomicRegisterOperation { Add, Set, Clear, Swap };
+enum class AtomicRegisterOperation { Add, Clear, Eor, Set, SMax, SMin, UMax, UMin, Swap };
 
 static bool AtomicRegisterOperationImpl(TranslatorVisitor& v, size_t bits, bool A, bool R,
                                         Reg Rs, Reg Rn, Reg Rt, AtomicRegisterOperation operation) {
     const size_t reg_bits = bits == 64 ? 64 : 32;
     const IR::U64 address = Rn == Reg::SP ? IR::U64{v.SP(64)} : IR::U64{v.X(64, Rn)};
     const IR::U64 original_result = v.X(64, Rt);
-    const IR::U32U64 operand = v.ZeroExtend(v.X(bits, Rs), reg_bits);
+    const IR::UAny operand_bits = v.X(bits, Rs);
+    const IR::U32U64 operand = v.ZeroExtend(operand_bits, reg_bits);
     const auto flags = v.ir.GetNZCVRaw();
     const auto access = A || R ? IR::AccType::ORDERED : IR::AccType::ATOMIC;
-    const auto observed = v.ZeroExtend(v.ExclusiveMem(address, bits / 8, access), reg_bits);
+    const IR::UAny observed_bits = v.ExclusiveMem(address, bits / 8, access);
+    const auto observed = v.ZeroExtend(observed_bits, reg_bits);
     auto replacement = operand;
     switch (operation) {
     case AtomicRegisterOperation::Add:
@@ -71,6 +74,21 @@ static bool AtomicRegisterOperationImpl(TranslatorVisitor& v, size_t bits, bool 
         break;
     case AtomicRegisterOperation::Clear:
         replacement = v.ir.And(observed, v.ir.Not(operand));
+        break;
+    case AtomicRegisterOperation::Eor:
+        replacement = v.ir.Eor(observed, operand);
+        break;
+    case AtomicRegisterOperation::SMax:
+        replacement = v.ir.MaxSigned(v.SignExtend(observed_bits, reg_bits), v.SignExtend(operand_bits, reg_bits));
+        break;
+    case AtomicRegisterOperation::SMin:
+        replacement = v.ir.MinSigned(v.SignExtend(observed_bits, reg_bits), v.SignExtend(operand_bits, reg_bits));
+        break;
+    case AtomicRegisterOperation::UMax:
+        replacement = v.ir.MaxUnsigned(observed, operand);
+        break;
+    case AtomicRegisterOperation::UMin:
+        replacement = v.ir.MinUnsigned(observed, operand);
         break;
     case AtomicRegisterOperation::Swap:
         break;
@@ -115,6 +133,16 @@ bool TranslatorVisitor::SWPH(bool A, bool R, Reg Rs, Reg Rn, Reg Rt) {
 
 bool TranslatorVisitor::SWP(bool sz, bool A, bool R, Reg Rs, Reg Rn, Reg Rt) {
     return AtomicRegisterOperationImpl(*this, sz ? 64 : 32, A, R, Rs, Rn, Rt, AtomicRegisterOperation::Swap);
+}
+
+bool TranslatorVisitor::LDATOMIC(Imm<2> size, bool A, bool R, Reg Rs, Imm<3> opc, Reg Rn, Reg Rt) {
+    static constexpr std::array operations{
+        AtomicRegisterOperation::Add,  AtomicRegisterOperation::Clear, AtomicRegisterOperation::Eor,
+        AtomicRegisterOperation::Set,  AtomicRegisterOperation::SMax,  AtomicRegisterOperation::SMin,
+        AtomicRegisterOperation::UMax, AtomicRegisterOperation::UMin,
+    };
+    return AtomicRegisterOperationImpl(*this, size_t{8} << size.ZeroExtend(), A, R, Rs, Rn, Rt,
+                                       operations[opc.ZeroExtend()]);
 }
 
 static bool ExclusiveSharedDecodeAndOperation(TranslatorVisitor& v, bool pair, size_t size, bool L, bool o0, std::optional<Reg> Rs, std::optional<Reg> Rt2, Reg Rn, Reg Rt) {
