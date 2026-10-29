@@ -718,3 +718,22 @@ TEST_CASE("Ampere translate: attribute store", "[shader][ampere]") {
     REQUIRE(written == std::vector{IR::Attribute::Generic0X, IR::Attribute::Generic0Y,
                                    IR::Attribute::Generic0Z, IR::Attribute::Generic0W});
 }
+
+namespace {
+// tools/ampere-sm86/templates/converge.cu compiled with nvcc -arch=sm_86 -O3
+const std::vector<u64> CONVERGE_KERNEL{
+#include "ampere_kernel_converge.inc"
+};
+} // Anonymous namespace
+
+TEST_CASE("Ampere translate: nvcc divergent loops", "[shader][ampere]") {
+    // "@!P0 BREAK B1" is followed by an explicit "@!P0 BRA"; "BRA.CONV ~URZ" selects the native
+    // SHFL/REDUX over a CALL into a software fallback, which must not be reached
+    Translation t;
+    TestEnvironment env{CONVERGE_KERNEL, Stage::Compute};
+    Translate(t, env);
+    REQUIRE(t.program.blocks.size() > 4);
+    const auto opcodes{Opcodes(t.program)};
+    REQUIRE(Contains(opcodes, IR::Opcode::ShuffleButterfly));
+    REQUIRE(Contains(opcodes, IR::Opcode::ShuffleIndex));
+}

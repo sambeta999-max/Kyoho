@@ -27,6 +27,19 @@ std::optional<IR::Condition> GuardCondition(const Instruction& insn) {
 
 // Branch condition at [87..90], or a uniform predicate at [24..28] for the .U form
 std::optional<IR::Condition> BranchCondition(const Instruction& insn) {
+    if (insn.Opcode() == 0x947 && insn.Bit(91)) {
+        // BRA.CONV (mode 3) and BRA.DIV (mode 2) test the convergence of the warp against a
+        // uniform register mask; they guard fast and slow paths of warp-wide operations.
+        // Invocations are emulated as converged: CONV is always taken, DIV never.
+        switch (insn.Bits(32, 2)) {
+        case 3:
+            return IR::Condition{true};
+        case 2:
+            return std::nullopt;
+        default:
+            throw NotImplementedException("BRA convergence mode {}", insn.Bits(32, 2));
+        }
+    }
     if (insn.Bit(32)) {
         const u32 index{static_cast<u32>(insn.Bits(24, 3))};
         const bool negated{insn.Bit(27)};
