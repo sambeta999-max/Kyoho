@@ -26,6 +26,14 @@ constexpr u32 SEND_SIGNALING_PCAS2_B = 0x02C0 / sizeof(u32);
 // REPORT_SEMAPHORE_EXECUTE
 constexpr u32 REPORT_SEMAPHORE = 0x0158 / sizeof(u32);
 constexpr u32 REPORT_SEMAPHORE_EXECUTE = REPORT_SEMAPHORE + 4;
+// LOAD_MME_INSTRUCTION_RAM_POINTER, LOAD_MME_INSTRUCTION_RAM, LOAD_MME_START_ADDRESS_RAM_POINTER
+// and LOAD_MME_START_ADDRESS_RAM, at the offsets of the 3D class
+constexpr u32 LOAD_MME_INSTRUCTION_RAM_POINTER = 0x0114 / sizeof(u32);
+constexpr u32 LOAD_MME_INSTRUCTION_RAM = 0x0118 / sizeof(u32);
+constexpr u32 LOAD_MME_START_ADDRESS_RAM_POINTER = 0x011C / sizeof(u32);
+constexpr u32 LOAD_MME_START_ADDRESS_RAM = 0x0120 / sizeof(u32);
+// CALL_MME_MACRO(j) and CALL_MME_DATA(j) of AMPERE_COMPUTE_B, from 0x3800
+constexpr u32 MACRO_REGISTERS_START = 0x3800 / sizeof(u32);
 
 // SEND_SIGNALING_PCAS2_B actions
 enum class PcasAction : u32 {
@@ -45,6 +53,38 @@ enum class PcasAction : u32 {
 
 constexpr std::size_t MAX_PENDING_QMDS = 4096;
 
+/// What a Turing macro called on the compute class runs on
+class ComputeMacroHost final : public TuringMacroEngine::Host {
+public:
+    ComputeMacroHost(Core::System& system_, KeplerCompute& compute_, MemoryManager& memory_manager_)
+        : system{system_}, compute{compute_}, memory_manager{memory_manager_} {}
+
+    u32 ReadState(u32 method) override {
+        return method < KeplerCompute::Regs::NUM_REGS ? compute.regs.reg_array[method] : 0;
+    }
+
+    void CallMethod(u32 method, u32 value) override {
+        if (method >= MACRO_REGISTERS_START) {
+            LOG_ERROR(HW_GPU, "Unsupported method {:#x} emitted by a compute macro", method);
+            return;
+        }
+        compute.CallMethod(system, method, value, true);
+    }
+
+    void ReadMemory(GPUVAddr address, std::span<u32> data) override {
+        memory_manager.ReadBlock(address, data.data(), data.size_bytes());
+    }
+
+    void WriteMemory(GPUVAddr address, std::span<const u32> data) override {
+        memory_manager.WriteBlock(address, data.data(), data.size_bytes());
+    }
+
+private:
+    Core::System& system;
+    KeplerCompute& compute;
+    MemoryManager& memory_manager;
+};
+
 } // Anonymous namespace
 
 KeplerCompute::KeplerCompute(MemoryManager& memory_manager_)
@@ -57,6 +97,13 @@ KeplerCompute::KeplerCompute(MemoryManager& memory_manager_)
     execution_mask[KEPLER_COMPUTE_REG_INDEX(launch)] = true;
     execution_mask[SEND_SIGNALING_PCAS2_B] = true;
     execution_mask[REPORT_SEMAPHORE_EXECUTE] = true;
+    execution_mask[LOAD_MME_INSTRUCTION_RAM_POINTER] = true;
+    execution_mask[LOAD_MME_INSTRUCTION_RAM] = true;
+    execution_mask[LOAD_MME_START_ADDRESS_RAM_POINTER] = true;
+    execution_mask[LOAD_MME_START_ADDRESS_RAM] = true;
+    for (size_t method = MACRO_REGISTERS_START; method < execution_mask.size(); ++method) {
+        execution_mask[method] = true;
+    }
 }
 
 KeplerCompute::~KeplerCompute() = default;
@@ -74,11 +121,36 @@ void KeplerCompute::ConsumeSinkImpl(Core::System& system) {
 }
 
 void KeplerCompute::CallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call) {
-    ASSERT_MSG(method < Regs::NUM_REGS, "Invalid KeplerCompute register, increase the size of the Regs structure");
+    if (method >= MACRO_REGISTERS_START && is_ampere) {
+        ProcessMacro(system, method, &method_argument, 1, is_last_call);
+        return;
+    }
+    if (method >= Regs::NUM_REGS) {
+        LOG_ERROR(HW_GPU, "Invalid KeplerCompute register {:#x} = {:#x}", method * sizeof(u32), method_argument);
+        return;
+    }
 
     regs.reg_array[method] = method_argument;
 
     switch (method) {
+    case LOAD_MME_INSTRUCTION_RAM_POINTER:
+        if (is_ampere) {
+            TuringMacro().SetUploadPointer(method_argument);
+        }
+        break;
+    case LOAD_MME_INSTRUCTION_RAM:
+        if (is_ampere) {
+            TuringMacro().Upload(method_argument);
+        }
+        break;
+    case LOAD_MME_START_ADDRESS_RAM_POINTER:
+        macro_position_pointer = method_argument;
+        break;
+    case LOAD_MME_START_ADDRESS_RAM:
+        if (is_ampere) {
+            MacroPositions()[macro_position_pointer++ % MacroPositions().size()] = method_argument;
+        }
+        break;
     case KEPLER_COMPUTE_REG_INDEX(exec_upload): {
         UploadInfo info{.upload_address = upload_address,
                         .exec_address = upload_state.ExecTargetAddress(),
@@ -139,6 +211,10 @@ void KeplerCompute::CallMethod(Core::System& system, u32 method, u32 method_argu
 }
 
 void KeplerCompute::CallMultiMethod(Core::System& system, u32 method, const u32* base_start, u32 amount, u32 methods_pending) {
+    if (method >= MACRO_REGISTERS_START && is_ampere) {
+        ProcessMacro(system, method, base_start, amount, amount == methods_pending);
+        return;
+    }
     switch (method) {
     case KEPLER_COMPUTE_REG_INDEX(data_upload):
         upload_address = current_dma_segment;
@@ -152,6 +228,30 @@ void KeplerCompute::CallMultiMethod(Core::System& system, u32 method, const u32*
         }
         break;
     }
+}
+
+void KeplerCompute::ProcessMacro(Core::System& system, u32 method, const u32* base_start, u32 amount,
+                                 bool is_last_call) {
+    if (executing_macro == 0) {
+        if ((method - MACRO_REGISTERS_START) % 2 != 0) {
+            LOG_ERROR(HW_GPU, "Compute macro data {:#x} without a macro call", method * sizeof(u32));
+            return;
+        }
+        executing_macro = method;
+    }
+    macro_params.insert(macro_params.end(), base_start, base_start + amount);
+    if (!is_last_call) {
+        return;
+    }
+    const u32 entry = ((executing_macro - MACRO_REGISTERS_START) >> 1) %
+                      static_cast<u32>(MacroPositions().size());
+    executing_macro = 0;
+    ConsumeSink(system);
+    ComputeMacroHost host{system, *this, memory_manager};
+    if (!TuringMacro().Execute(MacroPositions()[entry], macro_params, host)) {
+        LOG_ERROR(HW_GPU, "Compute macro {:#x} at {:#x} failed", entry, MacroPositions()[entry]);
+    }
+    macro_params.clear();
 }
 
 void KeplerCompute::ProcessLaunch() {

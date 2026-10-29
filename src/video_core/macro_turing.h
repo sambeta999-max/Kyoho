@@ -76,12 +76,11 @@ private:
 };
 
 /// Macros shared by the channels of a TSG: NVN uploads them once for all of its channels. The 3D
-/// and compute classes each have an instruction RAM and a table of macro start positions.
+/// and compute classes share one instruction RAM and table of macro start positions: Welcome Tour
+/// calls on its compute subchannel the macros it uploaded through the 3D class.
 struct NativeMacroContext {
     TuringMacroEngine engine;
     std::array<u32, 0x80> positions{};
-    TuringMacroEngine compute_engine;
-    std::array<u32, 0x80> compute_positions{};
 };
 
 } // namespace Tegra

@@ -8,6 +8,7 @@
 
 #include <array>
 #include <cstddef>
+#include <memory>
 #include <optional>
 #include <unordered_map>
 #include <utility>
@@ -17,6 +18,7 @@
 #include "common/common_types.h"
 #include "video_core/engines/engine_interface.h"
 #include "video_core/engines/engine_upload.h"
+#include "video_core/macro_turing.h"
 #include "video_core/textures/texture.h"
 
 namespace Core {
@@ -58,7 +60,8 @@ public:
     static constexpr std::size_t NumConstBuffers = 8;
 
     struct Regs {
-        static constexpr std::size_t NUM_REGS = 0xCF8;
+        // Up to the macro calls, which leaves room for SET_MME_SHADOW_SCRATCH of AMPERE_COMPUTE_B
+        static constexpr std::size_t NUM_REGS = 0xE00;
 
         union {
             struct {
@@ -123,7 +126,7 @@ public:
 
                 u32 tex_cb_index;
 
-                INSERT_PADDING_WORDS_NOINIT(0x374);
+                INSERT_PADDING_WORDS_NOINIT(0x47C);
             };
             std::array<u32, NUM_REGS> reg_array;
         };
@@ -224,6 +227,11 @@ public:
         return is_ampere;
     }
 
+    /// Uses the macros of the TSG, which the 3D and compute classes share
+    void SetNativeMacroContext(std::shared_ptr<NativeMacroContext> context) {
+        native_macro_context = std::move(context);
+    }
+
     /// Base address and start offset of the program of the current launch
     [[nodiscard]] std::pair<GPUVAddr, u32> ShaderProgramLocation() const {
         if (is_ampere) {
@@ -242,6 +250,17 @@ private:
     void ExecuteQmd(const QmdV3& qmd);
 
     void ConsumeSinkImpl(Core::System& system) override;
+
+    /// Collects the parameters of a CALL_MME_MACRO and runs it after the last one
+    void ProcessMacro(Core::System& system, u32 method, const u32* base_start, u32 amount,
+                      bool is_last_call);
+
+    TuringMacroEngine& TuringMacro() {
+        return native_macro_context ? native_macro_context->engine : turing_macro;
+    }
+    std::array<u32, 0x80>& MacroPositions() {
+        return native_macro_context ? native_macro_context->positions : macro_positions;
+    }
 
     /// Retrieves information about a specific TIC entry from the TIC buffer.
     Texture::TICEntry GetTICEntry(u32 tic_index) const;
@@ -276,6 +295,15 @@ private:
         bool scheduled{};
     };
     std::unordered_map<GPUVAddr, QmdState> qmd_states;
+
+    /// Macro engine of AMPERE_COMPUTE_B, used when the channel has no TSG context
+    TuringMacroEngine turing_macro;
+    std::array<u32, 0x80> macro_positions{};
+    u32 macro_position_pointer{};
+    std::shared_ptr<NativeMacroContext> native_macro_context;
+    /// CALL_MME_MACRO method being fed parameters, or 0
+    u32 executing_macro{};
+    std::vector<u32> macro_params;
 };
 
 #define ASSERT_REG_POSITION(field_name, position)                                                  \

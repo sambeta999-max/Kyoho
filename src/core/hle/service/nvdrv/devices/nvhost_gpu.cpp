@@ -539,6 +539,7 @@ NvResult nvhost_gpu::BindToTsg(DeviceFD group, Kernel::KProcess* process, std::s
         channel_state->native_macro_context = std::move(macros);
         if (channel_state->payload) {
             channel_state->payload->maxwell_3d.SetNativeMacroContext(channel_state->native_macro_context);
+            channel_state->payload->kepler_compute.SetNativeMacroContext(channel_state->native_macro_context);
         }
     }
     tsg_group = group;
