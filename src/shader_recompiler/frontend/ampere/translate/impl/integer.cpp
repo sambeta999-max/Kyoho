@@ -164,12 +164,22 @@ void TranslatorVisitor::UIADD3(Instruction insn) {
 }
 
 void TranslatorVisitor::IMAD(Instruction insn) {
-    if (insn.Bit(74) || insn.Bits(81, 3) != PT) {
-        throw NotImplementedException("IMAD with carry");
+    if (insn.Bits(81, 3) != PT) {
+        throw NotImplementedException("IMAD with carry output");
+    }
+    // .X (bit 74) adds the carry predicate at bits 87-89, negated by bit 90, as in IADD3.
+    // The compiler pairs it with an IADD3 carry output for the high word of 64-bit sums.
+    const bool extended{insn.Bit(74)};
+    if (extended && NegC(insn)) {
+        throw NotImplementedException("IMAD.X with a negated addend");
     }
     const IR::U32 product{ir.IMul(SrcA(insn), SrcB(insn))};
     const IR::U32 addend{NegC(insn) ? IR::U32{ir.INeg(SrcC(insn))} : SrcC(insn)};
-    X(Reg(insn.Dest()), ir.IAdd(product, addend));
+    IR::U32 result{ir.IAdd(product, addend)};
+    if (extended) {
+        result = ir.IAdd(result, PredicateBit(ir, P(insn.Bits(87, 3), insn.Bit(90))));
+    }
+    X(Reg(insn.Dest()), result);
 }
 
 void TranslatorVisitor::IMAD_WIDE(Instruction insn) {

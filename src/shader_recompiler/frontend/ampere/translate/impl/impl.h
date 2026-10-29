@@ -45,6 +45,7 @@ struct TranslatorVisitor {
 
     // Conversion
     void F2F(Instruction insn);
+    void FRND(Instruction insn);
     void F2I(Instruction insn);
     void I2F(Instruction insn);
     void I2FP(Instruction insn);

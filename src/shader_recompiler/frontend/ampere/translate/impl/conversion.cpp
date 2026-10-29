@@ -71,6 +71,32 @@ void TranslatorVisitor::F2F(Instruction insn) {
     }
 }
 
+// Rounds to an integral value in the source format. The rounding mode at [78..80) and FTZ at bit
+// 80 are those of F2F, checked with nvdisasm.
+void TranslatorVisitor::FRND(Instruction insn) {
+    if (DestBits(insn) != 32 || SrcBits(insn) != 32) {
+        throw NotImplementedException("FRND of {} to {} bits", SrcBits(insn), DestBits(insn));
+    }
+    const IR::FpControl control{.no_contraction = true, .fmz_mode = Ftz(insn)};
+    const IR::F32 value{FloatSrcB(insn)};
+    IR::F32 result;
+    switch (insn.Bits(78, 2)) {
+    case 0:
+        result = IR::F32{ir.FPRoundEven(value, control)};
+        break;
+    case 1:
+        result = IR::F32{ir.FPFloor(value, control)};
+        break;
+    case 2:
+        result = IR::F32{ir.FPCeil(value, control)};
+        break;
+    default:
+        result = IR::F32{ir.FPTrunc(value, control)};
+        break;
+    }
+    F(Reg(insn.Dest()), result);
+}
+
 void TranslatorVisitor::F2I(Instruction insn) {
     const u32 bits{DestBits(insn)};
     if (bits > 32) {

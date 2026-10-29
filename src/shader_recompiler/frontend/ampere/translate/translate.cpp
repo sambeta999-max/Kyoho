@@ -49,6 +49,8 @@ void Dispatch(TranslatorVisitor& v, Opcode opcode, Instruction insn) {
         return v.LEA(insn);
     case Opcode::F2F:
         return v.F2F(insn);
+    case Opcode::FRND:
+        return v.FRND(insn);
     case Opcode::F2I:
         return v.F2I(insn);
     case Opcode::I2F:

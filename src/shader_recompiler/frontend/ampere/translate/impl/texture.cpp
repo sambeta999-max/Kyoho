@@ -300,29 +300,44 @@ void TranslatorVisitor::TLD(Instruction insn) {
 
 void TranslatorVisitor::TLD4(Instruction insn) {
     const Dim dim{GetDim(insn)};
+    // 1 is one offset for the footprint (AOFFI), 2 one offset per gathered texel (PTP)
     const u64 offset_mode{insn.Bits(76, 2)};
-    if (offset_mode > 1) {
-        throw NotImplementedException("TLD4 per-pixel offsets");
+    if (offset_mode > 2) {
+        throw NotImplementedException("TLD4 offset mode {}", offset_mode);
     }
     const bool bindless{IsBindless(insn)};
     const bool aoffi{offset_mode == 1};
+    const bool ptp{offset_mode == 2};
     const bool dc{insn.Bit(78)};
     const u32 src0_count{(IsArray(dim) ? 1u : 0u) + NumCoords(dim)};
-    const u32 src1_count{(bindless ? 1u : 0u) + (aoffi ? 1u : 0u) + (dc ? 1u : 0u)};
+    const u32 src1_count{(bindless ? 1u : 0u) + (aoffi ? 1u : 0u) + (ptp ? 2u : 0u) +
+                         (dc ? 1u : 0u)};
     Sources src{insn, src0_count, src1_count, insn.Bit(60)};
 
     const IR::Value coords{MakeCoords(*this, src, dim, false)};
     const IR::U32 handle{bindless ? X(src.Next()) : CbufHandle(*this, insn)};
     IR::Value offset;
+    IR::Value offset2;
     if (aoffi) {
         offset = MakeOffset(*this, X(src.Next()), dim, 8, 8);
+    } else if (ptp) {
+        // Two words of signed 6-bit x, y byte pairs: texels 0 and 1, then texels 2 and 3, as
+        // in the Maxwell encoding
+        const auto texel_offsets{[&](const IR::U32& packed) {
+            const auto field{[&](u32 byte) {
+                return ir.BitFieldExtract(packed, ir.Imm32(byte * 8), ir.Imm32(6), true);
+            }};
+            return ir.CompositeConstruct(field(0), field(1), field(2), field(3));
+        }};
+        offset = texel_offsets(X(src.Next()));
+        offset2 = texel_offsets(X(src.Next()));
     }
     IR::TextureInstInfo info{};
     info.type.Assign(GetType(dim));
     info.is_depth.Assign(dc ? 1 : 0);
     info.gather_component.Assign(static_cast<u32>(insn.Bits(87, 2)));
-    const IR::Value result{dc ? ir.ImageGatherDref(handle, coords, offset, {}, F(src.Next()), info)
-                              : ir.ImageGather(handle, coords, offset, {}, info)};
+    const IR::Value result{dc ? ir.ImageGatherDref(handle, coords, offset, offset2, F(src.Next()), info)
+                              : ir.ImageGather(handle, coords, offset, offset2, info)};
     WriteChannels(*this, insn, result, false, false);
     WriteSparse(*this, insn, result);
 }

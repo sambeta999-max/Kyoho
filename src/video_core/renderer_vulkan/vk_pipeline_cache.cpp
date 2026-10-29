@@ -833,6 +833,11 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         Shader::Environment& env{*envs[env_index]};
         ++env_index;
 
+        // Dump it before translation, which may fail, as for compute shaders.
+        if (Settings::values.dump_guest_shaders) {
+            env.Dump(hash, key.unique_hashes[index]);
+        }
+
         const u32 cfg_offset{env.StartAddress() + env.ProgramHeaderSize()};
         Shader::Maxwell::Flow::CFG cfg(env, pools.flow_block, cfg_offset, index == 0);
         if (!uses_vertex_a || index != 1) {
@@ -848,10 +853,6 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         if (device.GetDriverID() != VK_DRIVER_ID_NVIDIA_PROPRIETARY && Shader::Optimization::HasBrokenPattern(programs[index])) {
             LOG_WARNING(Render_Vulkan, "0x{:016x}: Skipping shader with known issues", key.unique_hashes[index]);
             return nullptr;
-        }
-
-        if (Settings::values.dump_guest_shaders) {
-            env.Dump(hash, key.unique_hashes[index]);
         }
 
         if (programs[index].info.requires_layer_emulation) {
