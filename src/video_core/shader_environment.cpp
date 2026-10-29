@@ -257,6 +257,10 @@ std::optional<u64> GenericEnvironment::TryFindSize() {
 
     static constexpr u64 EXIT_VALUE = 0xE30000000007000FULL;
 
+    // SM86 BRA to itself, the low word and the upper bits of the offset in the high word
+    static constexpr u64 AMPERE_SELF_BRANCH_LO = 0xFFFFFFF000007947ULL;
+    static constexpr u64 AMPERE_SELF_BRANCH_HI_MASK = 0x3FFFFULL;
+
     code.resize(MAXIMUM_SIZE / INST_SIZE);
 
     GPUVAddr guest_addr{program_base + start_address};
@@ -265,6 +269,21 @@ std::optional<u64> GenericEnvironment::TryFindSize() {
     while (size <= MAXIMUM_SIZE) {
         u64* const data = code.data() + offset / INST_SIZE;
         gpu_memory->ReadBlock(guest_addr, data, BLOCK_SIZE);
+        if (is_ampere) {
+            for (size_t index = 0; index < BLOCK_SIZE; index += 2 * INST_SIZE) {
+                const u64 lo = data[index / INST_SIZE];
+                const u64 hi = data[index / INST_SIZE + 1];
+                if (lo == AMPERE_SELF_BRANCH_LO &&
+                    (hi & AMPERE_SELF_BRANCH_HI_MASK) == AMPERE_SELF_BRANCH_HI_MASK) {
+                    // Both words of the branch stay in the cached range
+                    return offset + index + INST_SIZE;
+                }
+            }
+            guest_addr += BLOCK_SIZE;
+            size += BLOCK_SIZE;
+            offset += BLOCK_SIZE;
+            continue;
+        }
         for (size_t index = 0; index < BLOCK_SIZE; index += INST_SIZE) {
             const u64 inst = data[index / INST_SIZE];
             if (inst == SELF_BRANCH_A || inst == SELF_BRANCH_B) {
@@ -296,6 +315,7 @@ GraphicsEnvironment::GraphicsEnvironment(Tegra::Engines::Maxwell3D& maxwell3d_,
                                          Maxwell::ShaderType program, GPUVAddr program_base_,
                                          u32 start_address_)
     : GenericEnvironment{gpu_memory_, program_base_, start_address_}, maxwell3d{&maxwell3d_} {
+    is_ampere = maxwell3d->IsAmpere();
     gpu_memory->ReadBlock(program_base + start_address, &sph, sizeof(sph));
     initial_offset = sizeof(sph);
     gp_passthrough_mask = maxwell3d->regs.post_vtg_shader_attrib_skip_mask;
@@ -411,6 +431,7 @@ ComputeEnvironment::ComputeEnvironment(Tegra::Engines::KeplerCompute& kepler_com
     : GenericEnvironment{gpu_memory_, program_base_, start_address_}, kepler_compute{
                                                                           &kepler_compute_} {
     const auto& qmd{kepler_compute->launch_description};
+    is_ampere = kepler_compute->IsAmpere();
     stage = Shader::Stage::Compute;
     local_memory_size = qmd.local_pos_alloc + qmd.local_crs_alloc;
     texture_bound = kepler_compute->regs.tex_cb_index;
@@ -594,6 +615,10 @@ std::optional<Shader::ReplaceConstant> FileEnvironment::GetReplaceConstBuffer(u3
 
 void SerializePipeline(std::span<const char> key, std::span<const GenericEnvironment* const> envs,
                        const std::filesystem::path& filename, u32 cache_version) try {
+    // The cache format has no instruction set field, so Ampere programs are not stored
+    if (std::ranges::any_of(envs, [](const GenericEnvironment* env) { return env->IsAmpere(); })) {
+        return;
+    }
     std::ofstream file(filename, std::ios::binary | std::ios::ate | std::ios::app);
     file.exceptions(std::ifstream::failbit);
     if (!file.is_open()) {

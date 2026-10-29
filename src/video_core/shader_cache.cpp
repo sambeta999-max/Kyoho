@@ -50,20 +50,19 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) {
     }
     dirty[VideoCommon::Dirty::Shaders] = false;
 
-    const GPUVAddr base_addr{maxwell3d->regs.program_region.Address()};
     for (size_t index = 0; index < Tegra::Engines::Maxwell3D::Regs::MaxShaderProgram; ++index) {
         if (!maxwell3d->regs.IsShaderConfigEnabled(index)) {
             unique_hashes[index] = 0;
             continue;
         }
-        const auto& shader_config{maxwell3d->regs.pipelines[index]};
         const auto program{static_cast<Tegra::Engines::Maxwell3D::Regs::ShaderType>(index)};
         if (program == Tegra::Engines::Maxwell3D::Regs::ShaderType::Pixel &&
             !maxwell3d->regs.rasterize_enable) {
             unique_hashes[index] = 0;
             continue;
         }
-        const GPUVAddr shader_addr{base_addr + shader_config.offset};
+        const auto [base_addr, start_address]{maxwell3d->ShaderProgramLocation(index)};
+        const GPUVAddr shader_addr{base_addr + start_address};
         const std::optional<VAddr> cpu_shader_addr{gpu_memory->GpuToCpuAddress(shader_addr)};
         if (!cpu_shader_addr) {
             LOG_ERROR(HW_GPU, "Invalid GPU address for shader {:#016x}", shader_addr);
@@ -72,7 +71,6 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) {
         }
         const ShaderInfo* shader_info{TryGet(*cpu_shader_addr)};
         if (!shader_info) {
-            const u32 start_address{shader_config.offset};
             GraphicsEnvironment env{*maxwell3d, *gpu_memory, program, base_addr, start_address};
             shader_info = MakeShaderInfo(env, *cpu_shader_addr);
         }
@@ -102,14 +100,13 @@ const ShaderInfo* ShaderCache::ComputeShader() {
 void ShaderCache::GetGraphicsEnvironments(GraphicsEnvironments& result,
                                           const std::array<u64, NUM_PROGRAMS>& unique_hashes) {
     size_t env_index{};
-    const GPUVAddr base_addr{maxwell3d->regs.program_region.Address()};
     for (size_t index = 0; index < NUM_PROGRAMS; ++index) {
         if (unique_hashes[index] == 0) {
             continue;
         }
         const auto program{static_cast<Tegra::Engines::Maxwell3D::Regs::ShaderType>(index)};
         auto& env{result.envs[index]};
-        const u32 start_address{maxwell3d->regs.pipelines[index].offset};
+        const auto [base_addr, start_address]{maxwell3d->ShaderProgramLocation(index)};
         env = GraphicsEnvironment{*maxwell3d, *gpu_memory, program, base_addr, start_address};
         env.SetCachedSize(shader_infos[index]->size_bytes);
         result.env_ptrs[env_index++] = &env;

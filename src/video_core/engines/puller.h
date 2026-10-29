@@ -29,6 +29,9 @@ enum class EngineID {
     KEPLER_COMPUTE_B = 0xB1C0,
     KEPLER_INLINE_TO_MEMORY_B = 0xA140,
     MAXWELL_DMA_COPY_A = 0xB0B5,
+    AMPERE_B = 0xC797,
+    AMPERE_COMPUTE_B = 0xC7C0,
+    AMPERE_DMA_COPY_B = 0xC7B5,
 };
 
 namespace Control {

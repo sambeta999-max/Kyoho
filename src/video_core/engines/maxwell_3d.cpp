@@ -302,6 +302,55 @@ void Maxwell3D::ProcessDirtyRegisters(u32 method, u32 argument) {
     regs.reg_array[method] = argument;
     for (auto const& table : dirty.tables)
         dirty.flags[table[method]] = true;
+    if (is_ampere) {
+        SyncAmpereBufferLimits(method);
+    }
+}
+
+void Maxwell3D::SyncAmpereBufferLimits(u32 method) {
+    // AMPERE_B sets index and vertex buffer sizes (bits 39:32 in A, 31:0 in B) instead of
+    // limit addresses. The limit registers are unused there, so they are kept at start + size.
+    static constexpr u32 INDEX_BUFFER_SIZE_A = 0x238 / sizeof(u32);
+    static constexpr u32 VERTEX_STREAM_SIZE_A = 0x600 / sizeof(u32);
+    static constexpr u32 VERTEX_STREAM_SIZE_WORDS = 2;
+    static constexpr u32 VERTEX_STREAM_WORDS = sizeof(Regs::VertexStream) / sizeof(u32);
+    static constexpr u32 VERTEX_STREAMS = MAXWELL3D_REG_INDEX(vertex_streams);
+    static constexpr u32 VERTEX_STREAM_LIMITS = MAXWELL3D_REG_INDEX(vertex_stream_limits);
+    const auto size_at{[this](u32 index) {
+        return (u64{regs.reg_array[index] & 0xFF} << 32) | regs.reg_array[index + 1];
+    }};
+    const auto mark_dirty{[this](u32 index) {
+        for (auto const& table : dirty.tables) {
+            dirty.flags[table[index]] = true;
+        }
+    }};
+    if (method == INDEX_BUFFER_SIZE_A || method == INDEX_BUFFER_SIZE_A + 1 ||
+        method == MAXWELL3D_REG_INDEX(index_buffer.start_addr_high) ||
+        method == MAXWELL3D_REG_INDEX(index_buffer.start_addr_low)) {
+        const GPUVAddr end{regs.index_buffer.StartAddress() + size_at(INDEX_BUFFER_SIZE_A)};
+        regs.index_buffer.limit_addr_high = static_cast<u32>(end >> 32);
+        regs.index_buffer.limit_addr_low = static_cast<u32>(end);
+        mark_dirty(MAXWELL3D_REG_INDEX(index_buffer.limit_addr_high));
+        return;
+    }
+    std::optional<u32> stream;
+    if (method >= VERTEX_STREAM_SIZE_A &&
+        method < VERTEX_STREAM_SIZE_A + Regs::NumVertexArrays * VERTEX_STREAM_SIZE_WORDS) {
+        stream = (method - VERTEX_STREAM_SIZE_A) / VERTEX_STREAM_SIZE_WORDS;
+    } else if (method >= VERTEX_STREAMS &&
+               method < VERTEX_STREAMS + Regs::NumVertexArrays * VERTEX_STREAM_WORDS) {
+        stream = (method - VERTEX_STREAMS) / VERTEX_STREAM_WORDS;
+    }
+    if (!stream) {
+        return;
+    }
+    // Limits are inclusive; a zero size leaves an empty range
+    const u64 size{size_at(VERTEX_STREAM_SIZE_A + *stream * VERTEX_STREAM_SIZE_WORDS)};
+    const GPUVAddr limit{regs.vertex_streams[*stream].Address() + size - 1};
+    auto& stream_limit{regs.vertex_stream_limits[*stream]};
+    stream_limit.address_high = static_cast<u32>(limit >> 32);
+    stream_limit.address_low = static_cast<u32>(limit);
+    mark_dirty(VERTEX_STREAM_LIMITS + *stream * VERTEX_STREAM_SIZE_WORDS);
 }
 
 void Maxwell3D::ProcessMethodCall(u32 method, u32 argument, u32 nonshadow_argument, bool is_last_call) {

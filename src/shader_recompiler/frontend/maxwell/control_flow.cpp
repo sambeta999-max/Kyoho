@@ -14,6 +14,7 @@
 
 #include <ranges>
 #include "shader_recompiler/exception.h"
+#include "shader_recompiler/frontend/ampere/location.h"
 #include "shader_recompiler/frontend/maxwell/control_flow.h"
 #include "shader_recompiler/frontend/maxwell/decode.h"
 #include "shader_recompiler/frontend/maxwell/indirect_branch_table_track.h"
@@ -186,6 +187,12 @@ Function::Function(ObjectPool<Block>& block_pool, Location start_address)
     label.block->branch_true = nullptr;
     label.block->branch_false = nullptr;
 }
+
+CFG::CFG(Environment& env_, ObjectPool<Block>& block_pool_, u32 start_offset,
+         bool exits_to_dispatcher_)
+    : CFG(env_, block_pool_,
+          env_.IsAmpere() ? Ampere::ToLocation(start_offset) : Location{start_offset},
+          exits_to_dispatcher_, env_.IsAmpere() ? Isa::Ampere : Isa::Maxwell) {}
 
 CFG::CFG(Environment& env_, ObjectPool<Block>& block_pool_, Location start_address,
          bool exits_to_dispatcher_, Isa isa_)

@@ -18,7 +18,6 @@
 
 #include "common/common_types.h"
 #include "shader_recompiler/environment.h"
-#include "shader_recompiler/frontend/ampere/location.h"
 #include "shader_recompiler/frontend/ir/modifiers.h"
 #include "shader_recompiler/frontend/ir/program.h"
 #include "shader_recompiler/frontend/maxwell/control_flow.h"
@@ -70,6 +69,7 @@ class TestEnvironment final : public Environment {
 public:
     explicit TestEnvironment(const std::vector<Encoding>& program) {
         stage = Stage::Fragment;
+        is_ampere = true;
         sph.ps.omap.target = 0xf;
         for (const Encoding& insn : program) {
             code.push_back(insn.lo);
@@ -80,6 +80,7 @@ public:
     // Raw instruction words, as compiled for a compute kernel
     explicit TestEnvironment(std::vector<u64> words, Stage stage_) : code{std::move(words)} {
         stage = stage_;
+        is_ampere = true;
     }
 
     u64 ReadInstruction(u32 address) override {
@@ -132,8 +133,7 @@ struct Translation {
 };
 
 void Translate(Translation& t, TestEnvironment& env) {
-    Maxwell::Flow::CFG cfg{env, t.flow_pool, Ampere::ToLocation(0), false,
-                           Maxwell::Flow::Isa::Ampere};
+    Maxwell::Flow::CFG cfg{env, t.flow_pool, u32{0}};
     HostTranslateInfo host_info{};
     host_info.support_float64 = true;
     host_info.support_float16 = true;

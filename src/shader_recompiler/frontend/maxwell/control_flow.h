@@ -119,6 +119,10 @@ public:
     explicit CFG(Environment& env, ObjectPool<Block>& block_pool, Location start_address,
                  bool exits_to_dispatcher = false, Isa isa = Isa::Maxwell);
 
+    /// Graph of the program at a byte offset, in the instruction set of the environment
+    explicit CFG(Environment& env, ObjectPool<Block>& block_pool, u32 start_offset,
+                 bool exits_to_dispatcher = false);
+
     CFG& operator=(const CFG&) = delete;
     CFG(const CFG&) = delete;
 

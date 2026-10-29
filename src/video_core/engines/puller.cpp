@@ -43,12 +43,18 @@ void Puller::ProcessBindMethod(DmaPusher& dma_pusher, const MethodCall& method_c
         dma_pusher.BindSubchannel(&dma_pusher.channel_state.payload->fermi_2d, method_call.subchannel, EngineTypes::Fermi2D);
         break;
     case EngineID::MAXWELL_B:
+    case EngineID::AMPERE_B:
+        // Ampere keeps the Maxwell register file apart from a few relocated registers
+        dma_pusher.channel_state.payload->maxwell_3d.SetAmpere(engine_id == EngineID::AMPERE_B);
         dma_pusher.BindSubchannel(&dma_pusher.channel_state.payload->maxwell_3d, method_call.subchannel, EngineTypes::Maxwell3D);
         break;
     case EngineID::KEPLER_COMPUTE_B:
+    case EngineID::AMPERE_COMPUTE_B:
+        dma_pusher.channel_state.payload->kepler_compute.SetAmpere(engine_id == EngineID::AMPERE_COMPUTE_B);
         dma_pusher.BindSubchannel(&dma_pusher.channel_state.payload->kepler_compute, method_call.subchannel, EngineTypes::KeplerCompute);
         break;
     case EngineID::MAXWELL_DMA_COPY_A:
+    case EngineID::AMPERE_DMA_COPY_B:
         dma_pusher.BindSubchannel(&dma_pusher.channel_state.payload->maxwell_dma, method_call.subchannel, EngineTypes::MaxwellDMA);
         break;
     case EngineID::KEPLER_INLINE_TO_MEMORY_B:
@@ -212,12 +218,15 @@ void Puller::CallEngineMethod(DmaPusher& dma_pusher, const MethodCall& method_ca
         dma_pusher.channel_state.payload->fermi_2d.CallMethod(dma_pusher.system, method_call.method, method_call.argument, method_call.IsLastCall());
         break;
     case EngineID::MAXWELL_B:
+    case EngineID::AMPERE_B:
         dma_pusher.channel_state.payload->maxwell_3d.CallMethod(dma_pusher.system, method_call.method, method_call.argument, method_call.IsLastCall());
         break;
     case EngineID::KEPLER_COMPUTE_B:
+    case EngineID::AMPERE_COMPUTE_B:
         dma_pusher.channel_state.payload->kepler_compute.CallMethod(dma_pusher.system, method_call.method, method_call.argument, method_call.IsLastCall());
         break;
     case EngineID::MAXWELL_DMA_COPY_A:
+    case EngineID::AMPERE_DMA_COPY_B:
         dma_pusher.channel_state.payload->maxwell_dma.CallMethod(dma_pusher.system, method_call.method, method_call.argument, method_call.IsLastCall());
         break;
     case EngineID::KEPLER_INLINE_TO_MEMORY_B:
@@ -240,12 +249,15 @@ void Puller::CallEngineMultiMethod(DmaPusher& dma_pusher, u32 method, u32 subcha
         dma_pusher.channel_state.payload->fermi_2d.CallMultiMethod(dma_pusher.system, method, base_start, amount, methods_pending);
         break;
     case EngineID::MAXWELL_B:
+    case EngineID::AMPERE_B:
         dma_pusher.channel_state.payload->maxwell_3d.CallMultiMethod(dma_pusher.system, method, base_start, amount, methods_pending);
         break;
     case EngineID::KEPLER_COMPUTE_B:
+    case EngineID::AMPERE_COMPUTE_B:
         dma_pusher.channel_state.payload->kepler_compute.CallMultiMethod(dma_pusher.system, method, base_start, amount, methods_pending);
         break;
     case EngineID::MAXWELL_DMA_COPY_A:
+    case EngineID::AMPERE_DMA_COPY_B:
         dma_pusher.channel_state.payload->maxwell_dma.CallMultiMethod(dma_pusher.system, method, base_start, amount, methods_pending);
         break;
     case EngineID::KEPLER_INLINE_TO_MEMORY_B:

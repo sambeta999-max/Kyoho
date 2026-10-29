@@ -119,12 +119,18 @@ public:
         return is_proprietary_driver;
     }
 
+    /// True when the program is SM86 (Ampere) code with 128-bit instructions
+    [[nodiscard]] bool IsAmpere() const noexcept {
+        return is_ampere;
+    }
+
 protected:
     ProgramHeader sph{};
     std::array<u32, 8> gp_passthrough_mask{};
     Stage stage{};
     u32 start_address{};
     bool is_proprietary_driver{};
+    bool is_ampere{};
 public:
     ::Common::unordered_map<CbufWordKey, u32, CbufWordKeyHash> cbuf_word_cache;
     ::Common::unordered_map<HandleKey,  u32, HandleKeyHash> handle_cache;

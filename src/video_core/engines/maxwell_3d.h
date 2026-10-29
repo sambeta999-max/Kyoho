@@ -12,6 +12,7 @@
 #include <limits>
 #include <optional>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "common/assert.h"
@@ -2518,8 +2519,15 @@ public:
             u32 reservedA;
             u32 register_count;
             u32 binding_group;
-            std::array<u32, 4> reserved;
+            // Ampere replaces program_region + offset with a 40-bit address per stage
+            u32 address_high;
+            u32 address_low;
+            std::array<u32, 2> reserved;
             INSERT_PADDING_BYTES_NOINIT(0x1C);
+
+            GPUVAddr Address() const {
+                return (static_cast<GPUVAddr>(address_high & 0xFF) << 32) | address_low;
+            }
         };
         static_assert(sizeof(Pipeline) == 0x40);
 
@@ -3184,6 +3192,23 @@ public:
 
     size_t EstimateIndexBufferSize();
 
+    /// Binds the engine as AMPERE_B (0xC797) instead of MAXWELL_B
+    void SetAmpere(bool is_ampere_) {
+        is_ampere = is_ampere_;
+    }
+
+    [[nodiscard]] bool IsAmpere() const {
+        return is_ampere;
+    }
+
+    /// Base address and start offset of the program of a shader stage
+    [[nodiscard]] std::pair<GPUVAddr, u32> ShaderProgramLocation(size_t index) const {
+        if (is_ampere) {
+            return {regs.pipelines[index].Address(), 0};
+        }
+        return {regs.program_region.Address(), regs.pipelines[index].offset};
+    }
+
     /// Handles a write to the CLEAR_BUFFERS register.
     void ProcessClearBuffers(u32 layer_count);
 
@@ -3208,6 +3233,9 @@ private:
     void ConsumeSinkImpl(Core::System& system) override;
 
     void ProcessMethodCall(u32 method, u32 argument, u32 nonshadow_argument, bool is_last_call);
+
+    /// Keeps the Maxwell buffer limit registers in step with the AMPERE_B size registers
+    void SyncAmpereBufferLimits(u32 method);
 
     /// Retrieves information about a specific TIC entry from the TIC buffer.
     Texture::TICEntry GetTICEntry(u32 tic_index) const;
@@ -3269,6 +3297,7 @@ private:
     Upload::State upload_state;
 
     bool execute_on{true};
+    bool is_ampere{};
 
     std::vector<std::pair<GPUVAddr, size_t>> macro_segments;
     bool current_macro_dirty{};

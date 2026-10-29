@@ -211,6 +211,15 @@ public:
         return indirect_compute;
     }
 
+    /// Binds the engine as AMPERE_COMPUTE_B (0xC7C0) instead of KEPLER_COMPUTE_B
+    void SetAmpere(bool is_ampere_) {
+        is_ampere = is_ampere_;
+    }
+
+    [[nodiscard]] bool IsAmpere() const {
+        return is_ampere;
+    }
+
 private:
     void ProcessLaunch();
 
@@ -236,6 +245,7 @@ private:
     };
     std::vector<UploadInfo> uploads;
     std::optional<GPUVAddr> indirect_compute{};
+    bool is_ampere{};
 };
 
 #define ASSERT_REG_POSITION(field_name, position)                                                  \
