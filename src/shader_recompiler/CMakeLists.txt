@@ -58,6 +58,24 @@ add_library(shader_recompiler STATIC
     frontend/ir/type.h
     frontend/ir/value.cpp
     frontend/ir/value.h
+    frontend/ampere/ampere.inc
+    frontend/ampere/control_flow.cpp
+    frontend/ampere/decode.cpp
+    frontend/ampere/decode.h
+    frontend/ampere/instruction.h
+    frontend/ampere/location.h
+    frontend/ampere/opcodes.cpp
+    frontend/ampere/opcodes.h
+    frontend/ampere/translate/impl/control.cpp
+    frontend/ampere/translate/impl/conversion.cpp
+    frontend/ampere/translate/impl/floating_point.cpp
+    frontend/ampere/translate/impl/impl.cpp
+    frontend/ampere/translate/impl/impl.h
+    frontend/ampere/translate/impl/integer.cpp
+    frontend/ampere/translate/impl/memory.cpp
+    frontend/ampere/translate/impl/move.cpp
+    frontend/ampere/translate/translate.cpp
+    frontend/ampere/translate/translate.h
     frontend/maxwell/control_flow.cpp
     frontend/maxwell/control_flow.h
     frontend/maxwell/decode.cpp

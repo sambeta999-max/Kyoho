@@ -116,7 +116,7 @@ void IREmitter::SetReg(IR::Reg reg, const U32& value) {
 }
 
 U1 IREmitter::GetPred(IR::Pred pred, bool is_negated) {
-    if (pred == Pred::PT) {
+    if (IsTrue(pred)) {
         return Imm1(!is_negated);
     }
     const U1 value{Inst<U1>(Opcode::GetPred, pred)};
@@ -128,7 +128,7 @@ U1 IREmitter::GetPred(IR::Pred pred, bool is_negated) {
 }
 
 void IREmitter::SetPred(IR::Pred pred, const U1& value) {
-    if (pred != IR::Pred::PT) {
+    if (!IR::IsTrue(pred)) {
         Inst(Opcode::SetPred, pred, value);
     }
 }

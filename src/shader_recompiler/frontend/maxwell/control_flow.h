@@ -25,6 +25,12 @@ struct Block;
 
 using FunctionId = size_t;
 
+/// Instruction set the graph is built from
+enum class Isa {
+    Maxwell,
+    Ampere,
+};
+
 enum class EndClass {
     Branch,
     IndirectBranch,
@@ -111,7 +117,7 @@ class CFG {
 
 public:
     explicit CFG(Environment& env, ObjectPool<Block>& block_pool, Location start_address,
-                 bool exits_to_dispatcher = false);
+                 bool exits_to_dispatcher = false, Isa isa = Isa::Maxwell);
 
     CFG& operator=(const CFG&) = delete;
     CFG(const CFG&) = delete;
@@ -132,6 +138,10 @@ public:
         return exits_to_dispatcher;
     }
 
+    [[nodiscard]] Isa GetIsa() const {
+        return isa;
+    }
+
 private:
     void AnalyzeLabel(FunctionId function_id, Label& label);
 
@@ -140,6 +150,9 @@ private:
     bool InspectVisitedBlocks(FunctionId function_id, const Label& label);
 
     AnalysisState AnalyzeInst(Block* block, FunctionId function_id, Location pc);
+
+    /// Defined in frontend/ampere/control_flow.cpp
+    AnalysisState AnalyzeInstAmpere(Block* block, FunctionId function_id, Location pc);
 
     void AnalyzeCondInst(Block* block, FunctionId function_id, Location pc, EndClass insn_end_class,
                          IR::Condition cond);
@@ -162,6 +175,7 @@ private:
     boost::container::small_vector<Function, 1> functions;
     Location program_start;
     bool exits_to_dispatcher{};
+    Isa isa{};
     Block* dispatch_block{};
 };
 

@@ -188,9 +188,9 @@ Function::Function(ObjectPool<Block>& block_pool, Location start_address)
 }
 
 CFG::CFG(Environment& env_, ObjectPool<Block>& block_pool_, Location start_address,
-         bool exits_to_dispatcher_)
-    : env{env_}, block_pool{block_pool_}, program_start{start_address}, exits_to_dispatcher{
-                                                                            exits_to_dispatcher_} {
+         bool exits_to_dispatcher_, Isa isa_)
+    : env{env_}, block_pool{block_pool_}, program_start{start_address},
+      exits_to_dispatcher{exits_to_dispatcher_}, isa{isa_} {
     if (exits_to_dispatcher) {
         dispatch_block = block_pool.Create(Block{});
         dispatch_block->begin = {};
@@ -234,7 +234,9 @@ void CFG::AnalyzeLabel(FunctionId function_id, Label& label) {
     // Analyze instructions until it reaches an already visited block or there's a branch
     bool is_branch{false};
     while (!next || pc < next->begin) {
-        is_branch = AnalyzeInst(block, function_id, pc) == AnalysisState::Branch;
+        const AnalysisState state{isa == Isa::Ampere ? AnalyzeInstAmpere(block, function_id, pc)
+                                                     : AnalyzeInst(block, function_id, pc)};
+        is_branch = state == AnalysisState::Branch;
         if (is_branch) {
             break;
         }

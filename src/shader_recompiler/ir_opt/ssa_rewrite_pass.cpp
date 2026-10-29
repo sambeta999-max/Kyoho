@@ -114,7 +114,7 @@ struct DefTable {
         overflow_flag.insert_or_assign(block, value);
     }
 
-    std::array<ValueMap, IR::NUM_USER_PREDS> preds;
+    std::array<ValueMap, IR::NUM_PREDS> preds;
     // TODO: Requires stable iterators
     std::unordered_map<u32, ValueMap> goto_vars;
     ValueMap indirect_branch_var;
@@ -308,12 +308,12 @@ private:
 void VisitInst(Pass& pass, IR::Block* block, IR::Inst& inst) {
     switch (inst.GetOpcode()) {
     case IR::Opcode::SetRegister:
-        if (const IR::Reg reg{inst.Arg(0).Reg()}; reg != IR::Reg::RZ) {
+        if (const IR::Reg reg{inst.Arg(0).Reg()}; !IR::IsZero(reg)) {
             pass.WriteVariable(reg, block, inst.Arg(1));
         }
         break;
     case IR::Opcode::SetPred:
-        if (const IR::Pred pred{inst.Arg(0).Pred()}; pred != IR::Pred::PT) {
+        if (const IR::Pred pred{inst.Arg(0).Pred()}; !IR::IsTrue(pred)) {
             pass.WriteVariable(pred, block, inst.Arg(1));
         }
         break;
@@ -336,12 +336,12 @@ void VisitInst(Pass& pass, IR::Block* block, IR::Inst& inst) {
         pass.WriteVariable(OverflowFlagTag{}, block, inst.Arg(0));
         break;
     case IR::Opcode::GetRegister:
-        if (const IR::Reg reg{inst.Arg(0).Reg()}; reg != IR::Reg::RZ) {
+        if (const IR::Reg reg{inst.Arg(0).Reg()}; !IR::IsZero(reg)) {
             inst.ReplaceUsesWith(pass.ReadVariable(reg, block));
         }
         break;
     case IR::Opcode::GetPred:
-        if (const IR::Pred pred{inst.Arg(0).Pred()}; pred != IR::Pred::PT) {
+        if (const IR::Pred pred{inst.Arg(0).Pred()}; !IR::IsTrue(pred)) {
             inst.ReplaceUsesWith(pass.ReadVariable(pred, block));
         }
         break;

@@ -3,6 +3,7 @@
 
 #include "common/bit_field.h"
 #include "common/common_types.h"
+#include "shader_recompiler/frontend/maxwell/translate/impl/common_funcs.h"
 #include "shader_recompiler/frontend/maxwell/translate/impl/impl.h"
 
 namespace Shader::Maxwell {
@@ -166,6 +167,10 @@ enum class SpecialRegister : u64 {
     }
 }
 } // Anonymous namespace
+
+IR::U32 ReadSpecialRegister(IR::IREmitter& ir, u32 index) {
+    return Read(ir, static_cast<SpecialRegister>(index));
+}
 
 void TranslatorVisitor::S2R(u64 insn) {
     union {

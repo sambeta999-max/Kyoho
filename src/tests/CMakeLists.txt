@@ -18,6 +18,11 @@ add_executable(tests
     common/unique_function.cpp
     core/core_timing.cpp
     core/internal_network/network.cpp
+    shader_recompiler/ampere_decode.cpp
+    shader_recompiler/ampere_decode_compiler_vectors.inc
+    shader_recompiler/ampere_decode_vectors.inc
+    shader_recompiler/ampere_hardware_vectors.inc
+    shader_recompiler/ampere_translate.cpp
     video_core/memory_tracker.cpp
     input_common/calibration_configuration_job.cpp
 )

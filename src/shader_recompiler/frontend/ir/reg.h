@@ -267,22 +267,104 @@ enum class Reg : u64 {
     R253,
     R254,
     RZ,
+    // Uniform datapath registers (SM75+)
+    UR0,
+    UR1,
+    UR2,
+    UR3,
+    UR4,
+    UR5,
+    UR6,
+    UR7,
+    UR8,
+    UR9,
+    UR10,
+    UR11,
+    UR12,
+    UR13,
+    UR14,
+    UR15,
+    UR16,
+    UR17,
+    UR18,
+    UR19,
+    UR20,
+    UR21,
+    UR22,
+    UR23,
+    UR24,
+    UR25,
+    UR26,
+    UR27,
+    UR28,
+    UR29,
+    UR30,
+    UR31,
+    UR32,
+    UR33,
+    UR34,
+    UR35,
+    UR36,
+    UR37,
+    UR38,
+    UR39,
+    UR40,
+    UR41,
+    UR42,
+    UR43,
+    UR44,
+    UR45,
+    UR46,
+    UR47,
+    UR48,
+    UR49,
+    UR50,
+    UR51,
+    UR52,
+    UR53,
+    UR54,
+    UR55,
+    UR56,
+    UR57,
+    UR58,
+    UR59,
+    UR60,
+    UR61,
+    UR62,
+    URZ,
 };
 static_assert(static_cast<int>(Reg::RZ) == 255);
+static_assert(static_cast<int>(Reg::URZ) == 319);
 
 constexpr size_t NUM_USER_REGS = 255;
-constexpr size_t NUM_REGS = 256;
+constexpr size_t NUM_USER_UNIFORM_REGS = 63;
+constexpr size_t NUM_REGS = 320;
+
+[[nodiscard]] constexpr bool IsUniform(Reg reg) noexcept {
+    return reg > Reg::RZ;
+}
+
+[[nodiscard]] constexpr bool IsZero(Reg reg) noexcept {
+    return reg == Reg::RZ || reg == Reg::URZ;
+}
+
+/// Uniform register from its encoded index, where 63 is URZ
+[[nodiscard]] constexpr Reg UniformReg(u32 index) noexcept {
+    return static_cast<Reg>(static_cast<u32>(Reg::UR0) + (index < 63 ? index : 63));
+}
 
 [[nodiscard]] constexpr Reg operator+(Reg reg, int num) {
-    if (reg == Reg::RZ) {
-        // Adding or subtracting registers from RZ yields RZ
-        return Reg::RZ;
+    if (IsZero(reg)) {
+        // Adding or subtracting registers from RZ or URZ yields the same zero register
+        return reg;
     }
+    const int first{IsUniform(reg) ? static_cast<int>(Reg::UR0) : 0};
+    const int zero{static_cast<int>(IsUniform(reg) ? Reg::URZ : Reg::RZ)};
     const int result{static_cast<int>(reg) + num};
-    if (result >= static_cast<int>(Reg::RZ)) {
+    if (result >= zero) {
         throw LogicError("Overflow on register arithmetic");
     }
-    if (result < 0) {
+    if (result < first) {
         throw LogicError("Underflow on register arithmetic");
     }
     return static_cast<Reg>(result);
@@ -308,7 +390,8 @@ constexpr Reg operator++(Reg& reg, int) {
 }
 
 [[nodiscard]] constexpr bool IsAligned(Reg reg, size_t align) {
-    return RegIndex(reg) % align == 0 || reg == Reg::RZ;
+    const size_t index{IsUniform(reg) ? RegIndex(reg) - RegIndex(Reg::UR0) : RegIndex(reg)};
+    return index % align == 0 || IsZero(reg);
 }
 
 } // namespace Shader::IR
@@ -322,8 +405,13 @@ struct fmt::formatter<Shader::IR::Reg> {
     auto format(const Shader::IR::Reg& reg, FormatContext& ctx) const {
         if (reg == Shader::IR::Reg::RZ) {
             return fmt::format_to(ctx.out(), "RZ");
+        } else if (reg == Shader::IR::Reg::URZ) {
+            return fmt::format_to(ctx.out(), "URZ");
         } else if (static_cast<int>(reg) >= 0 && static_cast<int>(reg) < 255) {
             return fmt::format_to(ctx.out(), "R{}", static_cast<int>(reg));
+        } else if (Shader::IR::IsUniform(reg)) {
+            return fmt::format_to(ctx.out(), "UR{}",
+                                  static_cast<int>(reg) - static_cast<int>(Shader::IR::Reg::UR0));
         } else {
             throw Shader::LogicError("Invalid register with raw value {}", static_cast<int>(reg));
         }

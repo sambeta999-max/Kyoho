@@ -23,4 +23,11 @@ namespace Shader::Maxwell {
 [[nodiscard]] IR::U1 FloatingPointCompare(IR::IREmitter& ir, const IR::F16F32F64& operand_1,
                                           const IR::F16F32F64& operand_2, FPCompareOp compare_op,
                                           IR::FpControl control = {});
+
+/// Value of the special register with the given hardware index
+[[nodiscard]] IR::U32 ReadSpecialRegister(IR::IREmitter& ir, u32 index);
+
+/// Three-input logic operation with an 8-bit truth table
+[[nodiscard]] IR::U32 ApplyLUT(IR::IREmitter& ir, const IR::U32& a, const IR::U32& b,
+                               const IR::U32& c, u64 ttbl);
 } // namespace Shader::Maxwell

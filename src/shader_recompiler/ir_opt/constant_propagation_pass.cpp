@@ -113,13 +113,13 @@ bool AreEqual(const Range& range) {
 }
 
 void FoldGetRegister(IR::Inst& inst) {
-    if (inst.Arg(0).Reg() == IR::Reg::RZ) {
+    if (IR::IsZero(inst.Arg(0).Reg())) {
         inst.ReplaceUsesWith(IR::Value{u32{0}});
     }
 }
 
 void FoldGetPred(IR::Inst& inst) {
-    if (inst.Arg(0).Pred() == IR::Pred::PT) {
+    if (IR::IsTrue(inst.Arg(0).Pred())) {
         inst.ReplaceUsesWith(IR::Value{true});
     }
 }
