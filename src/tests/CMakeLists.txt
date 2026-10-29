@@ -22,6 +22,8 @@ add_executable(tests
     shader_recompiler/ampere_decode_compiler_vectors.inc
     shader_recompiler/ampere_decode_vectors.inc
     shader_recompiler/ampere_hardware_vectors.inc
+    shader_recompiler/ampere_kernel_texk.inc
+    shader_recompiler/ampere_kernel_warp.inc
     shader_recompiler/ampere_translate.cpp
     video_core/memory_tracker.cpp
     input_common/calibration_configuration_job.cpp

@@ -67,6 +67,33 @@ void Dispatch(TranslatorVisitor& v, Opcode opcode, Instruction insn) {
         return v.LDL(insn);
     case Opcode::STL:
         return v.STL(insn);
+    case Opcode::ALD:
+        return v.ALD(insn);
+    case Opcode::AST:
+        return v.AST(insn);
+    case Opcode::IPA:
+        return v.IPA(insn);
+    case Opcode::TEX:
+    case Opcode::TEX_BINDLESS:
+        return v.TEX(insn);
+    case Opcode::TLD:
+    case Opcode::TLD_BINDLESS:
+        return v.TLD(insn);
+    case Opcode::TLD4:
+    case Opcode::TLD4_BINDLESS:
+        return v.TLD4(insn);
+    case Opcode::TXD:
+    case Opcode::TXD_BINDLESS:
+        return v.TXD(insn);
+    case Opcode::TXQ:
+    case Opcode::TXQ_BINDLESS:
+        return v.TXQ(insn);
+    case Opcode::SHFL:
+        return v.SHFL(insn);
+    case Opcode::VOTE:
+        return v.VOTE(insn);
+    case Opcode::VOTEU:
+        return v.VOTEU(insn);
     case Opcode::FADD:
         return v.FADD(insn);
     case Opcode::FMUL:

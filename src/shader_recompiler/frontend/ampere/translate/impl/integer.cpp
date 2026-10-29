@@ -176,13 +176,24 @@ void TranslatorVisitor::IMAD_WIDE(Instruction insn) {
     if (insn.Bit(74) || insn.Bits(81, 3) != PT) {
         throw NotImplementedException("IMAD.WIDE with carry");
     }
-    if (!BIsWide(insn) || NegC(insn)) {
-        throw NotImplementedException("IMAD.WIDE with a non-register addend");
+    if (NegC(insn)) {
+        throw NotImplementedException("IMAD.WIDE with a negated addend");
+    }
+    // The 64-bit addend is a register pair or a pair of constant buffer words
+    IR::U32 c_lo;
+    IR::U32 c_hi;
+    if (BIsWide(insn)) {
+        const IR::Reg addend_reg{Reg(insn.Bits(64, 8))};
+        c_lo = X(addend_reg);
+        c_hi = IR::IsZero(addend_reg) ? ir.Imm32(0) : X(addend_reg + 1);
+    } else if (insn.Form() == AluForm::RegCbuf && !insn.CbufBindless()) {
+        const IR::U32 index{ir.Imm32(insn.CbufIndex())};
+        c_lo = ir.GetCbuf(index, ir.Imm32(insn.CbufOffset()));
+        c_hi = ir.GetCbuf(index, ir.Imm32(insn.CbufOffset() + 4));
+    } else {
+        throw NotImplementedException("IMAD.WIDE addend form {}", static_cast<u32>(insn.Form()));
     }
     const auto [lo, hi]{MulWide(ir, SrcA(insn), SrcB(insn), insn.Bit(73))};
-    const IR::Reg addend_reg{Reg(insn.Bits(64, 8))};
-    const IR::U32 c_lo{X(addend_reg)};
-    const IR::U32 c_hi{addend_reg == IR::Reg::RZ ? ir.Imm32(0) : X(addend_reg + 1)};
     const IR::U32 sum_lo{ir.IAdd(lo, c_lo)};
     const IR::U32 sum_hi{ir.IAdd(ir.IAdd(hi, c_hi), CarryOf(ir, sum_lo, c_lo))};
     const IR::Reg dest{Reg(insn.Dest())};

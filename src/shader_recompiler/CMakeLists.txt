@@ -66,6 +66,7 @@ add_library(shader_recompiler STATIC
     frontend/ampere/location.h
     frontend/ampere/opcodes.cpp
     frontend/ampere/opcodes.h
+    frontend/ampere/translate/impl/attribute.cpp
     frontend/ampere/translate/impl/control.cpp
     frontend/ampere/translate/impl/conversion.cpp
     frontend/ampere/translate/impl/floating_point.cpp
@@ -74,6 +75,8 @@ add_library(shader_recompiler STATIC
     frontend/ampere/translate/impl/integer.cpp
     frontend/ampere/translate/impl/memory.cpp
     frontend/ampere/translate/impl/move.cpp
+    frontend/ampere/translate/impl/texture.cpp
+    frontend/ampere/translate/impl/warp.cpp
     frontend/ampere/translate/translate.cpp
     frontend/ampere/translate/translate.h
     frontend/maxwell/control_flow.cpp

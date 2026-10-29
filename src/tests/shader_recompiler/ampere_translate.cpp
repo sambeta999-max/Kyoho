@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cmath>
@@ -75,6 +76,11 @@ public:
         }
     }
 
+    // Raw instruction words, as compiled for a compute kernel
+    explicit TestEnvironment(std::vector<u64> words, Stage stage_) : code{std::move(words)} {
+        stage = stage_;
+    }
+
     u64 ReadInstruction(u32 address) override {
         return code.at(address / 8);
     }
@@ -124,8 +130,7 @@ struct Translation {
     IR::Program program;
 };
 
-void Translate(Translation& t, const std::vector<Encoding>& code) {
-    TestEnvironment env{code};
+void Translate(Translation& t, TestEnvironment& env) {
     Maxwell::Flow::CFG cfg{env, t.flow_pool, Ampere::ToLocation(0), false,
                            Maxwell::Flow::Isa::Ampere};
     HostTranslateInfo host_info{};
@@ -134,6 +139,26 @@ void Translate(Translation& t, const std::vector<Encoding>& code) {
     host_info.support_int64 = true;
     host_info.support_conditional_barrier = true;
     t.program = Maxwell::TranslateProgram(t.inst_pool, t.block_pool, env, cfg, host_info);
+}
+
+void Translate(Translation& t, const std::vector<Encoding>& code) {
+    TestEnvironment env{code};
+    Translate(t, env);
+}
+
+// Opcodes present anywhere in a program
+std::vector<IR::Opcode> Opcodes(const IR::Program& program) {
+    std::vector<IR::Opcode> opcodes;
+    for (const IR::Block* const block : program.blocks) {
+        for (const IR::Inst& inst : block->Instructions()) {
+            opcodes.push_back(inst.GetOpcode());
+        }
+    }
+    return opcodes;
+}
+
+bool Contains(const std::vector<IR::Opcode>& opcodes, IR::Opcode opcode) {
+    return std::ranges::find(opcodes, opcode) != opcodes.end();
 }
 
 IR::FpRounding Rounding(const IR::Inst& inst) {
@@ -580,4 +605,116 @@ TEST_CASE("Ampere translate: storage buffer through a uniform register", "[shade
     REQUIRE(descriptors[0].cbuf_index == 0);
     REQUIRE(descriptors[0].cbuf_offset == 0x110);
     REQUIRE(!descriptors[0].is_written);
+}
+
+namespace {
+
+// Kernels from tools/ampere-sm86/templates/corpus.cu compiled with nvcc -arch=sm_86 -O3
+const std::vector<u64> TEXTURE_KERNEL{
+#include "ampere_kernel_texk.inc"
+};
+
+const std::vector<u64> WARP_KERNEL{
+#include "ampere_kernel_warp.inc"
+};
+
+} // Anonymous namespace
+
+TEST_CASE("Ampere translate: nvcc texture kernel", "[shader][ampere]") {
+    // CUDA passes texture objects as kernel parameters at c[0x0][0x160] and c[0x0][0x168]
+    Translation t;
+    TestEnvironment env{TEXTURE_KERNEL, Stage::Compute};
+    Translate(t, env);
+    std::vector<std::pair<u32, TextureType>> textures;
+    for (const TextureDescriptor& desc : t.program.info.texture_descriptors) {
+        REQUIRE(desc.cbuf_index == 0);
+        textures.emplace_back(desc.cbuf_offset, desc.type);
+    }
+    const auto has{[&](u32 offset, TextureType type) {
+        return std::ranges::find(textures, std::pair{offset, type}) != textures.end();
+    }};
+    REQUIRE(has(0x160, TextureType::Color2D));
+    REQUIRE(has(0x160, TextureType::ColorArray2D));
+    REQUIRE(has(0x160, TextureType::Color1D));
+    REQUIRE(has(0x168, TextureType::Color3D));
+    REQUIRE(has(0x168, TextureType::ColorCube));
+
+    // The result is stored through a pointer read from c[0x0][0x178] by IMAD.WIDE
+    const auto& storage{t.program.info.storage_buffers_descriptors};
+    REQUIRE(std::ranges::any_of(storage, [](const StorageBufferDescriptor& desc) {
+        return desc.cbuf_index == 0 && desc.cbuf_offset == 0x178 && desc.is_written;
+    }));
+}
+
+TEST_CASE("Ampere translate: nvcc warp kernel", "[shader][ampere]") {
+    Translation t;
+    TestEnvironment env{WARP_KERNEL, Stage::Compute};
+    Translate(t, env);
+    const auto opcodes{Opcodes(t.program)};
+    REQUIRE(Contains(opcodes, IR::Opcode::ShuffleIndex));
+    REQUIRE(Contains(opcodes, IR::Opcode::ShuffleButterfly));
+    REQUIRE(Contains(opcodes, IR::Opcode::ShuffleDown));
+    REQUIRE(Contains(opcodes, IR::Opcode::VoteAny));
+    REQUIRE(Contains(opcodes, IR::Opcode::SubgroupBallot));
+    REQUIRE(Contains(opcodes, IR::Opcode::Barrier));
+}
+
+TEST_CASE("Ampere translate: interpolation", "[shader][ampere]") {
+    Translation t;
+    Translate(t, {
+        // IPA.PASS R0, a[0x80]
+        Encoding{0x326}.Set(16, 8, 0).Set(24, 8, RZ).Set(32, 8, RZ).Set(64, 8, 0x20)
+            .Set(81, 3, PT),
+        // IPA.CONSTANT R1, a[0x84]
+        Encoding{0x326}.Set(16, 8, 1).Set(24, 8, RZ).Set(32, 8, RZ).Set(64, 8, 0x21)
+            .Set(78, 2, 1).Set(81, 3, PT),
+        Exit(),
+    });
+    const auto color{[&](u32 component) -> const IR::Inst* {
+        for (const IR::Block* const block : t.program.blocks) {
+            for (const IR::Inst& inst : block->Instructions()) {
+                if (inst.GetOpcode() == IR::Opcode::SetFragColor &&
+                    inst.Arg(1).U32() == component) {
+                    return inst.Arg(2).InstRecursive();
+                }
+            }
+        }
+        return nullptr;
+    }};
+    // Perspective inputs come back multiplied by W, flat inputs as they are
+    const IR::Inst* const perspective{color(0)};
+    REQUIRE(perspective != nullptr);
+    REQUIRE(perspective->GetOpcode() == IR::Opcode::FPMul32);
+    REQUIRE(perspective->Arg(0).InstRecursive()->Arg(0).Attribute() == IR::Attribute::Generic0X);
+    REQUIRE(perspective->Arg(1).InstRecursive()->Arg(0).Attribute() == IR::Attribute::PositionW);
+    const IR::Inst* const flat{color(1)};
+    REQUIRE(flat != nullptr);
+    REQUIRE(flat->GetOpcode() == IR::Opcode::GetAttribute);
+    REQUIRE(flat->Arg(0).Attribute() == IR::Attribute::Generic0Y);
+}
+
+TEST_CASE("Ampere translate: attribute store", "[shader][ampere]") {
+    // AST.128 a[0x80], R4 in a vertex shader
+    std::vector<u64> words;
+    for (const Encoding& insn :
+         {MovImm(4, 1), MovImm(5, 2), MovImm(6, 3), MovImm(7, 4),
+          Encoding{0x322}.Set(24, 8, RZ).Set(32, 8, 4).Set(64, 8, RZ).Set(40, 10, 0x80)
+              .Set(74, 2, 3),
+          Exit()}) {
+        words.push_back(insn.lo);
+        words.push_back(insn.hi);
+    }
+    Translation t;
+    TestEnvironment env{words, Stage::VertexB};
+    Translate(t, env);
+    std::vector<IR::Attribute> written;
+    for (const IR::Block* const block : t.program.blocks) {
+        for (const IR::Inst& inst : block->Instructions()) {
+            if (inst.GetOpcode() == IR::Opcode::SetAttribute) {
+                written.push_back(inst.Arg(0).Attribute());
+            }
+        }
+    }
+    REQUIRE(written == std::vector{IR::Attribute::Generic0X, IR::Attribute::Generic0Y,
+                                   IR::Attribute::Generic0Z, IR::Attribute::Generic0W});
 }

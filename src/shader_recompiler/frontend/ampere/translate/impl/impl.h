@@ -57,6 +57,23 @@ struct TranslatorVisitor {
     void LDL(Instruction insn);
     void STL(Instruction insn);
 
+    // Attributes
+    void ALD(Instruction insn);
+    void AST(Instruction insn);
+    void IPA(Instruction insn);
+
+    // Textures, bound through a constant buffer or bindless
+    void TEX(Instruction insn);
+    void TLD(Instruction insn);
+    void TLD4(Instruction insn);
+    void TXD(Instruction insn);
+    void TXQ(Instruction insn);
+
+    // Warp
+    void SHFL(Instruction insn);
+    void VOTE(Instruction insn);
+    void VOTEU(Instruction insn);
+
     // Floating point
     void FADD(Instruction insn);
     void FMUL(Instruction insn);

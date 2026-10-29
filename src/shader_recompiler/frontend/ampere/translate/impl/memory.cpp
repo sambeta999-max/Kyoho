@@ -53,8 +53,11 @@ bool HasUniformAddress(Instruction insn) {
 }
 
 IR::U64 GlobalAddress(TranslatorVisitor& v, Instruction insn, u32 ureg_offset) {
-    const bool has_ureg{HasUniformAddress(insn)};
-    const bool reg_is_64{has_ureg ? insn.Bit(90) : insn.Bit(72)};
+    const bool reg_is_64{HasUniformAddress(insn) ? insn.Bit(90) : insn.Bit(72)};
+    // With a 64-bit register address, a 64-bit uniform register is a memory descriptor
+    // (desc[URx]) and does not take part in the address; checked on GA102
+    const bool is_descriptor{HasUniformAddress(insn) && insn.Bit(90) && insn.Bit(72)};
+    const bool has_ureg{HasUniformAddress(insn) && !is_descriptor};
     const bool ureg_is_64{has_ureg && insn.Bit(72)};
     // Built as IAdd64(base, immediate), the form storage buffer tracking expects
     std::optional<IR::U64> base;
