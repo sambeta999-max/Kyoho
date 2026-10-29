@@ -545,8 +545,11 @@ ImageViewId TextureCache<P>::VisitImageView(u32 index, bool compute) {
     }
     auto const map_index = index | (compute ? Common::SlotId::TAGGED_VALUE : 0);
     // Is new (on the tegra engine side)?
-    auto const [descriptor, is_new] = table.Read(*gpu_memory, index);
+    auto const [raw_descriptor, is_new] = table.Read(*gpu_memory, index);
     if (is_new) {
+        const bool is_ampere = compute ? kepler_compute->IsAmpere() : maxwell3d->IsAmpere();
+        const TICEntry descriptor =
+            is_ampere ? Tegra::Texture::FromAmpereTIC(raw_descriptor) : raw_descriptor;
         if (IsValidEntry(*gpu_memory, descriptor)) {
             // Is new (registered view) on the texture cache side?
             const auto [pair, is_new_tc] = channel_state->image_views.try_emplace(descriptor);

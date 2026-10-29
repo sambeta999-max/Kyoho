@@ -287,6 +287,13 @@ struct TICEntry {
 };
 static_assert(sizeof(TICEntry) == 0x20, "TICEntry has wrong size");
 
+/// Converts a texture header of AMPERE_B or AMPERE_COMPUTE_B (clc797tex.h) to the layout above.
+/// The Ampere header has no layer base: the bits NVN used for it on Maxwell widen the address
+/// (bit 80), the width (bit 144), the depth or the pitch (bit 145) and the height (bit 146), and
+/// views address their first layer directly. Values that need the wider fields cannot be
+/// represented and give an invalid header.
+[[nodiscard]] TICEntry FromAmpereTIC(TICEntry entry);
+
 enum class WrapMode : u32 {
     Wrap = 0,
     Mirror = 1,

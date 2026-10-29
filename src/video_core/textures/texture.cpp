@@ -8,6 +8,7 @@
 #include <cmath>
 
 #include "common/cityhash.h"
+#include "common/logging.h"
 #include "common/settings.h"
 #include "video_core/textures/texture.h"
 
@@ -27,6 +28,23 @@ float SrgbToLinear(u32 value) {
 }
 
 } // Anonymous namespace
+
+TICEntry FromAmpereTIC(TICEntry entry) {
+    // Bit 80 and bits 144 to 146, where Maxwell headers kept layer_base_3_7 bit 0 and
+    // layer_base_0_2. In 1D buffer headers, bits 144 to 146 are reserved.
+    const bool address_bit_48 = (entry.layer_base_3_7 & 1) != 0;
+    const bool wide_size = !entry.IsBuffer() && entry.layer_base_0_2 != 0;
+    entry.layer_base_0_2.Assign(0);
+    entry.layer_base_3_7.Assign(0);
+    entry.layer_base_8_10.Assign(0);
+    if (address_bit_48 || wide_size) {
+        LOG_WARNING(HW_GPU, "Texture header with an address above 2^48 or a size beyond Maxwell "
+                            "limits is not supported");
+        entry.address_low = 0;
+        entry.address_high.Assign(0);
+    }
+    return entry;
+}
 
 std::array<float, 4> TSCEntry::BorderColor() const noexcept {
     return border_color;

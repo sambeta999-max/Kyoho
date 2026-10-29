@@ -30,6 +30,7 @@ add_executable(tests
     video_core/memory_tracker.cpp
     video_core/qmd_v3.cpp
     video_core/semaphore.cpp
+    video_core/texture_header.cpp
     input_common/calibration_configuration_job.cpp
 )
 
