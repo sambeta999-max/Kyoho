@@ -25,6 +25,12 @@ python3 sweep_forms.py <workdir> sm86_opcodes.json     # missing forms of known 
 `bitprobe.py` flips single bits of an encoding and prints how the disassembly changes; field
 positions in the frontend were checked with it.
 
+## Engine class changes
+
+`class_diff.py` compares two NVIDIA class headers (open-gpu-doc) and annotates each changed
+method with the Eden register field it lands in. The Maxwell to Ampere reports and a summary of
+what Eden has to read differently are in [`reports/`](reports/README.md).
+
 ## Compiler output vectors
 
 `ampere_decode_compiler_vectors.inc` holds real `nvcc -arch=sm_86` output:

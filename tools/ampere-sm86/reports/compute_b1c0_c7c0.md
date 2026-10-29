@@ -1,0 +1,176 @@
+# clb1c0.h -> clc7c0.h
+
+181 methods before, 179 after: 13 offsets reused by another method, 0 moved, 52 removed, 50 added, 8 with changed fields.
+
+## Offsets now used by a different method
+
+Writes decoded with the old layout land in the wrong state.
+
+| Offset | Old method | New method | Eden field |
+|---|---|---|---|
+| 0x0214 | SET_SHADER_SHARED_MEMORY_WINDOW | SET_QMD_VIRTUALIZATION_BASE_A | `data_upload` |
+| 0x0218 | SET_SELECT_MAXWELL_TEXTURE_HEADERS | SET_QMD_VIRTUALIZATION_BASE_B | `data_upload` |
+| 0x029c | SET_SCG_RENDER_ENABLE_CONTROL | SET_QMD_VIRTUALIZATION_CONTROL | `data_upload` |
+| 0x0550 | SET_FALCON20 | SET_MME_MEM_ADDRESS_A | `launch` |
+| 0x0554 | SET_FALCON21 | SET_MME_MEM_ADDRESS_B | `launch` |
+| 0x0558 | SET_FALCON22 | SET_MME_DATA_RAM_ADDRESS | `launch` |
+| 0x055c | SET_FALCON23 | MME_DMA_READ | `launch` |
+| 0x0560 | SET_FALCON24 | MME_DMA_READ_FIFOED | `launch` |
+| 0x0564 | SET_FALCON25 | MME_DMA_WRITE | `launch` |
+| 0x0568 | SET_FALCON26 | MME_DMA_REDUCTION | `launch` |
+| 0x056c | SET_FALCON27 | MME_DMA_SYSMEMBAR | `launch` |
+| 0x0570 | SET_FALCON28 | MME_DMA_SYNC | `launch` |
+| 0x0574 | SET_FALCON29 | SET_MME_DATA_FIFO_CONFIG | `launch` |
+
+## Moved
+
+| Method | Old | New | Eden field |
+|---|---|---|---|
+
+## Removed
+
+| Offset | Method | Eden field |
+|---|---|---|
+| 0x020c | SET_COALESCE_WAITING_PERIOD_UNIT | `data_upload` |
+| 0x0214 | SET_SHADER_SHARED_MEMORY_WINDOW | `data_upload` |
+| 0x0218 | SET_SELECT_MAXWELL_TEXTURE_HEADERS | `data_upload` |
+| 0x0240 | SET_CWD_CONTROL | `data_upload` |
+| 0x026c | SET_GWC_SCG_TYPE | `data_upload` |
+| 0x0274 | INVALIDATE_CONSTANT_BUFFER_CACHE_A | `data_upload` |
+| 0x0278 | INVALIDATE_CONSTANT_BUFFER_CACHE_B | `data_upload` |
+| 0x027c | INVALIDATE_CONSTANT_BUFFER_CACHE_C | `data_upload` |
+| 0x028c | SET_WFI_CONFIG | `data_upload` |
+| 0x0294 | WAIT_FOR_IDLE_SCG_TYPE | `data_upload` |
+| 0x029c | SET_SCG_RENDER_ENABLE_CONTROL | `data_upload` |
+| 0x02f0 | SET_SHADER_LOCAL_MEMORY_THROTTLED_A | `launch` |
+| 0x02f4 | SET_SHADER_LOCAL_MEMORY_THROTTLED_B | `launch` |
+| 0x02f8 | SET_SHADER_LOCAL_MEMORY_THROTTLED_C | `launch` |
+| 0x0540 | SET_FALCON16 | `launch` |
+| 0x0544 | SET_FALCON17 | `launch` |
+| 0x0548 | SET_FALCON18 | `launch` |
+| 0x054c | SET_FALCON19 | `launch` |
+| 0x0550 | SET_FALCON20 | `launch` |
+| 0x0554 | SET_FALCON21 | `launch` |
+| 0x0558 | SET_FALCON22 | `launch` |
+| 0x055c | SET_FALCON23 | `launch` |
+| 0x0560 | SET_FALCON24 | `launch` |
+| 0x0564 | SET_FALCON25 | `launch` |
+| 0x0568 | SET_FALCON26 | `launch` |
+| 0x056c | SET_FALCON27 | `launch` |
+| 0x0570 | SET_FALCON28 | `launch` |
+| 0x0574 | SET_FALCON29 | `launch` |
+| 0x0578 | SET_FALCON30 | `launch` |
+| 0x057c | SET_FALCON31 | `launch` |
+| 0x077c | SET_SHADER_LOCAL_MEMORY_WINDOW | `launch` |
+| 0x0f44 | SET_SPARE_NOOP12 | `launch` |
+| 0x0f48 | SET_SPARE_NOOP13 | `launch` |
+| 0x0f4c | SET_SPARE_NOOP14 | `launch` |
+| 0x0f50 | SET_SPARE_NOOP15 | `launch` |
+| 0x1040 | SET_SPARE_NOOP00 | `launch` |
+| 0x1044 | SET_SPARE_NOOP01 | `launch` |
+| 0x1048 | SET_SPARE_NOOP02 | `launch` |
+| 0x104c | SET_SPARE_NOOP03 | `launch` |
+| 0x1050 | SET_SPARE_NOOP04 | `launch` |
+| 0x1054 | SET_SPARE_NOOP05 | `launch` |
+| 0x1058 | SET_SPARE_NOOP06 | `launch` |
+| 0x105c | SET_SPARE_NOOP07 | `launch` |
+| 0x1060 | SET_SPARE_NOOP08 | `launch` |
+| 0x1064 | SET_SPARE_NOOP09 | `launch` |
+| 0x1068 | SET_SPARE_NOOP10 | `launch` |
+| 0x106c | SET_SPARE_NOOP11 | `launch` |
+| 0x120c | INVALIDATE_SAMPLER_CACHE_ALL | `launch` |
+| 0x1210 | INVALIDATE_TEXTURE_HEADER_CACHE_ALL | `launch` |
+| 0x1608 | SET_PROGRAM_REGION_A | `code_loc` |
+| 0x160c | SET_PROGRAM_REGION_B | `code_loc` |
+| 0x260c | SET_TRAP_HANDLER | `tex_cb_index` |
+
+## Added
+
+| Offset | Method |
+|---|---|
+| 0x0114 | LOAD_MME_INSTRUCTION_RAM_POINTER |
+| 0x0118 | LOAD_MME_INSTRUCTION_RAM |
+| 0x011c | LOAD_MME_START_ADDRESS_RAM_POINTER |
+| 0x0120 | LOAD_MME_START_ADDRESS_RAM |
+| 0x0124 | SET_MME_SHADOW_RAM_CONTROL |
+| 0x0148 | FE_ATOMIC_SEQUENCE_BEGIN |
+| 0x014c | FE_ATOMIC_SEQUENCE_END |
+| 0x0158 | SET_REPORT_SEMAPHORE_PAYLOAD_LOWER |
+| 0x015c | SET_REPORT_SEMAPHORE_PAYLOAD_UPPER |
+| 0x0160 | SET_REPORT_SEMAPHORE_ADDRESS_LOWER |
+| 0x0164 | SET_REPORT_SEMAPHORE_ADDRESS_UPPER |
+| 0x0168 | REPORT_SEMAPHORE_EXECUTE |
+| 0x01e8 | SET_SM_SCG_CONTROL |
+| 0x01ec | SET_MME_SWITCH_STATE |
+| 0x0214 | SET_QMD_VIRTUALIZATION_BASE_A |
+| 0x0218 | SET_QMD_VIRTUALIZATION_BASE_B |
+| 0x029c | SET_QMD_VIRTUALIZATION_CONTROL |
+| 0x02a0 | SET_SHADER_SHARED_MEMORY_WINDOW_A |
+| 0x02a4 | SET_SHADER_SHARED_MEMORY_WINDOW_B |
+| 0x02a8 | SCG_HYSTERESIS_CONTROL |
+| 0x02c0 | SEND_SIGNALING_PCAS2_B |
+| 0x02cc | SET_SKED_CACHE_CONTROL |
+| 0x0318 | SET_INLINE_QMD_ADDRESS_A |
+| 0x031c | SET_INLINE_QMD_ADDRESS_B |
+| 0x0320+i*4 | LOAD_INLINE_QMD_DATA |
+| 0x0550 | SET_MME_MEM_ADDRESS_A |
+| 0x0554 | SET_MME_MEM_ADDRESS_B |
+| 0x0558 | SET_MME_DATA_RAM_ADDRESS |
+| 0x055c | MME_DMA_READ |
+| 0x0560 | MME_DMA_READ_FIFOED |
+| 0x0564 | MME_DMA_WRITE |
+| 0x0568 | MME_DMA_REDUCTION |
+| 0x056c | MME_DMA_SYSMEMBAR |
+| 0x0570 | MME_DMA_SYNC |
+| 0x0574 | SET_MME_DATA_FIFO_CONFIG |
+| 0x07b0 | SET_SHADER_LOCAL_MEMORY_WINDOW_A |
+| 0x07b4 | SET_SHADER_LOCAL_MEMORY_WINDOW_B |
+| 0x07fc | THROTTLE_SM |
+| 0x0da0+i*4 | SET_SCG_COMPUTE_SCHEDULING_PARAMETERS |
+| 0x0dec | MME_DMA_WRITE_METHOD_BARRIER |
+| 0x25f8 | SET_TRAP_HANDLER_A |
+| 0x25fc | SET_TRAP_HANDLER_B |
+| 0x32f4+i*4 | SET_SHADER_PERFORMANCE_SNAPSHOT_COUNTER_VALUE |
+| 0x3314+i*4 | SET_SHADER_PERFORMANCE_SNAPSHOT_COUNTER_VALUE_UPPER |
+| 0x3334 | ENABLE_SHADER_PERFORMANCE_SNAPSHOT_COUNTER |
+| 0x3338 | DISABLE_SHADER_PERFORMANCE_SNAPSHOT_COUNTER |
+| 0x33e8 | SET_SHADER_PERFORMANCE_COUNTER_SCTL_FILTER |
+| 0x33ec | SET_SHADER_PERFORMANCE_COUNTER_CORE_MIO_FILTER |
+| 0x3800+i*8 | CALL_MME_MACRO |
+| 0x3804+i*8 | CALL_MME_DATA |
+
+## Changed fields
+
+### OFFSET_OUT_UPPER (0x0188), Eden `upload`
+
+- `VALUE` bits 7:0 -> 16:0
+
+### SET_DST_ORIGIN_BYTES_X (0x01a8), Eden `upload`
+
+- `V` bits 19:0 -> 20:0
+
+### SET_DST_ORIGIN_SAMPLES_Y (0x01ac), Eden `upload`
+
+- `V` bits 15:0 -> 16:0
+
+### SET_SCG_CONTROL (0x0270), Eden `data_upload`
+
+- added `COMPUTE1_MIN_SM_COUNT` 20:12
+- added `DISABLE_COMPUTE1_LIMIT_IN_ALL_COMPUTE` 24:24
+
+### SET_SHADER_LOCAL_MEMORY_A (0x0790), Eden `launch`
+
+- `ADDRESS_UPPER` bits 7:0 -> 16:0
+
+### SET_TEX_SAMPLER_POOL_A (0x155c), Eden `tsc`
+
+- `OFFSET_UPPER` bits 7:0 -> 16:0
+
+### SET_TEX_HEADER_POOL_A (0x1574), Eden `tic`
+
+- `OFFSET_UPPER` bits 7:0 -> 16:0
+
+### SET_REPORT_SEMAPHORE_D (0x1b0c), Eden `code_loc`
+
+- added `CONDITIONAL_TRAP` 19:19
+
