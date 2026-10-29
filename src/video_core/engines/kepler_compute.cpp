@@ -4,7 +4,6 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <algorithm>
 #include <bitset>
 #include "common/assert.h"
 #include "common/logging.h"
@@ -12,6 +11,7 @@
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/qmd_v3.h"
+#include "video_core/engines/semaphore.h"
 #include "video_core/memory_manager.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/textures/decoders.h"
@@ -20,8 +20,12 @@ namespace Tegra::Engines {
 
 namespace {
 
-// AMPERE_COMPUTE_B method, as a word index
+// AMPERE_COMPUTE_B methods, as word indices
 constexpr u32 SEND_SIGNALING_PCAS2_B = 0x02C0 / sizeof(u32);
+// SET_REPORT_SEMAPHORE_PAYLOAD_LOWER, followed by PAYLOAD_UPPER, ADDRESS_LOWER, ADDRESS_UPPER and
+// REPORT_SEMAPHORE_EXECUTE
+constexpr u32 REPORT_SEMAPHORE = 0x0158 / sizeof(u32);
+constexpr u32 REPORT_SEMAPHORE_EXECUTE = REPORT_SEMAPHORE + 4;
 
 // SEND_SIGNALING_PCAS2_B actions
 enum class PcasAction : u32 {
@@ -41,64 +45,6 @@ enum class PcasAction : u32 {
 
 constexpr std::size_t MAX_PENDING_QMDS = 4096;
 
-u64 Reduce(QmdV3::ReductionOp op, u64 old_value, u64 value, bool is_signed, bool is_64) {
-    const u64 mask = is_64 ? ~u64{0} : u64{0xFFFFFFFF};
-    const auto as_signed = [is_64](u64 x) {
-        return is_64 ? static_cast<s64>(x) : s64{static_cast<s32>(static_cast<u32>(x))};
-    };
-    old_value &= mask;
-    value &= mask;
-    switch (op) {
-    case QmdV3::ReductionOp::Add:
-        return (old_value + value) & mask;
-    case QmdV3::ReductionOp::Min:
-        return is_signed ? (as_signed(old_value) < as_signed(value) ? old_value : value)
-                         : (std::min)(old_value, value);
-    case QmdV3::ReductionOp::Max:
-        return is_signed ? (as_signed(old_value) > as_signed(value) ? old_value : value)
-                         : (std::max)(old_value, value);
-    case QmdV3::ReductionOp::Inc:
-        return old_value >= value ? 0 : old_value + 1;
-    case QmdV3::ReductionOp::Dec:
-        return old_value == 0 || old_value > value ? value : old_value - 1;
-    case QmdV3::ReductionOp::And:
-        return old_value & value;
-    case QmdV3::ReductionOp::Or:
-        return old_value | value;
-    case QmdV3::ReductionOp::Xor:
-        return old_value ^ value;
-    }
-    return old_value;
-}
-
-void ReleaseSemaphore(VideoCore::RasterizerInterface& rasterizer, MemoryManager& memory_manager,
-                      const QmdV3::Release& release) {
-    if (!release.reduction && !release.payload_64) {
-        VideoCommon::QueryPropertiesFlags flags{VideoCommon::QueryPropertiesFlags::IsAFence};
-        if (release.structure_size == 0) {
-            // Four words: the payload followed by a timestamp
-            flags |= VideoCommon::QueryPropertiesFlags::HasTimeout;
-        }
-        rasterizer.Query(release.address, VideoCommon::QueryType::Payload, flags,
-                         static_cast<u32>(release.payload), 0);
-        return;
-    }
-    rasterizer.SignalFence([&memory_manager, release] {
-        u64 value = release.payload;
-        if (release.reduction) {
-            const u64 old_value = release.payload_64 ? memory_manager.Read<u64>(release.address)
-                                                     : memory_manager.Read<u32>(release.address);
-            value = Reduce(*release.reduction, old_value, value, release.reduction_signed,
-                           release.payload_64);
-        }
-        if (release.payload_64) {
-            memory_manager.Write<u64>(release.address, value);
-        } else {
-            memory_manager.Write<u32>(release.address, static_cast<u32>(value));
-        }
-    });
-}
-
 } // Anonymous namespace
 
 KeplerCompute::KeplerCompute(MemoryManager& memory_manager_)
@@ -110,6 +56,7 @@ KeplerCompute::KeplerCompute(MemoryManager& memory_manager_)
     execution_mask[KEPLER_COMPUTE_REG_INDEX(data_upload)] = true;
     execution_mask[KEPLER_COMPUTE_REG_INDEX(launch)] = true;
     execution_mask[SEND_SIGNALING_PCAS2_B] = true;
+    execution_mask[REPORT_SEMAPHORE_EXECUTE] = true;
 }
 
 KeplerCompute::~KeplerCompute() = default;
@@ -148,6 +95,15 @@ void KeplerCompute::CallMethod(Core::System& system, u32 method, u32 method_argu
         upload_state.ProcessData(method_argument, is_last_call);
         break;
     }
+    case REPORT_SEMAPHORE_EXECUTE:
+        if (is_ampere) {
+            ReportSemaphore::Decode(regs.reg_array[REPORT_SEMAPHORE],
+                                    regs.reg_array[REPORT_SEMAPHORE + 1],
+                                    regs.reg_array[REPORT_SEMAPHORE + 2],
+                                    regs.reg_array[REPORT_SEMAPHORE + 3], method_argument)
+                .Execute(*rasterizer, memory_manager);
+        }
+        break;
     case SEND_SIGNALING_PCAS2_B:
     case KEPLER_COMPUTE_REG_INDEX(launch): {
         if (method == SEND_SIGNALING_PCAS2_B && !is_ampere) {

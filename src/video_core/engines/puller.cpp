@@ -16,6 +16,7 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/maxwell_dma.h"
 #include "video_core/engines/puller.h"
+#include "video_core/engines/semaphore.h"
 #include "video_core/gpu.h"
 #include "video_core/memory_manager.h"
 #include "video_core/rasterizer_interface.h"
@@ -23,6 +24,10 @@
 namespace Tegra::Engines {
 
 namespace {
+
+// SEM_ADDR_LO of AMPERE_CHANNEL_GPFIFO_A, followed by SEM_ADDR_HI, SEM_PAYLOAD_LO, SEM_PAYLOAD_HI
+// and SEM_EXECUTE
+constexpr u32 HOST_SEM_ADDR_LO = 0x005C / sizeof(u32);
 
 constexpr u32 Gf100BindClassMask = 0xffff;
 constexpr u32 Gf100BindValidMask =  0x1f0000 | Gf100BindClassMask;
@@ -38,6 +43,10 @@ void Puller::ProcessBindMethod(DmaPusher& dma_pusher, const MethodCall& method_c
 
     const auto engine_id = static_cast<EngineID>(engine);
     bound_engines[method_call.subchannel] = engine_id;
+    if (engine_id == EngineID::AMPERE_B || engine_id == EngineID::AMPERE_COMPUTE_B ||
+        engine_id == EngineID::AMPERE_DMA_COPY_B) {
+        is_ampere_host = true;
+    }
     switch (engine_id) {
     case EngineID::FERMI_TWOD_A:
         dma_pusher.BindSubchannel(&dma_pusher.channel_state.payload->fermi_2d, method_call.subchannel, EngineTypes::Fermi2D);
@@ -143,10 +152,45 @@ void Puller::ProcessSemaphoreAcquire(DmaPusher& dma_pusher) {
     }
 }
 
+void Puller::ProcessHostSemaphoreExecute(DmaPusher& dma_pusher) {
+    const auto semaphore = HostSemaphore::Decode(
+        regs.reg_array[HOST_SEM_ADDR_LO], regs.reg_array[HOST_SEM_ADDR_LO + 1],
+        regs.reg_array[HOST_SEM_ADDR_LO + 2], regs.reg_array[HOST_SEM_ADDR_LO + 3],
+        regs.reg_array[HOST_SEM_ADDR_LO + 4]);
+    if (!semaphore.IsAcquire()) {
+        ReleaseSemaphore(*dma_pusher.rasterizer, dma_pusher.memory_manager, semaphore.ToRelease());
+        return;
+    }
+    const auto read = [&] {
+        return semaphore.payload_64 ? dma_pusher.memory_manager.Read<u64>(semaphore.address)
+                                    : dma_pusher.memory_manager.Read<u32>(semaphore.address);
+    };
+    // Like the older acquire methods, wait for pending GPU work until the value is reached
+    while (!semaphore.IsAcquired(read())) {
+        dma_pusher.rasterizer->ReleaseFences();
+    }
+}
+
 /// Calls a GPU puller method.
 void Puller::CallPullerMethod(DmaPusher& dma_pusher, const MethodCall& method_call) {
     regs.reg_array[method_call.method] = method_call.argument;
     const auto method = static_cast<BufferMethods>(method_call.method);
+
+    if (is_ampere_host) {
+        // SEM_ADDR_LO, SEM_ADDR_HI, SEM_PAYLOAD_LO and SEM_PAYLOAD_HI only hold state
+        switch (method_call.method) {
+        case HOST_SEM_ADDR_LO:
+        case HOST_SEM_ADDR_LO + 1:
+        case HOST_SEM_ADDR_LO + 2:
+        case HOST_SEM_ADDR_LO + 3:
+            return;
+        case HOST_SEM_ADDR_LO + 4:
+            ProcessHostSemaphoreExecute(dma_pusher);
+            return;
+        default:
+            break;
+        }
+    }
 
     switch (method) {
     case BufferMethods::BindObject: {

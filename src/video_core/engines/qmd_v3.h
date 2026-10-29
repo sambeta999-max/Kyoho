@@ -8,6 +8,7 @@
 
 #include "common/common_types.h"
 #include "video_core/engines/kepler_compute.h"
+#include "video_core/engines/semaphore.h"
 
 namespace Tegra::Engines {
 
@@ -22,27 +23,6 @@ struct QmdV3 {
         Schedule = 1,
         InvalidateCopySchedule = 3,
         DecrementDependence = 4,
-    };
-
-    enum class ReductionOp : u32 {
-        Add = 0,
-        Min = 1,
-        Max = 2,
-        Inc = 3,
-        Dec = 4,
-        And = 5,
-        Or = 6,
-        Xor = 7,
-    };
-
-    struct Release {
-        GPUVAddr address;
-        u64 payload;
-        bool payload_64;
-        /// 0: four words (payload and timestamp), 1: one word, 2: two words
-        u32 structure_size;
-        std::optional<ReductionOp> reduction;
-        bool reduction_signed;
     };
 
     struct Dependent {
@@ -75,21 +55,24 @@ struct QmdV3 {
         return Field(415, 384) != 0 && Field(431, 416) != 0 && Field(463, 448) != 0;
     }
 
-    [[nodiscard]] constexpr std::optional<Release> GetRelease(u32 index) const {
+    [[nodiscard]] constexpr std::optional<SemaphoreRelease> GetRelease(u32 index) const {
         const u32 base = 768 + index * 128;
         if (Field(base + 55, base + 55) == 0) {
             return std::nullopt;
         }
-        Release release{
+        const bool payload_64 = Field(base + 61, base + 61) != 0;
+        SemaphoreRelease release{
             .address = (GPUVAddr{Field(base + 39, base + 32)} << 32) | Field(base + 31, base),
-            .payload = (u64{Field(base + 127, base + 96)} << 32) | Field(base + 95, base + 64),
-            .payload_64 = Field(base + 61, base + 61) != 0,
-            .structure_size = Field(base + 63, base + 62),
+            .payload = (u64{payload_64 ? Field(base + 127, base + 96) : 0} << 32) |
+                       Field(base + 95, base + 64),
+            .payload_64 = payload_64,
+            // STRUCTURE_SIZE zero is four words, the payload and a timestamp
+            .timestamp = Field(base + 63, base + 62) == 0,
             .reduction = std::nullopt,
             .reduction_signed = Field(base + 57, base + 56) == 1,
         };
         if (Field(base + 58, base + 58) != 0) {
-            release.reduction = static_cast<ReductionOp>(Field(base + 54, base + 52));
+            release.reduction = static_cast<SemaphoreReduction>(Field(base + 54, base + 52));
         }
         return release;
     }

@@ -99,7 +99,7 @@ TEST_CASE("QMD 3.0: releases and dependent QMD", "[video_core][qmd]") {
     REQUIRE(first->address == 0x1dead0000ULL);
     REQUIRE(first->payload == 7);
     REQUIRE(!first->payload_64);
-    REQUIRE(first->structure_size == 1);
+    REQUIRE(!first->timestamp);
     REQUIRE(!first->reduction);
 
     const auto second = qmd.GetRelease(1);
@@ -107,7 +107,8 @@ TEST_CASE("QMD 3.0: releases and dependent QMD", "[video_core][qmd]") {
     REQUIRE(second->address == 0xbeef0000ULL);
     REQUIRE(second->payload == 0x2200000011ULL);
     REQUIRE(second->payload_64);
-    REQUIRE(second->reduction == QmdV3::ReductionOp::Or);
+    REQUIRE(second->timestamp);
+    REQUIRE(second->reduction == Tegra::Engines::SemaphoreReduction::Or);
     REQUIRE(second->reduction_signed);
 
     const auto dependent = qmd.GetDependent();

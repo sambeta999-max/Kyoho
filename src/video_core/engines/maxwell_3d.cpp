@@ -15,12 +15,20 @@
 #include "video_core/dirty_flags.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/maxwell_3d.h"
+#include "video_core/engines/semaphore.h"
 #include "video_core/gpu.h"
 #include "video_core/memory_manager.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/textures/texture.h"
 
 namespace Tegra::Engines {
+
+namespace {
+// SET_REPORT_SEMAPHORE_PAYLOAD_LOWER of AMPERE_B, followed by PAYLOAD_UPPER, ADDRESS_LOWER,
+// ADDRESS_UPPER and REPORT_SEMAPHORE_EXECUTE
+constexpr u32 AMPERE_REPORT_SEMAPHORE = 0x0158 / sizeof(u32);
+constexpr u32 AMPERE_REPORT_SEMAPHORE_EXECUTE = AMPERE_REPORT_SEMAPHORE + 4;
+} // Anonymous namespace
 
 /// First register id that is actually a Macro call.
 constexpr u32 MacroRegistersStart = 0xE00;
@@ -186,6 +194,7 @@ bool Maxwell3D::IsMethodExecutable(u32 method) {
     case MAXWELL3D_REG_INDEX(topology_override):
     case MAXWELL3D_REG_INDEX(clear_surface):
     case MAXWELL3D_REG_INDEX(report_semaphore.query):
+    case AMPERE_REPORT_SEMAPHORE_EXECUTE:
     case MAXWELL3D_REG_INDEX(render_enable.mode):
     case MAXWELL3D_REG_INDEX(clear_report_value):
     case MAXWELL3D_REG_INDEX(sync_info):
@@ -368,6 +377,15 @@ void Maxwell3D::ProcessMethodCall(u32 method, u32 argument, u32 nonshadow_argume
         return ProcessMacroBind(argument);
     case MAXWELL3D_REG_INDEX(falcon[4]):
         return ProcessFirmwareCall4();
+    case AMPERE_REPORT_SEMAPHORE_EXECUTE:
+        if (is_ampere) {
+            ReportSemaphore::Decode(regs.reg_array[AMPERE_REPORT_SEMAPHORE],
+                                    regs.reg_array[AMPERE_REPORT_SEMAPHORE + 1],
+                                    regs.reg_array[AMPERE_REPORT_SEMAPHORE + 2],
+                                    regs.reg_array[AMPERE_REPORT_SEMAPHORE + 3], argument)
+                .Execute(*rasterizer, memory_manager);
+        }
+        return;
     case MAXWELL3D_REG_INDEX(const_buffer.buffer):
     case MAXWELL3D_REG_INDEX(const_buffer.buffer) + 1:
     case MAXWELL3D_REG_INDEX(const_buffer.buffer) + 2:

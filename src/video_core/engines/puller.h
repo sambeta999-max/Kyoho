@@ -126,12 +126,17 @@ private:
     void ProcessBindMethod(DmaPusher& dma_pusher, const MethodCall& method_call);
     void ProcessFenceActionMethod(DmaPusher& dma_pusher);
     void ProcessSemaphoreAcquire(DmaPusher& dma_pusher);
+    void ProcessHostSemaphoreExecute(DmaPusher& dma_pusher);
     void ProcessSemaphoreRelease(DmaPusher& dma_pusher);
     void ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher);
     [[nodiscard]] bool ExecuteMethodOnEngine(DmaPusher& dma_pusher, u32 method);
 
     /// Mapping of command subchannels to their bound engine ids
     std::array<EngineID, 8> bound_engines{};
+
+    /// Set once an Ampere class is bound: the channel then uses the AMPERE_CHANNEL_GPFIFO_A (C56F)
+    /// host methods, where SEM_PAYLOAD_HI and SEM_EXECUTE replace two older semaphore methods
+    bool is_ampere_host{};
 
     enum class GpuSemaphoreOperation {
         AcquireEqual = 0x1,
