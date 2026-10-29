@@ -4,6 +4,7 @@
 #pragma once
 
 #include <array>
+#include <memory>
 #include <span>
 #include <vector>
 
@@ -72,6 +73,15 @@ private:
     /// Parameters of the running macro; MME_DMA_READ_FIFOED replaces them
     std::vector<u32> fifo;
     size_t fifo_position{};
+};
+
+/// Macros shared by the channels of a TSG: NVN uploads them once for all of its channels. The 3D
+/// and compute classes each have an instruction RAM and a table of macro start positions.
+struct NativeMacroContext {
+    TuringMacroEngine engine;
+    std::array<u32, 0x80> positions{};
+    TuringMacroEngine compute_engine;
+    std::array<u32, 0x80> compute_positions{};
 };
 
 } // namespace Tegra

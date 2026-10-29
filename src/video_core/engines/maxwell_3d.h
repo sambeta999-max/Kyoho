@@ -3202,6 +3202,11 @@ public:
         return is_ampere;
     }
 
+    /// Shares the macros of the channels of a TSG; null keeps macros per channel
+    void SetNativeMacroContext(std::shared_ptr<NativeMacroContext> context) {
+        native_macro_context = std::move(context);
+    }
+
     /// Base address and start offset of the program of a shader stage
     [[nodiscard]] std::pair<GPUVAddr, u32> ShaderProgramLocation(size_t index) const {
         if (is_ampere) {
@@ -3296,6 +3301,16 @@ private:
     MacroEngine macro_engine;
     /// Macro engine of AMPERE_B, with its own instruction encoding and data RAM
     TuringMacroEngine turing_macro;
+    /// Macros shared with the other channels of the TSG, used instead of the above when set
+    std::shared_ptr<NativeMacroContext> native_macro_context;
+
+    TuringMacroEngine& TuringMacro() {
+        return native_macro_context ? native_macro_context->engine : turing_macro;
+    }
+    std::array<u32, 0x80>& MacroPositions() {
+        return is_ampere && native_macro_context ? native_macro_context->positions
+                                                 : macro_positions;
+    }
 
     Upload::State upload_state;
 

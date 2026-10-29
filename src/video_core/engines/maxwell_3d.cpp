@@ -413,12 +413,12 @@ void Maxwell3D::ProcessMethodCall(u32 method, u32 argument, u32 nonshadow_argume
         return;
     case MAXWELL3D_REG_INDEX(load_mme.instruction_ptr):
         if (is_ampere) {
-            return turing_macro.SetUploadPointer(regs.load_mme.instruction_ptr);
+            return TuringMacro().SetUploadPointer(regs.load_mme.instruction_ptr);
         }
         return macro_engine.ClearCode(regs.load_mme.instruction_ptr);
     case MAXWELL3D_REG_INDEX(load_mme.instruction):
         if (is_ampere) {
-            return turing_macro.Upload(argument);
+            return TuringMacro().Upload(argument);
         }
         return macro_engine.AddCode(regs.load_mme.instruction_ptr, argument);
     case MAXWELL3D_REG_INDEX(load_mme.start_address):
@@ -485,7 +485,7 @@ void Maxwell3D::ProcessMethodCall(u32 method, u32 argument, u32 nonshadow_argume
         if (is_ampere && ((method >= AMPERE_MME_DMA_BEGIN && method < AMPERE_MME_DMA_END) ||
                           method == AMPERE_MME_DMA_WRITE_METHOD_BARRIER)) {
             TuringMacroHost host{nullptr, *this, memory_manager};
-            turing_macro.ProcessMethod(method, argument, host);
+            TuringMacro().ProcessMethod(method, argument, host);
             return;
         }
         draw_manager.ProcessMethodCall(*this, method, argument);
@@ -499,13 +499,13 @@ void Maxwell3D::CallMacroMethod(Core::System& system, u32 method, const std::vec
 
     // Lookup the macro offset
     const u32 entry =
-        ((method - MacroRegistersStart) >> 1) % static_cast<u32>(macro_positions.size());
+        ((method - MacroRegistersStart) >> 1) % static_cast<u32>(MacroPositions().size());
 
     // Execute the current macro.
     if (is_ampere) {
         RefreshParameters();
         TuringMacroHost host{&system, *this, memory_manager};
-        turing_macro.Execute(macro_positions[entry], parameters, host);
+        TuringMacro().Execute(MacroPositions()[entry], parameters, host);
     } else {
         macro_engine.Execute(system, *this, macro_positions[entry], parameters);
     }
@@ -584,7 +584,7 @@ void Maxwell3D::ProcessMacroUpload(u32 data) {
 }
 
 void Maxwell3D::ProcessMacroBind(u32 data) {
-    macro_positions[regs.load_mme.start_address_ptr++] = data;
+    MacroPositions()[regs.load_mme.start_address_ptr++] = data;
 }
 
 void Maxwell3D::ProcessFirmwareCall4() {

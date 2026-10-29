@@ -1529,7 +1529,10 @@ ImageId TextureCache<P>::InsertImage(const ImageInfo& info, GPUVAddr gpu_addr,
         }
     }
     ASSERT_MSG(cpu_addr, "Tried to insert an image to an invalid gpu_addr={:#x}", gpu_addr);
-    const ImageId image_id = JoinImages(info, gpu_addr, *cpu_addr);
+    // The swizzle of the image follows the address space it was created in
+    ImageInfo storage_info = info;
+    storage_info.native_tiling = gpu_memory->UsesNativeTiling();
+    const ImageId image_id = JoinImages(storage_info, gpu_addr, *cpu_addr);
     const Image& image = slot_images[image_id];
     // Using "image.gpu_addr" instead of "gpu_addr" is important because it might be different
     const auto [it, is_new] = image_allocs_table.try_emplace(image.gpu_addr);

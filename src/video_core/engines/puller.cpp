@@ -41,6 +41,9 @@ void Puller::ProcessBindMethod(DmaPusher& dma_pusher, const MethodCall& method_c
         engine &= Gf100BindClassMask;
     }
 
+    if (dma_pusher.channel_state.native_abi) {
+        dma_pusher.memory_manager.EnableNativeTiling();
+    }
     const auto engine_id = static_cast<EngineID>(engine);
     bound_engines[method_call.subchannel] = engine_id;
     if (engine_id == EngineID::AMPERE_B || engine_id == EngineID::AMPERE_COMPUTE_B ||
@@ -97,10 +100,35 @@ void Puller::ProcessFenceActionMethod(DmaPusher& dma_pusher) {
 void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
     const auto semaphoreOperationMask = 0xF;
     const auto op = GpuSemaphoreOperation(regs.semaphore_trigger & semaphoreOperationMask);
+    const bool native = dma_pusher.channel_state.native_abi;
     if (op == GpuSemaphoreOperation::WriteLong) {
         const GPUVAddr sequence_address{regs.semaphore_address.SemaphoreAddress()};
         const u32 payload = regs.semaphore_sequence;
-        dma_pusher.rasterizer->Query(sequence_address, VideoCommon::QueryType::Payload, VideoCommon::QueryPropertiesFlags::HasTimeout, payload, 0);
+        // RELEASE_SIZE at bit 24 selects a 4-byte release without the timestamp
+        const auto flags = native && (regs.semaphore_trigger & (1U << 24)) != 0
+                               ? VideoCommon::QueryPropertiesFlags::IsAFence
+                               : VideoCommon::QueryPropertiesFlags::HasTimeout;
+        dma_pusher.rasterizer->Query(sequence_address, VideoCommon::QueryType::Payload, flags, payload, 0);
+    } else if (native) {
+        HostSemaphore semaphore{
+            .address = regs.semaphore_address.SemaphoreAddress(),
+            .payload = regs.semaphore_sequence,
+        };
+        switch (op) {
+        case GpuSemaphoreOperation::AcquireEqual:
+            semaphore.operation = HostSemaphore::Operation::Acquire;
+            break;
+        case GpuSemaphoreOperation::AcquireGequal:
+            semaphore.operation = HostSemaphore::Operation::AcquireStrictGeq;
+            break;
+        case GpuSemaphoreOperation::AcquireMask:
+            semaphore.operation = HostSemaphore::Operation::AcquireAnd;
+            break;
+        default:
+            LOG_ERROR(HW_GPU, "Invalid semaphore operation");
+            return;
+        }
+        AcquireOrSuspend(dma_pusher, semaphore);
     } else {
         do {
             const u32 word = dma_pusher.memory_manager.Read<u32>(regs.semaphore_address.SemaphoreAddress());
@@ -161,14 +189,41 @@ void Puller::ProcessHostSemaphoreExecute(DmaPusher& dma_pusher) {
         ReleaseSemaphore(*dma_pusher.rasterizer, dma_pusher.memory_manager, semaphore.ToRelease());
         return;
     }
-    const auto read = [&] {
-        return semaphore.payload_64 ? dma_pusher.memory_manager.Read<u64>(semaphore.address)
-                                    : dma_pusher.memory_manager.Read<u32>(semaphore.address);
-    };
-    // Like the older acquire methods, wait for pending GPU work until the value is reached
-    while (!semaphore.IsAcquired(read())) {
-        dma_pusher.rasterizer->ReleaseFences();
+    AcquireOrSuspend(dma_pusher, semaphore);
+}
+
+bool Puller::IsAcquired(DmaPusher& dma_pusher, const HostSemaphore& semaphore) const {
+    const u64 value = semaphore.payload_64 ? dma_pusher.memory_manager.Read<u64>(semaphore.address)
+                                           : dma_pusher.memory_manager.Read<u32>(semaphore.address);
+    return semaphore.IsAcquired(value);
+}
+
+void Puller::AcquireOrSuspend(DmaPusher& dma_pusher, const HostSemaphore& semaphore) {
+    if (IsAcquired(dma_pusher, semaphore)) {
+        return;
     }
+    // Work already submitted by this GPU may be what releases it
+    dma_pusher.rasterizer->ReleaseFences();
+    if (IsAcquired(dma_pusher, semaphore)) {
+        return;
+    }
+    pending_acquire = semaphore;
+}
+
+bool Puller::CanResumeNativeAcquire(DmaPusher& dma_pusher) const {
+    return pending_acquire && !dma_pusher.memory_manager.IsShuttingDown() &&
+           IsAcquired(dma_pusher, *pending_acquire);
+}
+
+bool Puller::ResumeNativeAcquire(DmaPusher& dma_pusher) {
+    if (!pending_acquire) {
+        return true;
+    }
+    if (!CanResumeNativeAcquire(dma_pusher)) {
+        return false;
+    }
+    pending_acquire.reset();
+    return true;
 }
 
 /// Calls a GPU puller method.
@@ -176,7 +231,7 @@ void Puller::CallPullerMethod(DmaPusher& dma_pusher, const MethodCall& method_ca
     regs.reg_array[method_call.method] = method_call.argument;
     const auto method = static_cast<BufferMethods>(method_call.method);
 
-    if (is_ampere_host) {
+    if (is_ampere_host || dma_pusher.channel_state.native_abi) {
         // SEM_ADDR_LO, SEM_ADDR_HI, SEM_PAYLOAD_LO and SEM_PAYLOAD_HI only hold state
         switch (method_call.method) {
         case HOST_SEM_ADDR_LO:

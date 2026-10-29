@@ -17,6 +17,9 @@ add_executable(tests
     common/undefined_fix.cpp
     common/unique_function.cpp
     core/core_timing.cpp
+    core/graphics_supervisor.cpp
+    core/native_gpu_characteristics.cpp
+    core/program_metadata.cpp
     core/internal_network/network.cpp
     shader_recompiler/ampere_decode.cpp
     shader_recompiler/ampere_decode_compiler_vectors.inc
@@ -28,6 +31,7 @@ add_executable(tests
     shader_recompiler/ampere_translate.cpp
     video_core/macro_turing.cpp
     video_core/memory_tracker.cpp
+    video_core/native_swizzle.cpp
     video_core/qmd_v3.cpp
     video_core/semaphore.cpp
     video_core/texture_header.cpp

@@ -37,6 +37,9 @@ struct ImageInfo {
     u32 maybe_unaligned_layer_stride = 0;
     u32 num_samples = 1;
     u32 tile_width_spacing = 0;
+    /// Block linear layout of NS2 processes, where GOB offset bits 5 and 6 are swapped when they
+    /// differ
+    bool native_tiling = false;
     bool rescaleable = false;
     bool downscaleable = false;
     bool forced_flushed = false;

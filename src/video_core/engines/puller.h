@@ -13,6 +13,7 @@
 #include "common/common_funcs.h"
 #include "common/common_types.h"
 #include "video_core/engines/engine_interface.h"
+#include "video_core/engines/semaphore.h"
 
 namespace Core {
 class System;
@@ -73,6 +74,14 @@ public:
         BitField<8, 24, u32> syncpoint_id;
     };
 
+    /// A semaphore acquire that suspended the channel; the channel resumes when it is met
+    [[nodiscard]] bool HasPendingNativeAcquire() const {
+        return pending_acquire.has_value();
+    }
+    [[nodiscard]] bool CanResumeNativeAcquire(DmaPusher& dma_pusher) const;
+    /// Clears a met acquire; false while the channel has to stay suspended
+    bool ResumeNativeAcquire(DmaPusher& dma_pusher);
+
     void CallMethod(DmaPusher& dma_pusher, const MethodCall& method_call);
     void CallMultiMethod(DmaPusher& dma_pusher, u32 method, u32 subchannel, const u32* base_start, u32 amount, u32 methods_pending);
     void BindRasterizer(DmaPusher& dma_pusher, VideoCore::RasterizerInterface* rasterizer);
@@ -127,6 +136,10 @@ private:
     void ProcessFenceActionMethod(DmaPusher& dma_pusher);
     void ProcessSemaphoreAcquire(DmaPusher& dma_pusher);
     void ProcessHostSemaphoreExecute(DmaPusher& dma_pusher);
+    /// Waits for an acquire by suspending the channel instead of blocking the GPU thread, so
+    /// that other channels can release the semaphore
+    void AcquireOrSuspend(DmaPusher& dma_pusher, const HostSemaphore& semaphore);
+    [[nodiscard]] bool IsAcquired(DmaPusher& dma_pusher, const HostSemaphore& semaphore) const;
     void ProcessSemaphoreRelease(DmaPusher& dma_pusher);
     void ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher);
     [[nodiscard]] bool ExecuteMethodOnEngine(DmaPusher& dma_pusher, u32 method);
@@ -137,6 +150,8 @@ private:
     /// Set once an Ampere class is bound: the channel then uses the AMPERE_CHANNEL_GPFIFO_A (C56F)
     /// host methods, where SEM_PAYLOAD_HI and SEM_EXECUTE replace two older semaphore methods
     bool is_ampere_host{};
+
+    std::optional<HostSemaphore> pending_acquire;
 
     enum class GpuSemaphoreOperation {
         AcquireEqual = 0x1,
