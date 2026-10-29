@@ -25,9 +25,10 @@ inline std::array<u8, NativeGpuCharacteristicsSize> MakeNativeGpuCharacteristics
     const u32_le native_impl{0xe};
     std::memcpy(result.data(), &native_arch, sizeof(native_arch));
     std::memcpy(result.data() + 4, &native_impl, sizeof(native_impl));
-    // Native NVN's built-in shader table accepts Ampere SM 8.x. Carrying the
-    // inherited Maxwell SM 5.3 value here rejects its initialization shaders.
-    const u32_le native_sm_version{0x807};
+    // T239 is SM 8.8: every cubin shipped in native application modules targets
+    // sm_88, and the runtime compiler's built-in kernels exist only for it. The
+    // inherited Maxwell SM 5.3 value would reject NVN's initialization shaders.
+    const u32_le native_sm_version{0x808};
     std::memcpy(result.data() + 0x3c, &native_sm_version, sizeof(native_sm_version));
     std::memcpy(result.data() + 0x40, &native_sm_version, sizeof(native_sm_version));
     // Native NVN maps CPU buffers into its shared VA reservation. Those buffers

@@ -37,8 +37,8 @@ TEST_CASE("Native GPU characteristics replace topology with ioctl interface leve
     u32_le sm_version, spa_version;
     std::memcpy(&sm_version, native.data() + 0x3c, sizeof(sm_version));
     std::memcpy(&spa_version, native.data() + 0x40, sizeof(spa_version));
-    REQUIRE(static_cast<u32>(sm_version) == 0x807);
-    REQUIRE(static_cast<u32>(spa_version) == 0x807);
+    REQUIRE(static_cast<u32>(sm_version) == 0x808);
+    REQUIRE(static_cast<u32>(spa_version) == 0x808);
     u32_le available_sizes;
     std::memcpy(&available_sizes, native.data() + 0x34, sizeof(available_sizes));
     REQUIRE(static_cast<u32>(available_sizes) == 0x11000);
@@ -136,6 +136,10 @@ TEST_CASE("Native mappings report the actual selected memory kind", "[native-gpu
     REQUIRE(fallback->selected == 6);
     REQUIRE(fallback->backend == normal->backend);
     REQUIRE(SelectNativeMemoryKind(0, 0)->selected == 0);
+    const auto message = SelectNativeMemoryKind(0xf, 0xf);
+    REQUIRE(message.has_value());
+    REQUIRE(message->selected == 0xf);
+    REQUIRE(message->backend == normal->backend);
     const auto depth = SelectNativeMemoryKind(0xc, 3);
     REQUIRE(depth.has_value());
     REQUIRE(depth->selected == 3);

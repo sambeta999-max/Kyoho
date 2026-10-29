@@ -19,6 +19,9 @@ inline std::optional<u8> TranslateNativeUncompressedKind(u8 kind, u8 fallback) {
     case 1: return static_cast<u8>(Tegra::PTEKind::Z16);
     case 3: return static_cast<u8>(Tegra::PTEKind::S8Z24);
     case 6: return static_cast<u8>(Tegra::PTEKind::GENERIC_16BX2);
+    // SMSKED_MESSAGE (ampere/ga100/dev_mmu.h) holds SM-to-SKED messages. It is
+    // linear and uncompressed, so it is backed like generic memory.
+    case 0xf: return static_cast<u8>(Tegra::PTEKind::GENERIC_16BX2);
     default: return std::nullopt;
     }
 }
