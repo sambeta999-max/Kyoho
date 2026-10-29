@@ -32,10 +32,10 @@ IAudioDevice::IAudioDevice(Core::System& system_, u64 applet_resource_user_id, u
         {12, D<&IAudioDevice::QueryAudioDeviceOutputEvent>, "QueryAudioDeviceOutputEvent"},
         {13, D<&IAudioDevice::GetActiveAudioDeviceName>, "GetActiveAudioOutputDeviceName"},
         {14, D<&IAudioDevice::ListAudioOutputDeviceName>, "ListAudioOutputDeviceName"},
-        {15, nullptr, "AcquireAudioInputDeviceNotification"}, //17.0.0+
-        {16, nullptr, "ReleaseAudioInputDeviceNotification"}, //17.0.0+
-        {17, nullptr, "AcquireAudioOutputDeviceNotification"}, //17.0.0+
-        {18, nullptr, "ReleaseAudioOutputDeviceNotification"}, //17.0.0+
+        {15, D<&IAudioDevice::AcquireAudioDeviceNotification>, "AcquireAudioInputDeviceNotification"}, //17.0.0+
+        {16, D<&IAudioDevice::ReleaseAudioDeviceNotification>, "ReleaseAudioInputDeviceNotification"}, //17.0.0+
+        {17, D<&IAudioDevice::AcquireAudioDeviceNotification>, "AcquireAudioOutputDeviceNotification"}, //17.0.0+
+        {18, D<&IAudioDevice::ReleaseAudioDeviceNotification>, "ReleaseAudioOutputDeviceNotification"}, //17.0.0+
         {19, D<&IAudioDevice::SetAudioDeviceOutputVolumeAutoTuneEnabled>, "SetAudioDeviceOutputVolumeAutoTuneEnabled"}, //18.0.0+
         {20, D<&IAudioDevice::IsAudioDeviceOutputVolumeAutoTuneEnabled>, "IsAudioDeviceOutputVolumeAutoTuneEnabled"}, //18.0.0+
         {21, nullptr, "IsActiveOutputDeviceEstimatedLowLatency"} //21.0.0+
@@ -130,6 +130,19 @@ Result IAudioDevice::QueryAudioDeviceSystemEvent(OutCopyHandle<Kernel::KReadable
     LOG_DEBUG(Service_Audio, "(STUBBED) called");
     event->Signal(system.Kernel());
     *out_event = &event->GetReadableEvent();
+    R_SUCCEED();
+}
+
+Result IAudioDevice::AcquireAudioDeviceNotification(OutCopyHandle<Kernel::KReadableEvent> out_event,
+                                                    u64 notification_id) {
+    LOG_DEBUG(Service_Audio, "(STUBBED) called, notification_id={:#x}", notification_id);
+    // Device changes are not emulated, so the notifications share the device event
+    *out_event = &event->GetReadableEvent();
+    R_SUCCEED();
+}
+
+Result IAudioDevice::ReleaseAudioDeviceNotification(u64 notification_id) {
+    LOG_DEBUG(Service_Audio, "(STUBBED) called, notification_id={:#x}", notification_id);
     R_SUCCEED();
 }
 

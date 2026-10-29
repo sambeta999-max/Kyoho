@@ -588,7 +588,8 @@ Result InfoUpdater::UpdateBehaviorInfo(BehaviorInfo& behaviour_) {
         return Service::Audio::ResultInvalidUpdateInfo;
     }
 
-    if (in_params->revision != behaviour_.GetUserRevision()) {
+    // Compare revision numbers: the NS2 SDK spells the magic "REv" in update packets
+    if (GetRevisionNum(in_params->revision) != GetRevisionNum(behaviour_.GetUserRevision())) {
         return Service::Audio::ResultInvalidUpdateInfo;
     }
 

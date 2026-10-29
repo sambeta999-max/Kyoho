@@ -48,6 +48,9 @@ private:
     Result QueryAudioDeviceSystemEvent(OutCopyHandle<Kernel::KReadableEvent> out_event);
     Result QueryAudioDeviceInputEvent(OutCopyHandle<Kernel::KReadableEvent> out_event);
     Result QueryAudioDeviceOutputEvent(OutCopyHandle<Kernel::KReadableEvent> out_event);
+    Result AcquireAudioDeviceNotification(OutCopyHandle<Kernel::KReadableEvent> out_event,
+                                          u64 notification_id);
+    Result ReleaseAudioDeviceNotification(u64 notification_id);
     Result GetActiveChannelCount(Out<u32> out_active_channel_count);
     Result ListAudioOutputDeviceName(
         OutArray<AudioDevice::AudioDeviceName, BufferAttr_HipcMapAlias> out_names,
