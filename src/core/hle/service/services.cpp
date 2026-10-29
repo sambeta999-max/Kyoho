@@ -15,6 +15,7 @@
 #include "core/hle/service/bpc/bpc.h"
 #include "core/hle/service/btdrv/btdrv.h"
 #include "core/hle/service/btm/btm.h"
+#include "core/hle/service/chat/chat.h"
 #include "core/hle/service/caps/caps.h"
 #include "core/hle/service/erpt/erpt.h"
 #include "core/hle/service/es/es.h"
@@ -109,6 +110,7 @@ Services::Services(std::shared_ptr<SM::ServiceManager>& sm, Core::System& system
         {"btdrv",      &BtDrv::LoopProcess},
         {"btm",        &BTM::LoopProcess},
         {"capsrv",     &Capture::LoopProcess},
+        {"chat",       &Chat::LoopProcess},
         {"erpt",       &ERPT::LoopProcess},
         {"es",         &ES::LoopProcess},
         {"eupld",      &EUPLD::LoopProcess},

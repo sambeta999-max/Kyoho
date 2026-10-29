@@ -604,6 +604,8 @@ add_library(core STATIC
     hle/service/btm/btm_user.h
     hle/service/btm/btm_user_core.cpp
     hle/service/btm/btm_user_core.h
+    hle/service/chat/chat.cpp
+    hle/service/chat/chat.h
     hle/service/caps/caps.cpp
     hle/service/caps/caps.h
     hle/service/caps/caps_a.cpp
