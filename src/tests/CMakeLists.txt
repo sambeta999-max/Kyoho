@@ -27,6 +27,7 @@ add_executable(tests
     shader_recompiler/ampere_kernel_warp.inc
     shader_recompiler/ampere_translate.cpp
     video_core/memory_tracker.cpp
+    video_core/qmd_v3.cpp
     input_common/calibration_configuration_job.cpp
 )
 

@@ -9,6 +9,8 @@
 #include <array>
 #include <cstddef>
 #include <optional>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 #include "common/bit_field.h"
 #include "common/common_funcs.h"
@@ -42,6 +44,8 @@ namespace Tegra::Engines {
 
 #define LAUNCH_REG_INDEX(field_name)                                                               \
     (offsetof(Tegra::Engines::KeplerCompute::LaunchParams, field_name) / sizeof(u32))
+
+struct QmdV3;
 
 class KeplerCompute final : public EngineInterface {
 public:
@@ -220,8 +224,22 @@ public:
         return is_ampere;
     }
 
+    /// Base address and start offset of the program of the current launch
+    [[nodiscard]] std::pair<GPUVAddr, u32> ShaderProgramLocation() const {
+        if (is_ampere) {
+            return {ampere_program_address, 0};
+        }
+        return {regs.code_loc.Address(), launch_description.program_start};
+    }
+
 private:
     void ProcessLaunch();
+
+    /// Handles a PCAS action of AMPERE_COMPUTE_B on the QMD at launch_desc_loc
+    void SignalPcas(u32 action, u32 count);
+
+    /// Launches a QMD 3.0 whose dependencies are met and performs its releases
+    void ExecuteQmd(const QmdV3& qmd);
 
     void ConsumeSinkImpl(Core::System& system) override;
 
@@ -246,6 +264,18 @@ private:
     std::vector<UploadInfo> uploads;
     std::optional<GPUVAddr> indirect_compute{};
     bool is_ampere{};
+
+    /// Program address of the last QMD 3.0 launch, which is absolute instead of relative to
+    /// code_loc
+    GPUVAddr ampere_program_address{};
+
+    /// QMDs with outstanding dependencies, by address. Dependence changes may arrive before the
+    /// QMD is scheduled.
+    struct QmdState {
+        s32 dependencies{};
+        bool scheduled{};
+    };
+    std::unordered_map<GPUVAddr, QmdState> qmd_states;
 };
 
 #define ASSERT_REG_POSITION(field_name, position)                                                  \

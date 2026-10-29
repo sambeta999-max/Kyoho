@@ -956,9 +956,8 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline() {
 
 std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
     const ComputePipelineCacheKey& key, const ShaderInfo* shader) {
-    const GPUVAddr program_base{kepler_compute->regs.code_loc.Address()};
-    const auto& qmd{kepler_compute->launch_description};
-    ComputeEnvironment env{*kepler_compute, *gpu_memory, program_base, qmd.program_start};
+    const auto [program_base, program_start]{kepler_compute->ShaderProgramLocation()};
+    ComputeEnvironment env{*kepler_compute, *gpu_memory, program_base, program_start};
     env.SetCachedSize(shader->size_bytes);
 
     main_pools.ReleaseContents();
