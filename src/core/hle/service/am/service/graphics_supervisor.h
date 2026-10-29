@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <vector>
 
 #include "core/hle/service/service.h"
@@ -60,11 +61,27 @@ private:
     void InitializeGpuContext(HLERequestContext& ctx);
     void InitializeSyncpointContext(HLERequestContext& ctx);
     void GetSyncpointSession(HLERequestContext& ctx);
+    void InitializeSubsystemContext(HLERequestContext& ctx, bool& initialized);
+    void OpenSubsystemSession(HLERequestContext& ctx, bool initialized, u32 data_words,
+                              std::shared_ptr<SessionRequestHandler> handler);
+    void FinalizeSubsystemContext(HLERequestContext& ctx, bool& initialized);
+    void InitializeCameraContext(HLERequestContext& ctx);
+    void OpenCameraSession(HLERequestContext& ctx);
+    void FinalizeCameraContext(HLERequestContext& ctx);
+    void InitializeChatImageContext(HLERequestContext& ctx);
+    void OpenChatImageSession(HLERequestContext& ctx);
+    void FinalizeChatImageContext(HLERequestContext& ctx);
+    void SetGraphicsFrameMode(HLERequestContext& ctx);
+    void OpenGpuTimeSession(HLERequestContext& ctx);
     void BindSyncpointMemory(HLERequestContext& ctx);
     void RefreshSyncpointCache();
 
     std::vector<std::weak_ptr<IGpuSession>> m_gpu_sessions;
     std::shared_ptr<Nvidia::Module> m_nv_module;
+    bool m_camera_context_initialized{};
+    bool m_chat_image_context_initialized{};
+    // Frame length, restart and GPU timeslice modes, in command order.
+    std::array<u32, 3> m_frame_modes{};
     std::optional<size_t> m_native_memory_session;
     std::vector<u32> m_native_memories;
     std::shared_ptr<NativeImageRegistry> m_image_registry;

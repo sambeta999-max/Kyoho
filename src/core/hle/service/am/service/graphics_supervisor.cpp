@@ -80,6 +80,148 @@ namespace {
 
 // TIPC payloads follow a 32-bit result, so these handlers push result.raw.
 
+// CMIF camera session returned by OpenCameraSession. No camera device is emulated, so
+// opening one by name reports 2452-0006, the result applications accept for a missing camera.
+class ICameraSession final : public ServiceFramework<ICameraSession> {
+public:
+    explicit ICameraSession(Core::System& system) : ServiceFramework{system, "ICameraSession"} {
+        static const FunctionInfo functions[] = {
+            {3, &ICameraSession::OpenCamera, "OpenCamera"},
+        };
+        RegisterHandlers(functions);
+    }
+
+private:
+    static constexpr Result ResultCameraNotFound{static_cast<ErrorModule>(452), 6};
+
+    void OpenCamera(HLERequestContext& ctx) {
+        IPC::RequestParser rp{ctx};
+        const auto name = rp.PopRaw<std::array<char, 0x10>>();
+        LOG_INFO(Service_AM, "no camera named {}", std::string_view(name.data(), strnlen(name.data(), name.size())));
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultCameraNotFound);
+    }
+};
+
+// TIPC session of nn::chat::gsv, which exchanges GameChat video images. It opens with the
+// notification protocol of IVi2Session (commands 1 and 11). The emulator never reports a chat,
+// so no notification slots exist and the event is never signaled.
+class IChatImageSession final : public ServiceFramework<IChatImageSession> {
+public:
+    explicit IChatImageSession(Core::System& system)
+        : ServiceFramework{system, "IChatImageSession"}, m_context{system, "ChatImage"} {
+        static const FunctionInfo functions[] = {
+            {1, &IChatImageSession::GetNotificationLimit, "GetNotificationLimit"},
+            {11, &IChatImageSession::GetNotificationEvent, "GetNotificationEvent"},
+            {103, &IChatImageSession::OpenVirtualDisplay, "OpenVirtualDisplay"},
+        };
+        RegisterHandlersTipc(functions);
+    }
+
+    Result HandleSyncRequest(Kernel::KServerSession& session, HLERequestContext& ctx) override {
+        if (!ctx.IsTipc() || handlers_tipc.contains(ctx.GetCommand())) {
+            return ServiceFrameworkBase::HandleSyncRequest(session, ctx);
+        }
+        const auto guard = LockService();
+        LOG_WARNING(Service_AM, "chat image unsupported command={}, words={:08x}", ctx.GetCommand(),
+                    fmt::join(std::span<const u32>(ctx.CommandBuffer() + 2, std::min<u32>(ctx.CommandBuffer()[1], 32)), ","));
+        InvokeRequestTipc(ctx);
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(Kernel::ResultNotImplemented.raw);
+        return system.IsPoweredOn() ? ctx.WriteToOutgoingCommandBuffer() : ResultSuccess;
+    }
+
+    ~IChatImageSession() override {
+        if (m_event) {
+            m_context.CloseEvent(m_event);
+        }
+    }
+
+private:
+    void GetNotificationLimit(HLERequestContext& ctx) {
+        const auto* packet = ctx.CommandBuffer();
+        const Result result = packet[0] == 0x11 && packet[1] == 0
+                                  ? ResultSuccess : Kernel::ResultInvalidCombination;
+        // Inclusive upper notification index; the SDK rejects values above 0x3ff.
+        IPC::ResponseBuilder rb{ctx, 3};
+        rb.Push(result.raw);
+        rb.Push<u32>(0);
+    }
+
+    void GetNotificationEvent(HLERequestContext& ctx) {
+        const auto* packet = ctx.CommandBuffer();
+        Result result = Kernel::ResultInvalidCombination;
+        Kernel::KReadableEvent* readable{};
+        if (packet[0] == 0x1b && packet[1] == 1 && packet[2] == 0) {
+            if (!m_event) {
+                m_event = m_context.CreateEvent("ChatImageNotification");
+            }
+            result = m_event ? ResultSuccess : Kernel::ResultOutOfResource;
+            if (m_event) {
+                readable = &m_event->GetReadableEvent();
+                readable->Open(kernel);
+            }
+        }
+        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+        rb.Push(result.raw);
+        ctx.AddMoveObject(readable);
+    }
+
+    // nn::chat::gsv::OpenVirtualDisplay: a display name of up to 8 bytes ("chat2") and the
+    // notification slot that reports its images. The display never receives an image.
+    void OpenVirtualDisplay(HLERequestContext& ctx) {
+        const auto* packet = ctx.CommandBuffer();
+        Result result = Kernel::ResultInvalidCombination;
+        if (packet[0] == 0x77 && packet[1] == 3) {
+            std::array<char, 8> name{};
+            std::memcpy(name.data(), packet + 2, name.size());
+            LOG_DEBUG(Service_AM, "chat virtual display {} notification={}",
+                      std::string_view(name.data(), strnlen(name.data(), name.size())), packet[4]);
+            result = ResultSuccess;
+        }
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(result.raw);
+    }
+
+    KernelHelpers::ServiceContext m_context;
+    Kernel::KEvent* m_event{};
+};
+
+// TIPC session behind nn::gs::sdk::QueryApplicationGpuTimeSpan. The SDK first binds a u64
+// (command 0, which must be echoed back) and then asks for the GPU time used between two
+// timestamps (command 11). The emulator does not account GPU time per application.
+class IGpuTimeSession final : public ServiceFramework<IGpuTimeSession> {
+public:
+    explicit IGpuTimeSession(Core::System& system) : ServiceFramework{system, "IGpuTimeSession"} {
+        static const FunctionInfo functions[] = {
+            {0, &IGpuTimeSession::BindProcess, "BindProcess"},
+            {11, &IGpuTimeSession::QueryApplicationGpuTimeSpan, "QueryApplicationGpuTimeSpan"},
+        };
+        RegisterHandlersTipc(functions);
+    }
+
+private:
+    void BindProcess(HLERequestContext& ctx) {
+        const auto* packet = ctx.CommandBuffer();
+        const Result result = packet[0] == 0x10 && packet[1] == 2 ? ResultSuccess
+                                                                  : Kernel::ResultInvalidCombination;
+        // Read before the response overwrites the command buffer.
+        const u64 process_id = u64{packet[2]} | (u64{packet[3]} << 32);
+        IPC::ResponseBuilder rb{ctx, 4};
+        rb.Push(result.raw);
+        rb.Push<u64>(process_id);
+    }
+
+    void QueryApplicationGpuTimeSpan(HLERequestContext& ctx) {
+        const auto* packet = ctx.CommandBuffer();
+        const Result result = packet[0] == 0x1b && packet[1] == 4 ? ResultSuccess
+                                                                  : Kernel::ResultInvalidCombination;
+        IPC::ResponseBuilder rb{ctx, 4};
+        rb.Push(result.raw);
+        rb.Push<u64>(0);
+    }
+};
+
 class ISyncpointSupervisor final : public ServiceFramework<ISyncpointSupervisor> {
 public:
     ISyncpointSupervisor(Core::System& system, std::shared_ptr<Nvidia::Module> module)
@@ -447,16 +589,29 @@ private:
     }
     Result QueueNativeImage(ClientState& state, const u32* packet) {
         const u32 slot = GraphicsSupervisorProtocol::DecodeBufferSlot(packet[4]);
-        R_UNLESS(!state.player_display, Kernel::ResultNotImplemented);
+        if (state.player_display) {
+            LOG_WARNING(Service_AM, "presentation to a player display is not implemented");
+            return Kernel::ResultNotImplemented;
+        }
         R_UNLESS(state.layer && state.display && slot < 15 && !state.queued[slot], Kernel::ResultInvalidState);
         const std::scoped_lock images_lock{m_images->mutex};
         const auto image = std::ranges::find(m_images->images, packet[5], &NativeImage::id);
         R_UNLESS(image != m_images->images.end() && image->window_pool && m_images->module, Kernel::ResultNotFound);
         // The observed presentation is a four-byte color image with the
         // backend's 16-GOB block height and no byte offset within its pool.
-        R_UNLESS(packet[6] == 0 && packet[7] == image->preference[2] && packet[8] == 3 &&
-                 image->preference[4] == 7 && state.output_encoding == 0x14,
-                 Kernel::ResultNotImplemented);
+        // packet[7] packs the inclusive maximum x and y of the presented region,
+        // which starts at the origin and may be smaller than the image.
+        const u32 present_width = (packet[7] & 0xffffU) + 1;
+        const u32 present_height = (packet[7] >> 16) + 1;
+        const u32 image_width = (image->preference[2] & 0xffffU) + 1;
+        const u32 image_height = (image->preference[2] >> 16) + 1;
+        if (!(packet[6] == 0 && present_width <= image_width && present_height <= image_height &&
+              packet[8] == 3 && image->preference[4] == 7 && state.output_encoding == 0x14)) {
+            LOG_WARNING(Service_AM, "unsupported presentation words={:08x} preference={:08x} encoding={:#x}",
+                        fmt::join(std::span<const u32>(packet + 6, 16), ","),
+                        fmt::join(image->preference, ","), state.output_encoding);
+            return Kernel::ResultNotImplemented;
+        }
         const u32 fence_id = ~packet[22];
         R_UNLESS(packet[23] == 0 && packet[25] == 0 &&
                  (fence_id == ~u32{0} || m_images->module->GetContainer().GetSyncpointManager().IsSyncpointAllocated(fence_id)),
@@ -483,7 +638,7 @@ private:
         R_UNLESS(state.producer->AttachBuffer(&queue_slot, buffer) == android::Status::NoError, Kernel::ResultOutOfResource);
         android::QueueBufferInput input{};
         android::QueueBufferOutput output{};
-        input.crop = {0, 0, native->width, native->height};
+        input.crop = {0, 0, static_cast<s32>(present_width), static_cast<s32>(present_height)};
         input.swap_interval = 1;
         input.fence = android::Fence::NoFence();
         if (fence_id != ~u32{0}) {
@@ -504,8 +659,8 @@ private:
             });
             system.CoreTiming().ScheduleLoopingEvent(std::chrono::milliseconds{1}, std::chrono::milliseconds{1}, m_release_poll);
         }
-        LOG_INFO(Service_AM, "Native image queued for display: image={}, slot={}, fence={}/{}, dimensions={}x{}",
-                 image->id, slot, fence_id, packet[24], native->width, native->height);
+        LOG_INFO(Service_AM, "Native image queued for display: image={}, slot={}, fence={}/{}, dimensions={}x{}, crop={}x{}",
+                 image->id, slot, fence_id, packet[24], native->width, native->height, present_width, present_height);
         R_SUCCEED();
     }
     void PresentClientBuffer(HLERequestContext& ctx) {
@@ -833,6 +988,16 @@ IGraphicsSupervisor::IGraphicsSupervisor(Core::System& system, Kernel::KProcess*
         {430, &IGraphicsSupervisor::DestroyNativeImage, "DestroyNativeImage"},
         {434, &IGraphicsSupervisor::RegisterGpuAddressSpace, "RegisterGpuAddressSpace"},
         {497, &IGraphicsSupervisor::OpenGpuSession, "OpenGpuSession"},
+        {601, &IGraphicsSupervisor::InitializeCameraContext, "InitializeCameraContext"},
+        {602, &IGraphicsSupervisor::OpenCameraSession, "OpenCameraSession"},
+        {603, &IGraphicsSupervisor::FinalizeCameraContext, "FinalizeCameraContext"},
+        {1111, &IGraphicsSupervisor::SetGraphicsFrameMode, "SetGraphicsFrameLengthMode"},
+        {1112, &IGraphicsSupervisor::SetGraphicsFrameMode, "SetGraphicsFrameRestartMode"},
+        {1113, &IGraphicsSupervisor::SetGraphicsFrameMode, "SetGraphicsFrameGpuTimesliceMode"},
+        {1121, &IGraphicsSupervisor::OpenGpuTimeSession, "OpenGpuTimeSession"},
+        {1201, &IGraphicsSupervisor::InitializeChatImageContext, "InitializeChatImageContext"},
+        {1202, &IGraphicsSupervisor::OpenChatImageSession, "OpenChatImageSession"},
+        {1203, &IGraphicsSupervisor::FinalizeChatImageContext, "FinalizeChatImageContext"},
         {1101, &IGraphicsSupervisor::InitializeFrameContext, "InitializeFrameContext"},
         {1102, &IGraphicsSupervisor::InitializeFrameContext, "ActivateFrameContext"},
         {1402, &IGraphicsSupervisor::GetNvidiaDriver, "GetNvidiaDriver"},
@@ -1130,6 +1295,107 @@ void IGraphicsSupervisor::GetSyncpointSession(HLERequestContext& ctx) {
     rb.Push(ResultSuccess.raw);
     rb.PushMoveObjects(ctx, client);
     LOG_DEBUG(Service_AM, "opened syncpoint-supervisor session");
+}
+
+// Camera (6xx) and GameChat image (12xx) clients share one protocol: command N+1 initializes
+// the context, N+2 opens a CMIF session and returns it as a move handle, and N+3 finalizes the
+// context, which the SDK also sends to undo N+1 when N+2 fails. Applications abort if these
+// fail, even when no camera or chat is available.
+void IGraphicsSupervisor::InitializeSubsystemContext(HLERequestContext& ctx, bool& initialized) {
+    const auto* packet = ctx.CommandBuffer();
+    Result result = Kernel::ResultInvalidCombination;
+    if (packet[1] == 0) {
+        result = initialized ? Kernel::ResultInvalidState : ResultSuccess;
+        initialized = true;
+    }
+    LOG_DEBUG(Service_AM, "context initialization command={}, result={:#x}", ctx.GetCommand(),
+              result.raw);
+    IPC::ResponseBuilder rb{ctx, 2};
+    rb.Push(result.raw);
+}
+
+void IGraphicsSupervisor::OpenSubsystemSession(HLERequestContext& ctx, bool initialized,
+                                               u32 data_words,
+                                               std::shared_ptr<SessionRequestHandler> handler) {
+    const auto* packet = ctx.CommandBuffer();
+    Result result = Kernel::ResultInvalidCombination;
+    Kernel::KClientSession* client{};
+    if (packet[1] == data_words) {
+        result = initialized ? CreateGraphicsSession(system, ctx, std::move(handler), &client)
+                             : Kernel::ResultInvalidState;
+    }
+    LOG_DEBUG(Service_AM, "session command={}, result={:#x}", ctx.GetCommand(), result.raw);
+    // The SDK reads the move-handle slot before the result, as for OpenGpuSession.
+    IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+    rb.Push(result.raw);
+    ctx.AddMoveObject(client);
+}
+
+void IGraphicsSupervisor::FinalizeSubsystemContext(HLERequestContext& ctx, bool& initialized) {
+    const auto* packet = ctx.CommandBuffer();
+    Result result = Kernel::ResultInvalidCombination;
+    if (packet[1] == 0) {
+        result = initialized ? ResultSuccess : Kernel::ResultInvalidState;
+        initialized = false;
+    }
+    IPC::ResponseBuilder rb{ctx, 2};
+    rb.Push(result.raw);
+}
+
+void IGraphicsSupervisor::InitializeCameraContext(HLERequestContext& ctx) {
+    InitializeSubsystemContext(ctx, m_camera_context_initialized);
+}
+
+void IGraphicsSupervisor::OpenCameraSession(HLERequestContext& ctx) {
+    // The request carries one u64, 1 for the only observed session kind.
+    OpenSubsystemSession(ctx, m_camera_context_initialized, 2,
+                         std::make_shared<ICameraSession>(system));
+}
+
+void IGraphicsSupervisor::FinalizeCameraContext(HLERequestContext& ctx) {
+    FinalizeSubsystemContext(ctx, m_camera_context_initialized);
+}
+
+void IGraphicsSupervisor::OpenGpuTimeSession(HLERequestContext& ctx) {
+    // Opened on first use without a context command.
+    OpenSubsystemSession(ctx, true, 0, std::make_shared<IGpuTimeSession>(system));
+}
+
+void IGraphicsSupervisor::InitializeChatImageContext(HLERequestContext& ctx) {
+    InitializeSubsystemContext(ctx, m_chat_image_context_initialized);
+}
+
+void IGraphicsSupervisor::OpenChatImageSession(HLERequestContext& ctx) {
+    OpenSubsystemSession(ctx, m_chat_image_context_initialized, 0,
+                         std::make_shared<IChatImageSession>(system));
+}
+
+void IGraphicsSupervisor::FinalizeChatImageContext(HLERequestContext& ctx) {
+    FinalizeSubsystemContext(ctx, m_chat_image_context_initialized);
+}
+
+// nn::gs::sdk::SetGraphicsFrame{Length,Restart,GpuTimeslice}Mode send one u32 each. The SDK
+// translates length modes 0..3 to 0, 0x11e, 0x13c and 0x178 and checks restart modes below 3
+// and timeslice modes below 2. Frame pacing is driven by the host, so the values are recorded.
+void IGraphicsSupervisor::SetGraphicsFrameMode(HLERequestContext& ctx) {
+    static constexpr std::array<u32, 4> FrameLengths{0, 0x11e, 0x13c, 0x178};
+    const auto* packet = ctx.CommandBuffer();
+    const u32 command = ctx.GetCommand();
+    Result result = Kernel::ResultInvalidCombination;
+    if (packet[1] == 1) {
+        const u32 value = packet[2];
+        const bool valid = command == 1111 ? std::ranges::find(FrameLengths, value) != FrameLengths.end()
+                         : command == 1112 ? value < 3
+                                           : value < 2;
+        result = valid ? ResultSuccess : Kernel::ResultInvalidEnumValue;
+        if (valid) {
+            m_frame_modes[command - 1111] = value;
+        }
+    }
+    LOG_DEBUG(Service_AM, "graphics frame mode command={}, value={:#x}, result={:#x}", command,
+              packet[2], result.raw);
+    IPC::ResponseBuilder rb{ctx, 2};
+    rb.Push(result.raw);
 }
 
 void IGraphicsSupervisor::GetNvidiaDriver(HLERequestContext& ctx) {
