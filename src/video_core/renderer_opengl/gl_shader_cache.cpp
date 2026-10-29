@@ -499,7 +499,7 @@ std::unique_ptr<GraphicsPipeline> ShaderCache::CreateGraphicsPipeline(
         Shader::Environment& env{*envs[env_index]};
         ++env_index;
 
-        const u32 cfg_offset = u32(env.StartAddress() + sizeof(Shader::ProgramHeader));
+        const u32 cfg_offset = env.StartAddress() + env.ProgramHeaderSize();
         Shader::Maxwell::Flow::CFG cfg(env, pools.flow_block, cfg_offset, index == 0);
 
         if (Settings::values.dump_guest_shaders) {

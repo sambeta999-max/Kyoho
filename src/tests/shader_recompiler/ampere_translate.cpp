@@ -784,6 +784,8 @@ TEST_CASE("Ampere translate: attribute store", "[shader][ampere]") {
     }
     Translation t;
     TestEnvironment env{words, Stage::VertexB};
+    // Ampere graphics code follows a version 4 program header of 0x80 bytes
+    REQUIRE(env.ProgramHeaderSize() == 0x80);
     Translate(t, env);
     std::vector<IR::Attribute> written;
     for (const IR::Block* const block : t.program.blocks) {

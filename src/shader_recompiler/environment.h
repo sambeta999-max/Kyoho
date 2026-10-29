@@ -124,6 +124,13 @@ public:
         return is_ampere;
     }
 
+    /// Size of the shader program header before the code of a graphics program: version 3
+    /// (0x50 bytes) on Maxwell, version 4 (clc797sph.h, 0x80 bytes) on Ampere. The fields of the
+    /// first 0x50 bytes keep their positions.
+    [[nodiscard]] u32 ProgramHeaderSize() const noexcept {
+        return is_ampere ? 0x80 : static_cast<u32>(sizeof(ProgramHeader));
+    }
+
 protected:
     ProgramHeader sph{};
     std::array<u32, 8> gp_passthrough_mask{};

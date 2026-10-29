@@ -317,7 +317,7 @@ GraphicsEnvironment::GraphicsEnvironment(Tegra::Engines::Maxwell3D& maxwell3d_,
     : GenericEnvironment{gpu_memory_, program_base_, start_address_}, maxwell3d{&maxwell3d_} {
     is_ampere = maxwell3d->IsAmpere();
     gpu_memory->ReadBlock(program_base + start_address, &sph, sizeof(sph));
-    initial_offset = sizeof(sph);
+    initial_offset = ProgramHeaderSize();
     gp_passthrough_mask = maxwell3d->regs.post_vtg_shader_attrib_skip_mask;
     switch (program) {
     case Maxwell::ShaderType::VertexA:
