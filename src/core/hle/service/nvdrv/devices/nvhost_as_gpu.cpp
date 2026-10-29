@@ -5,6 +5,7 @@
 // SPDX-FileCopyrightText: 2021 Skyline Team and Contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <algorithm>
 #include <cstring>
 #include <limits>
 #include <utility>
@@ -169,7 +170,76 @@ NvResult nvhost_as_gpu::UnmapNative4K(u64 address, u64 size) {
     release.offset = address;
     release.pages = static_cast<u32>(size >> VM::PAGE_SIZE_BITS);
     release.page_size = VM::YUZU_PAGESIZE;
-    return FreeSpace(release);
+    const auto result = FreeSpace(release);
+    if (result == NvResult::Success) {
+        // Pages unmapped inside a sparse region return to it.
+        const std::scoped_lock lock{mutex};
+        const auto region = m_native_sparse.upper_bound(address);
+        if (region != m_native_sparse.begin() &&
+            address + size - std::prev(region)->first <= std::prev(region)->second) {
+            gmmu->MapSparse(address, size, false);
+        }
+    }
+    return result;
+}
+
+NvResult nvhost_as_gpu::CreateNativeSparse(u64 address, u64 size) {
+    if (!m_extended_abi || !size || !Common::IsAligned(address, VM::YUZU_PAGESIZE) ||
+        !Common::IsAligned(size, VM::YUZU_PAGESIZE)) {
+        return NvResult::BadParameter;
+    }
+    const std::scoped_lock lock{mutex};
+    if (!vm.initialised || address < vm.va_range_start || address >= vm.va_range_split ||
+        size > vm.va_range_split - address) {
+        return NvResult::BadParameter;
+    }
+    const auto next = m_native_sparse.lower_bound(address);
+    if ((next != m_native_sparse.end() && next->first < address + size) ||
+        (next != m_native_sparse.begin() &&
+         std::prev(next)->first + std::prev(next)->second > address)) {
+        return NvResult::BadParameter;
+    }
+    // Only the gaps between existing mappings become sparse.
+    u64 gap = address;
+    if (auto it = allocation_map.lower_bound(address); it != allocation_map.begin()) {
+        gap = (std::clamp)(std::prev(it)->first + std::prev(it)->second.size, address, address + size);
+    }
+    for (auto it = allocation_map.lower_bound(address);
+         it != allocation_map.end() && it->first < address + size; ++it) {
+        if (it->first > gap) {
+            gmmu->MapSparse(gap, it->first - gap, false);
+        }
+        gap = (std::max)(gap, it->first + it->second.size);
+    }
+    if (gap < address + size) {
+        gmmu->MapSparse(gap, address + size - gap, false);
+    }
+    m_native_sparse.emplace(address, size);
+    return NvResult::Success;
+}
+
+NvResult nvhost_as_gpu::DestroyNativeSparse(u64 address, u64 size) {
+    const std::scoped_lock lock{mutex};
+    const auto region = m_native_sparse.find(address);
+    if (region == m_native_sparse.end() || region->second != size) {
+        return NvResult::BadParameter;
+    }
+    u64 gap = address;
+    if (auto it = allocation_map.lower_bound(address); it != allocation_map.begin()) {
+        gap = (std::clamp)(std::prev(it)->first + std::prev(it)->second.size, address, address + size);
+    }
+    for (auto it = allocation_map.lower_bound(address);
+         it != allocation_map.end() && it->first < address + size; ++it) {
+        if (it->first > gap) {
+            gmmu->Unmap(gap, it->first - gap);
+        }
+        gap = (std::max)(gap, it->first + it->second.size);
+    }
+    if (gap < address + size) {
+        gmmu->Unmap(gap, address + size - gap);
+    }
+    m_native_sparse.erase(region);
+    return NvResult::Success;
 }
 
 
@@ -622,7 +692,12 @@ NvResult nvhost_as_gpu::BindChannel(IoctlBindChannel& params) {
 }
 
 void nvhost_as_gpu::GetVARegionsImpl(IoctlGetVaRegions& params) {
-    params.buf_size = 2 * sizeof(VaRegion);
+    const bool has_big_pages =
+        vm.big_page_allocator->GetVALimit() > vm.big_page_allocator->GetVAStart();
+    // As in nvgpu, an address space without big pages reports only its small page region.
+    // Native views of a parent's small pages have none, and NVN builds an allocator for every
+    // region it is given, which fails for an empty one.
+    params.buf_size = (has_big_pages ? 2 : 1) * sizeof(VaRegion);
 
     params.regions = std::array<VaRegion, 2>{
         VaRegion{
@@ -638,6 +713,9 @@ void nvhost_as_gpu::GetVARegionsImpl(IoctlGetVaRegions& params) {
             .pages = vm.big_page_allocator->GetVALimit() - vm.big_page_allocator->GetVAStart(),
         },
     };
+    if (!has_big_pages) {
+        params.regions[1] = {};
+    }
 }
 
 NvResult nvhost_as_gpu::GetVARegions1(IoctlGetVaRegions& params) {
@@ -666,7 +744,8 @@ NvResult nvhost_as_gpu::GetVARegions3(IoctlGetVaRegions& params, std::span<VaReg
 
     GetVARegionsImpl(params);
 
-    const size_t num_regions = (std::min)(params.regions.size(), regions.size());
+    const size_t num_regions =
+        (std::min)(params.buf_size / sizeof(VaRegion), regions.size());
     for (size_t i = 0; i < num_regions; i++) {
         regions[i] = params.regions[i];
     }

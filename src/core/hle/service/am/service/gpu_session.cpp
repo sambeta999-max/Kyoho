@@ -22,6 +22,10 @@
 #include "core/hle/service/nvdrv/devices/native_gpu_kind.h"
 
 namespace Service::AM {
+// Bound on the GPU memory objects and mappings of one worker. NVN creates more than a thousand
+// small memory objects while initializing; the real limit is nvmap and address space capacity.
+constexpr size_t MaxGpuWorkerObjects = 0x10000;
+
 struct GpuDeviceRegistry {
     GpuDeviceRegistry(Core::System& system, std::shared_ptr<Nvidia::Module> module_, Kernel::KProcess* process_)
         : context{system, "GpuDevices"}, module{std::move(module_)}, process{process_} {
@@ -58,6 +62,8 @@ public:
             {211, &IGpuWorker::NormalMapGpuMemory4K, "NormalMapGpuMemory4K"},
             {212, &IGpuWorker::NormalModifyGpuMemory4K, "NormalModifyGpuMemory4K"},
             {213, &IGpuWorker::NormalUnmapGpuMemory4K, "NormalUnmapGpuMemory4K"},
+            {214, &IGpuWorker::CreateSparseRegion, "CreateSparseRegion"},
+            {215, &IGpuWorker::DestroySparseRegion, "DestroySparseRegion"},
         };
         RegisterHandlersTipc(functions);
     }
@@ -119,7 +125,7 @@ private:
         R_UNLESS(kind, Kernel::ResultNotImplemented);
         const u64 begin = ReadPair(packet, 3), end = ReadPair(packet, 5);
         R_UNLESS(end >= begin && end != ~u64{0}, Kernel::ResultInvalidSize);
-        R_UNLESS(m_mappings.size() < 1024, Kernel::ResultOutOfResource);
+        R_UNLESS(m_mappings.size() < MaxGpuWorkerObjects, Kernel::ResultOutOfResource);
         const auto as = m_module->GetDevice<Nvidia::Devices::nvhost_as_gpu>(packet[2]);
         R_UNLESS(as, Kernel::ResultNotFound);
         const auto result = as->MapNative4K(packet[7], begin, ReadPair(packet, 8),
@@ -213,6 +219,61 @@ private:
         rb.Push(result.raw);
         rb.Push(unmapped);
     }
+    void CreateSparseRegion(HLERequestContext& ctx) {
+        const auto* packet = ctx.CommandBuffer();
+        const std::scoped_lock device_lock{m_devices->mutex};
+        Result result = Kernel::ResultInvalidCombination;
+        const u64 begin = ReadPair(packet, 3), end = ReadPair(packet, 5);
+        // The page size is sent as its log2; the page table allocation mode only selects how
+        // the native driver backs the region's page tables.
+        const u32 page_bits = packet[7] & 0xff;
+        if (packet[0] == 0xe6 && packet[1] == 10 && (page_bits == 12 || page_bits == 16) &&
+            (packet[8] & 0xff) <= 1 && (packet[10] & 0xff) <= 1 &&
+            packet[11] < m_devices->events.size() && m_devices->events[packet[11]]) {
+            result = Kernel::ResultNotFound;
+            const u64 page_size = u64{1} << page_bits;
+            if (end < begin || end == ~u64{0} || !Common::IsAligned(begin, page_size) ||
+                !Common::IsAligned(end - begin + 1, page_size)) {
+                result = Kernel::ResultInvalidSize;
+            } else if (OwnsAddressSpace(packet[2])) {
+                const auto as = m_module->GetDevice<Nvidia::Devices::nvhost_as_gpu>(packet[2]);
+                if (as && as->CreateNativeSparse(begin, end - begin + 1) ==
+                              Nvidia::NvResult::Success) {
+                    result = ResultSuccess;
+                } else {
+                    result = Kernel::ResultInvalidCurrentMemory;
+                }
+            }
+            m_devices->events[packet[11]]->Signal(kernel);
+        }
+        LOG_DEBUG(Service_AM, "GPU sparse create as={}, VA={:#x}..{:#x}, page_bits={}, alloc_mode={}, as_flags={:#x}, sync={}, notification={}, result={:#x}",
+                  packet[2], begin, end, page_bits, packet[8] & 0xff, packet[9] & 0xff,
+                  packet[10] & 0xff, packet[11], result.raw);
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(result.raw);
+    }
+    void DestroySparseRegion(HLERequestContext& ctx) {
+        const auto* packet = ctx.CommandBuffer();
+        const std::scoped_lock device_lock{m_devices->mutex};
+        Result result = Kernel::ResultInvalidCombination;
+        const u64 begin = ReadPair(packet, 3), end = ReadPair(packet, 5);
+        if (packet[0] == 0xe7 && packet[1] == 7 && (packet[7] & 0xff) <= 1 &&
+            packet[8] < m_devices->events.size() && m_devices->events[packet[8]]) {
+            result = Kernel::ResultNotFound;
+            const auto as = OwnsAddressSpace(packet[2])
+                                ? m_module->GetDevice<Nvidia::Devices::nvhost_as_gpu>(packet[2])
+                                : nullptr;
+            if (as && end >= begin &&
+                as->DestroyNativeSparse(begin, end - begin + 1) == Nvidia::NvResult::Success) {
+                result = ResultSuccess;
+            }
+            m_devices->events[packet[8]]->Signal(kernel);
+        }
+        LOG_DEBUG(Service_AM, "GPU sparse destroy as={}, VA={:#x}..{:#x}, sync={}, notification={}, result={:#x}",
+                  packet[2], begin, end, packet[7] & 0xff, packet[8], result.raw);
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(result.raw);
+    }
     Result RegisterMemory(u64 begin, u64 end, u32 flags, u32 device, u32& id) {
         R_UNLESS(flags == 0, Kernel::ResultNotImplemented);
         R_UNLESS(device < m_devices->devices.size(), Kernel::ResultNotFound);
@@ -222,7 +283,7 @@ private:
         const u64 size = end - begin + 1;
         R_UNLESS(Common::IsAligned(begin, Kernel::PageSize), Kernel::ResultInvalidAddress);
         R_UNLESS(Common::IsAligned(size, Kernel::PageSize), Kernel::ResultInvalidSize);
-        R_UNLESS(m_memory.size() < 1024, Kernel::ResultOutOfResource);
+        R_UNLESS(m_memory.size() < MaxGpuWorkerObjects, Kernel::ResultOutOfResource);
         auto& page_table = m_process->GetPageTable();
         R_UNLESS(page_table.Contains(begin, size), Kernel::ResultInvalidCurrentMemory);
         for (u64 address = begin; address <= end;) {

@@ -66,6 +66,8 @@ public:
 
     NvResult MapNative4K(u32 handle, u64 address, u64 buffer_offset, u64 size, u8 kind);
     NvResult UnmapNative4K(u64 address, u64 size);
+    NvResult CreateNativeSparse(u64 address, u64 size);
+    NvResult DestroyNativeSparse(u64 address, u64 size);
     NvResult GetNativeSyncpointShim(u64& address, u32& stride, u32& count);
     NvResult ModifyNativeKind(u64 address, u64 size, u8 requested, u8 fallback);
 
@@ -222,6 +224,9 @@ private:
 
     bool m_extended_abi{};
     bool m_syncpoint_shim_reserved{};
+    //!< Sparse regions of the native ABI, by address. They are not reservations: native 4K
+    //!< mappings are placed inside them, and their pages read as zero while unmapped.
+    std::map<u64, u64> m_native_sparse;
     DeviceFD m_fd{-1};
     Kernel::KProcess* m_owner_process{};
     std::shared_ptr<nvhost_as_gpu> m_shared_parent;
