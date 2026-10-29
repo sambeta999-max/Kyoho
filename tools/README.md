@@ -11,6 +11,7 @@ Tools for Eden and other subprojects. When adding new scripts please use `#!/bin
 - `maxwell-spirv`: Converts Maxwell shaders (dumped from `.ash` files) into SPIR-V code (emitted into STDOUT).
 - `maxwell-disas`: Dumb raw Maxwell disassembler.
 - `maxwell-ir`: Dump generated IR of Maxwell shaders.
+- [`ampere-sm86`](./ampere-sm86): Opcode sweep, decoder table generator and GPU test vector tools for the SM86 shader frontend.
 
 ## Scripts
 
