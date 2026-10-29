@@ -25,6 +25,7 @@
 #include "video_core/engines/engine_upload.h"
 #include "video_core/gpu.h"
 #include "video_core/macro.h"
+#include "video_core/macro_turing.h"
 #include "video_core/textures/texture.h"
 #include "video_core/engines/maxwell_3d.h"
 
@@ -3293,6 +3294,8 @@ private:
 
     /// Interpreter for the macro codes uploaded to the GPU.
     MacroEngine macro_engine;
+    /// Macro engine of AMPERE_B, with its own instruction encoding and data RAM
+    TuringMacroEngine turing_macro;
 
     Upload::State upload_state;
 

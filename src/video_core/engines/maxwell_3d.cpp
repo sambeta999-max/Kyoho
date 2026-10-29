@@ -28,6 +28,44 @@ namespace {
 // ADDRESS_UPPER and REPORT_SEMAPHORE_EXECUTE
 constexpr u32 AMPERE_REPORT_SEMAPHORE = 0x0158 / sizeof(u32);
 constexpr u32 AMPERE_REPORT_SEMAPHORE_EXECUTE = AMPERE_REPORT_SEMAPHORE + 4;
+
+// MME DMA methods of AMPERE_B: SET_MME_MEM_ADDRESS_A to SET_MME_DATA_FIFO_CONFIG, and
+// MME_DMA_WRITE_METHOD_BARRIER
+constexpr u32 AMPERE_MME_DMA_BEGIN = 0x0550 / sizeof(u32);
+constexpr u32 AMPERE_MME_DMA_END = 0x0578 / sizeof(u32);
+constexpr u32 AMPERE_MME_DMA_WRITE_METHOD_BARRIER = 0x0DEC / sizeof(u32);
+
+/// What a Turing macro runs on: the registers, methods and memory of the 3D engine
+class TuringMacroHost final : public TuringMacroEngine::Host {
+public:
+    TuringMacroHost(Core::System* system_, Maxwell3D& maxwell3d_, MemoryManager& memory_manager_)
+        : system{system_}, maxwell3d{maxwell3d_}, memory_manager{memory_manager_} {}
+
+    u32 ReadState(u32 method) override {
+        return method < Maxwell3D::Regs::NUM_REGS ? maxwell3d.regs.reg_array[method] : 0;
+    }
+
+    void CallMethod(u32 method, u32 value) override {
+        if (system == nullptr || method >= 0xE00) {
+            LOG_ERROR(HW_GPU, "Unsupported method {:#x} emitted by a macro", method);
+            return;
+        }
+        maxwell3d.CallMethod(*system, method, value, true);
+    }
+
+    void ReadMemory(GPUVAddr address, std::span<u32> data) override {
+        memory_manager.ReadBlock(address, data.data(), data.size_bytes());
+    }
+
+    void WriteMemory(GPUVAddr address, std::span<const u32> data) override {
+        memory_manager.WriteBlock(address, data.data(), data.size_bytes());
+    }
+
+private:
+    Core::System* system;
+    Maxwell3D& maxwell3d;
+    MemoryManager& memory_manager;
+};
 } // Anonymous namespace
 
 /// First register id that is actually a Macro call.
@@ -145,6 +183,9 @@ bool Maxwell3D::IsMethodExecutable(u32 method) {
     if (method >= MacroRegistersStart) {
         return true;
     }
+    if (method >= AMPERE_MME_DMA_BEGIN && method < AMPERE_MME_DMA_END) {
+        return true;
+    }
     switch (method) {
     case MAXWELL3D_REG_INDEX(draw.end):
     case MAXWELL3D_REG_INDEX(draw.begin):
@@ -195,6 +236,7 @@ bool Maxwell3D::IsMethodExecutable(u32 method) {
     case MAXWELL3D_REG_INDEX(clear_surface):
     case MAXWELL3D_REG_INDEX(report_semaphore.query):
     case AMPERE_REPORT_SEMAPHORE_EXECUTE:
+    case AMPERE_MME_DMA_WRITE_METHOD_BARRIER:
     case MAXWELL3D_REG_INDEX(render_enable.mode):
     case MAXWELL3D_REG_INDEX(clear_report_value):
     case MAXWELL3D_REG_INDEX(sync_info):
@@ -370,8 +412,14 @@ void Maxwell3D::ProcessMethodCall(u32 method, u32 argument, u32 nonshadow_argume
         shadow_state.shadow_ram_control = static_cast<Regs::ShadowRamControl>(nonshadow_argument);
         return;
     case MAXWELL3D_REG_INDEX(load_mme.instruction_ptr):
+        if (is_ampere) {
+            return turing_macro.SetUploadPointer(regs.load_mme.instruction_ptr);
+        }
         return macro_engine.ClearCode(regs.load_mme.instruction_ptr);
     case MAXWELL3D_REG_INDEX(load_mme.instruction):
+        if (is_ampere) {
+            return turing_macro.Upload(argument);
+        }
         return macro_engine.AddCode(regs.load_mme.instruction_ptr, argument);
     case MAXWELL3D_REG_INDEX(load_mme.start_address):
         return ProcessMacroBind(argument);
@@ -434,6 +482,12 @@ void Maxwell3D::ProcessMethodCall(u32 method, u32 argument, u32 nonshadow_argume
     case MAXWELL3D_REG_INDEX(tiled_cache_barrier):
         return rasterizer->TiledCacheBarrier();
     default:
+        if (is_ampere && ((method >= AMPERE_MME_DMA_BEGIN && method < AMPERE_MME_DMA_END) ||
+                          method == AMPERE_MME_DMA_WRITE_METHOD_BARRIER)) {
+            TuringMacroHost host{nullptr, *this, memory_manager};
+            turing_macro.ProcessMethod(method, argument, host);
+            return;
+        }
         draw_manager.ProcessMethodCall(*this, method, argument);
         break;
     }
@@ -448,7 +502,13 @@ void Maxwell3D::CallMacroMethod(Core::System& system, u32 method, const std::vec
         ((method - MacroRegistersStart) >> 1) % static_cast<u32>(macro_positions.size());
 
     // Execute the current macro.
-    macro_engine.Execute(system, *this, macro_positions[entry], parameters);
+    if (is_ampere) {
+        RefreshParameters();
+        TuringMacroHost host{&system, *this, memory_manager};
+        turing_macro.Execute(macro_positions[entry], parameters, host);
+    } else {
+        macro_engine.Execute(system, *this, macro_positions[entry], parameters);
+    }
     draw_manager.DrawDeferred(*this);
 }
 
