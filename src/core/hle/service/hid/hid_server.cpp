@@ -119,6 +119,7 @@ IHidServer::IHidServer(Core::System& system_, std::shared_ptr<ResourceManager> r
         {134, C<&IHidServer::SetNpadAnalogStickUseCenterClamp>, "SetNpadAnalogStickUseCenterClamp"},
         {135, C<&IHidServer::SetNpadCaptureButtonAssignment>, "SetNpadCaptureButtonAssignment"},
         {136, C<&IHidServer::ClearNpadCaptureButtonAssignment>, "ClearNpadCaptureButtonAssignment"},
+        {138, C<&IHidServer::SetSceneIdForPrivateApp>, "SetSceneIdForPrivateApp"},
         {200, C<&IHidServer::GetVibrationDeviceInfo>, "GetVibrationDeviceInfo"},
         {201, C<&IHidServer::SendVibrationValue>, "SendVibrationValue"},
         {202, C<&IHidServer::GetActualVibrationValue>, "GetActualVibrationValue"},
@@ -132,6 +133,8 @@ IHidServer::IHidServer(Core::System& system_, std::shared_ptr<ResourceManager> r
         {210, C<&IHidServer::EndPermitVibrationSession>, "EndPermitVibrationSession"},
         {211, C<&IHidServer::IsVibrationDeviceMounted>, "IsVibrationDeviceMounted"},
         {212, C<&IHidServer::SendVibrationValueInBool>, "SendVibrationValueInBool"},
+        // The Switch 2 SDK's nn::hid::SendVibrationValue sends 213 with the 201 layout.
+        {213, C<&IHidServer::SendVibrationValue>, "SendVibrationValue2"},
         {214, C<&IHidServer::SendNativeVibrationValues>, "SendNativeVibrationValues"},
         {300, C<&IHidServer::ActivateConsoleSixAxisSensor>, "ActivateConsoleSixAxisSensor"},
         {301, C<&IHidServer::StartConsoleSixAxisSensor>, "StartConsoleSixAxisSensor"},
@@ -1513,6 +1516,13 @@ Result IHidServer::RegisterNativeInputMemory(
     native_input_memories.push_back({memory.Get(), aruid.pid, size, {mode, parameter0, parameter1, parameter2}});
     // Retain the real guest-owned input buffer. No Joy-Con mouse samples are
     // produced while those devices are disconnected.
+    R_SUCCEED();
+}
+
+Result IHidServer::SetSceneIdForPrivateApp(s32 scene_id, ClientAppletResourceUserId aruid) {
+    // nn::hid::SetSceneIdForPrivateApp. No emulated controller behavior depends on the scene.
+    LOG_DEBUG(Service_HID, "called, scene_id={}, aruid={}", scene_id, aruid.pid);
+    scene_id_for_private_app = scene_id;
     R_SUCCEED();
 }
 

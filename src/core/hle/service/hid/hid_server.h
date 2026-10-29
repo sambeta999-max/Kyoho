@@ -162,6 +162,7 @@ private:
                                           ClientAppletResourceUserId aruid,
                                           Core::HID::NpadButton button);
     Result ClearNpadCaptureButtonAssignment(ClientAppletResourceUserId aruid);
+    Result SetSceneIdForPrivateApp(s32 scene_id, ClientAppletResourceUserId aruid);
     Result GetVibrationDeviceInfo(Out<Core::HID::VibrationDeviceInfo> out_vibration_device_info,
                                   Core::HID::VibrationDeviceHandle vibration_device_handle);
     Result SendVibrationValue(Core::HID::VibrationDeviceHandle vibration_device_handle,
@@ -292,6 +293,7 @@ private:
     std::vector<NativeInputMemory> native_input_memories;
     std::shared_ptr<ResourceManager> resource_manager;
     std::shared_ptr<HidFirmwareSettings> firmware_settings;
+    s32 scene_id_for_private_app{};
 };
 
 } // namespace Service::HID
