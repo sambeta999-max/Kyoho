@@ -94,6 +94,24 @@ void Dispatch(TranslatorVisitor& v, Opcode opcode, Instruction insn) {
         return v.VOTE(insn);
     case Opcode::VOTEU:
         return v.VOTEU(insn);
+    case Opcode::REDUX:
+        return v.REDUX(insn);
+    case Opcode::ATOMG:
+        return v.ATOMG(insn);
+    case Opcode::RED:
+        return v.RED(insn);
+    case Opcode::ATOMS:
+        return v.ATOMS(insn);
+    case Opcode::SULD_P:
+    case Opcode::SULD_P_BINDLESS:
+    case Opcode::SULD_D:
+    case Opcode::SULD_D_BINDLESS:
+        return v.SULD(insn);
+    case Opcode::SUST_P:
+    case Opcode::SUST_P_BINDLESS:
+    case Opcode::SUST_D:
+    case Opcode::SUST_D_BINDLESS:
+        return v.SUST(insn);
     case Opcode::FADD:
         return v.FADD(insn);
     case Opcode::FMUL:

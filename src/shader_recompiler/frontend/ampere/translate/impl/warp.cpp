@@ -106,6 +106,38 @@ void TranslatorVisitor::VOTE(Instruction insn) {
     X(Reg(insn.Dest()), ballot);
 }
 
+// Warp-wide reduction into a uniform register, as a butterfly over the full warp.
+// Operation at [78..81): and, or, xor, sum, min, max; signed min and max at bit 73.
+void TranslatorVisitor::REDUX(Instruction insn) {
+    const u64 op{insn.Bits(78, 3)};
+    const bool is_signed{insn.Bit(73)};
+    if (op > 5) {
+        throw NotImplementedException("REDUX operation {}", op);
+    }
+    const auto combine{[&](const IR::U32& a, const IR::U32& b) -> IR::U32 {
+        switch (op) {
+        case 0:
+            return ir.BitwiseAnd(a, b);
+        case 1:
+            return ir.BitwiseOr(a, b);
+        case 2:
+            return ir.BitwiseXor(a, b);
+        case 3:
+            return ir.IAdd(a, b);
+        case 4:
+            return ir.IMin(a, b, is_signed);
+        default:
+            return ir.IMax(a, b, is_signed);
+        }
+    }};
+    IR::U32 value{SrcA(insn)};
+    for (u32 lane_mask = 16; lane_mask > 0; lane_mask >>= 1) {
+        value = combine(value, ir.ShuffleButterfly(value, ir.Imm32(lane_mask), ir.Imm32(31),
+                                                   ir.Imm32(0)));
+    }
+    X(UReg(insn.Bits(16, 6)), value);
+}
+
 void TranslatorVisitor::VOTEU(Instruction insn) {
     const auto [vote, ballot]{Vote(*this, insn)};
     if (insn.Bits(81, 3) != PT) {

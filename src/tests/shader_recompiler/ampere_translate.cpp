@@ -697,6 +697,19 @@ TEST_CASE("Ampere translate: nvcc texture kernel", "[shader][ampere]") {
     REQUIRE(has(0x168, TextureType::Color3D));
     REQUIRE(has(0x168, TextureType::ColorCube));
 
+    // The surface read and written by SULD/SUST is the third parameter, which keeps the
+    // texture results above alive
+    const auto& images{t.program.info.image_descriptors};
+    REQUIRE(std::ranges::any_of(images, [](const ImageDescriptor& desc) {
+        return desc.cbuf_index == 0 && desc.cbuf_offset == 0x170 && desc.is_written;
+    }));
+    const auto opcodes{Opcodes(t.program)};
+    REQUIRE(Contains(opcodes, IR::Opcode::ImageGradient));
+    REQUIRE(Contains(opcodes, IR::Opcode::ImageGather));
+    REQUIRE(Contains(opcodes, IR::Opcode::ImageFetch));
+    REQUIRE(Contains(opcodes, IR::Opcode::ImageRead));
+    REQUIRE(Contains(opcodes, IR::Opcode::ImageWrite));
+
     // The result is stored through a pointer read from c[0x0][0x178] by IMAD.WIDE
     const auto& storage{t.program.info.storage_buffers_descriptors};
     REQUIRE(std::ranges::any_of(storage, [](const StorageBufferDescriptor& desc) {
@@ -715,6 +728,13 @@ TEST_CASE("Ampere translate: nvcc warp kernel", "[shader][ampere]") {
     REQUIRE(Contains(opcodes, IR::Opcode::VoteAny));
     REQUIRE(Contains(opcodes, IR::Opcode::SubgroupBallot));
     REQUIRE(Contains(opcodes, IR::Opcode::Barrier));
+    // atomicMax on shared memory, atomicAdd and atomicExch on global memory
+    REQUIRE(Contains(opcodes, IR::Opcode::SharedAtomicSMax32));
+    REQUIRE((Contains(opcodes, IR::Opcode::StorageAtomicIAdd32) ||
+             Contains(opcodes, IR::Opcode::GlobalAtomicIAdd32)));
+    REQUIRE((Contains(opcodes, IR::Opcode::StorageAtomicExchange64) ||
+             Contains(opcodes, IR::Opcode::StorageAtomicExchange32x2) ||
+             Contains(opcodes, IR::Opcode::GlobalAtomicExchange64)));
 }
 
 TEST_CASE("Ampere translate: interpolation", "[shader][ampere]") {

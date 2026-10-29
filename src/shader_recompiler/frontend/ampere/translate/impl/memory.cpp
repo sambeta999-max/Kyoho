@@ -42,22 +42,24 @@ std::pair<int, bool> BitSize(Instruction insn) {
     throw NotImplementedException("Memory access size {}", insn.Bits(73, 3));
 }
 
-// Signed 24-bit immediate offset at [40..64)
+// Forms with bit 11 of the opcode and bit 91 set take a uniform register operand
+bool HasUniformAddress(Instruction insn) {
+    return (insn.Opcode() & 0x800) != 0 && insn.Bit(91);
+}
+
+} // Anonymous namespace
+
 s32 ImmediateOffset(Instruction insn) {
     return static_cast<s32>(static_cast<u32>(insn.Bits(40, 24)) << 8) >> 8;
 }
 
-// Forms with bit 11 of the opcode set add a uniform register to the address
-bool HasUniformAddress(Instruction insn) {
-    return (insn.Opcode() & 0x800) != 0;
-}
-
-IR::U64 GlobalAddress(TranslatorVisitor& v, Instruction insn, u32 ureg_offset) {
-    const bool reg_is_64{HasUniformAddress(insn) ? insn.Bit(90) : insn.Bit(72)};
+IR::U64 GlobalAddress(TranslatorVisitor& v, Instruction insn, u32 ureg_offset, u32 reg_64_bit) {
+    const bool uniform_form{HasUniformAddress(insn)};
+    const bool reg_is_64{uniform_form ? insn.Bit(reg_64_bit) : insn.Bit(72)};
     // With a 64-bit register address, a 64-bit uniform register is a memory descriptor
     // (desc[URx]) and does not take part in the address; checked on GA102
-    const bool is_descriptor{HasUniformAddress(insn) && insn.Bit(90) && insn.Bit(72)};
-    const bool has_ureg{HasUniformAddress(insn) && !is_descriptor};
+    const bool is_descriptor{uniform_form && reg_is_64 && insn.Bit(72)};
+    const bool has_ureg{uniform_form && !is_descriptor};
     const bool ureg_is_64{has_ureg && insn.Bit(72)};
     // Built as IAdd64(base, immediate), the form storage buffer tracking expects
     std::optional<IR::U64> base;
@@ -79,7 +81,6 @@ IR::U64 GlobalAddress(TranslatorVisitor& v, Instruction insn, u32 ureg_offset) {
     return offset == 0 ? *base : IR::U64{v.ir.IAdd(*base, v.ir.Imm64(static_cast<u64>(offset)))};
 }
 
-// Shared and local addresses; shared accesses may scale the register
 IR::U32 WindowAddress(TranslatorVisitor& v, Instruction insn, u32 ureg_offset, bool has_stride) {
     IR::U32 address{v.ir.Imm32(ImmediateOffset(insn))};
     const IR::Reg reg{Reg(insn.SrcA())};
@@ -99,6 +100,8 @@ IR::U32 WindowAddress(TranslatorVisitor& v, Instruction insn, u32 ureg_offset, b
     }
     return address;
 }
+
+namespace {
 
 void WriteVector(TranslatorVisitor& v, IR::Reg dest, const IR::Value& vector, int bit_size) {
     if (!IR::IsAligned(dest, static_cast<size_t>(bit_size / 32))) {
@@ -135,7 +138,7 @@ void TranslatorVisitor::LDG(Instruction insn) {
     if (insn.Bits(64, 3) != 0 || insn.Bit(67) || insn.Bits(81, 3) != PT) {
         throw NotImplementedException("LDG with predicates");
     }
-    const IR::U64 address{GlobalAddress(*this, insn, 32)};
+    const IR::U64 address{GlobalAddress(*this, insn, 32, 90)};
     const IR::Reg dest{Reg(insn.Dest())};
     const auto [bit_size, is_signed]{BitSize(insn)};
     switch (bit_size) {
@@ -158,7 +161,7 @@ void TranslatorVisitor::LDG(Instruction insn) {
 }
 
 void TranslatorVisitor::STG(Instruction insn) {
-    const IR::U64 address{GlobalAddress(*this, insn, 64)};
+    const IR::U64 address{GlobalAddress(*this, insn, 64, 90)};
     const IR::Reg data{Reg(insn.SrcBReg())};
     const auto [bit_size, is_signed]{BitSize(insn)};
     switch (bit_size) {

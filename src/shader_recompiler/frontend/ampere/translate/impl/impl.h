@@ -56,6 +56,13 @@ struct TranslatorVisitor {
     void STS(Instruction insn);
     void LDL(Instruction insn);
     void STL(Instruction insn);
+    void ATOMG(Instruction insn);
+    void RED(Instruction insn);
+    void ATOMS(Instruction insn);
+
+    // Surfaces
+    void SULD(Instruction insn);
+    void SUST(Instruction insn);
 
     // Attributes
     void ALD(Instruction insn);
@@ -73,6 +80,7 @@ struct TranslatorVisitor {
     void SHFL(Instruction insn);
     void VOTE(Instruction insn);
     void VOTEU(Instruction insn);
+    void REDUX(Instruction insn);
 
     // Floating point
     void FADD(Instruction insn);
@@ -141,5 +149,17 @@ struct TranslatorVisitor {
     [[nodiscard]] bool NegB(Instruction insn) const noexcept;
     [[nodiscard]] bool NegC(Instruction insn) const noexcept;
 };
+
+// Signed 24-bit immediate offset at [40..64) of memory instructions
+[[nodiscard]] s32 ImmediateOffset(Instruction insn);
+
+// Global address from a register (64-bit with reg_64_bit set in uniform register forms), an
+// optional uniform register at ureg_offset and the immediate offset
+[[nodiscard]] IR::U64 GlobalAddress(TranslatorVisitor& v, Instruction insn, u32 ureg_offset,
+                                    u32 reg_64_bit);
+
+// Shared or local window address, with the shared memory register scale at [78..80)
+[[nodiscard]] IR::U32 WindowAddress(TranslatorVisitor& v, Instruction insn, u32 ureg_offset,
+                                    bool has_stride);
 
 } // namespace Shader::Ampere
