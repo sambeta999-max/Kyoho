@@ -191,8 +191,34 @@ IR::Value MakeOffset(TranslatorVisitor& v, const IR::U32& packed, Dim dim, u32 s
 void WriteChannels(TranslatorVisitor& v, Instruction insn, const IR::Value& result,
                    bool depth_result, bool integer_result) {
     const u32 mask{static_cast<u32>(insn.Bits(72, 4))};
-    IR::Reg dest{Reg(insn.Dest())};
-    IR::Reg dest2{Reg(insn.Bits(64, 8))};
+    const u64 f16_mode{integer_result ? 0 : insn.Bits(79, 2)};
+    if (f16_mode > 2) {
+        throw NotImplementedException("Texture result mode {}", f16_mode);
+    }
+    const IR::Reg dest{Reg(insn.Dest())};
+    const IR::Reg dest2{Reg(insn.Bits(64, 8))};
+    if (f16_mode != 0) {
+        boost::container::static_vector<IR::F32, 4> channels;
+        for (u32 element = 0; element < 4; ++element) {
+            if (((mask >> element) & 1) == 0) {
+                continue;
+            }
+            if (depth_result) {
+                channels.push_back(element < 3 ? IR::F32{result} : v.ir.Imm32(1.0f));
+            } else {
+                channels.push_back(IR::F32{v.ir.CompositeExtract(result, element)});
+            }
+        }
+        while (channels.size() % 2 != 0) {
+            channels.push_back(v.ir.Imm32(0.0f));
+        }
+        for (size_t pair = 0; pair < channels.size() / 2; ++pair) {
+            const IR::Reg reg{pair == 0 ? dest : dest2};
+            const IR::Value vec{v.ir.CompositeConstruct(channels[pair * 2], channels[pair * 2 + 1])};
+            v.X(reg, v.ir.PackHalf2x16(vec));
+        }
+        return;
+    }
     u32 written{};
     for (u32 element = 0; element < 4; ++element) {
         if (((mask >> element) & 1) == 0) {
@@ -340,6 +366,39 @@ void TranslatorVisitor::TLD4(Instruction insn) {
                               : ir.ImageGather(handle, coords, offset, offset2, info)};
     WriteChannels(*this, insn, result, false, false);
     WriteSparse(*this, insn, result);
+}
+
+void TranslatorVisitor::TMML(Instruction insn) {
+    const Dim dim{GetDim(insn)};
+    const bool bindless{IsBindless(insn)};
+    const u32 src0_count{(IsArray(dim) ? 1u : 0u) + NumCoords(dim)};
+    const u32 src1_count{bindless ? 1u : 0u};
+    Sources src{insn, src0_count, src1_count, insn.Bit(60) || (!bindless && insn.SrcBReg() != 0xff)};
+
+    const IR::Value coords{MakeCoords(*this, src, dim, false)};
+    const IR::U32 handle{bindless ? X(src.Next()) : CbufHandle(*this, insn)};
+    IR::TextureInstInfo info{};
+    info.type.Assign(GetType(dim));
+    info.ndv_is_active.Assign(insn.Bit(77) ? 1 : 0);
+    const IR::Value sample{ir.ImageQueryLod(handle, coords, info)};
+
+    const u32 mask{static_cast<u32>(insn.Bits(72, 4))};
+    if ((mask & 0b1100) != 0) {
+        throw NotImplementedException("TMML BA results are not implemented");
+    }
+    const IR::Reg dest{Reg(insn.Dest())};
+    const IR::Reg dest2{Reg(insn.Bits(64, 8))};
+    u32 written{};
+    for (u32 element = 0; element < 2; ++element) {
+        if (((mask >> element) & 1) == 0) {
+            continue;
+        }
+        const IR::Reg reg{written < 2 ? dest + static_cast<int>(written)
+                                      : dest2 + static_cast<int>(written - 2)};
+        ++written;
+        const IR::F32 value{ir.CompositeExtract(sample, element)};
+        X(reg, ir.ConvertFToU(32, ir.FPMul(value, ir.Imm32(256.0f))));
+    }
 }
 
 void TranslatorVisitor::TXD(Instruction insn) {

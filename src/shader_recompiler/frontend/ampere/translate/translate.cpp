@@ -21,6 +21,8 @@ void Dispatch(TranslatorVisitor& v, Opcode opcode, Instruction insn) {
         return v.UIADD3(insn);
     case Opcode::IMAD:
         return v.IMAD(insn);
+    case Opcode::UIMAD:
+        return v.UIMAD(insn);
     case Opcode::IMAD_WIDE:
         return v.IMAD_WIDE(insn);
     case Opcode::IMNMX:
@@ -39,6 +41,16 @@ void Dispatch(TranslatorVisitor& v, Opcode opcode, Instruction insn) {
         return v.UPLOP3(insn);
     case Opcode::R2P:
         return v.R2P(insn);
+    case Opcode::UR2UP:
+        return v.UR2UP(insn);
+    case Opcode::P2R:
+        return v.P2R(insn);
+    case Opcode::UP2UR:
+        return v.UP2UR(insn);
+    case Opcode::SGXT:
+        return v.SGXT(insn);
+    case Opcode::USGXT:
+        return v.USGXT(insn);
     case Opcode::SHF:
         return v.SHF(insn);
     case Opcode::USHF:
@@ -49,16 +61,24 @@ void Dispatch(TranslatorVisitor& v, Opcode opcode, Instruction insn) {
         return v.USEL(insn);
     case Opcode::POPC:
         return v.POPC(insn);
+    case Opcode::UPOPC:
+        return v.UPOPC(insn);
     case Opcode::FLO:
         return v.FLO(insn);
+    case Opcode::UFLO:
+        return v.UFLO(insn);
     case Opcode::BREV:
         return v.BREV(insn);
+    case Opcode::UBREV:
+        return v.UBREV(insn);
     case Opcode::PRMT:
         return v.PRMT(insn);
     case Opcode::UPRMT:
         return v.UPRMT(insn);
     case Opcode::LEA:
         return v.LEA(insn);
+    case Opcode::ULEA:
+        return v.ULEA(insn);
     case Opcode::F2F:
         return v.F2F(insn);
     case Opcode::FRND:
@@ -96,6 +116,9 @@ void Dispatch(TranslatorVisitor& v, Opcode opcode, Instruction insn) {
     case Opcode::TLD4:
     case Opcode::TLD4_BINDLESS:
         return v.TLD4(insn);
+    case Opcode::TMML:
+    case Opcode::TMML_BINDLESS:
+        return v.TMML(insn);
     case Opcode::TXD:
     case Opcode::TXD_BINDLESS:
         return v.TXD(insn);
@@ -217,6 +240,13 @@ void Translate(Environment& env, IR::Block* block, Maxwell::Location begin,
             continue;
         }
         const Opcode opcode{Decode(insn)};
+        if (opcode == Opcode::ISBERD || opcode == Opcode::ISBEWR) {
+            throw NotImplementedException("Task/Mesh shader instruction {}", opcode);
+        }
+        if (opcode == Opcode::HMMA || opcode == Opcode::IMMA || opcode == Opcode::DMMA ||
+            opcode == Opcode::BMMA || opcode == Opcode::LDSM || opcode == Opcode::MOVM) {
+            throw NotImplementedException("Tensor matrix multiply instruction {}", opcode);
+        }
         try {
             Dispatch(visitor, opcode, insn);
         } catch (const NotImplementedException& exception) {

@@ -212,6 +212,69 @@ void Plop3(TranslatorVisitor& v, Instruction insn, bool uniform) {
     }
 }
 
+void Imad(TranslatorVisitor& v, Instruction insn, bool uniform) {
+    if (insn.Bits(81, 3) != PT) {
+        throw NotImplementedException("IMAD with carry output");
+    }
+    // .X (bit 74) adds the carry predicate at bits 87-89, negated by bit 90, as in IADD3.
+    // The compiler pairs it with an IADD3 carry output for the high word of 64-bit sums.
+    const bool extended{insn.Bit(74)};
+    if (extended && v.NegC(insn)) {
+        throw NotImplementedException("IMAD.X with a negated addend");
+    }
+    const IR::U32 product{v.ir.IMul(v.SrcA(insn, uniform), v.SrcB(insn, uniform))};
+    const IR::U32 src_c{v.SrcC(insn, uniform)};
+    const IR::U32 addend{v.NegC(insn) ? IR::U32{v.ir.INeg(src_c)} : src_c};
+    IR::U32 result{v.ir.IAdd(product, addend)};
+    if (extended) {
+        const IR::U1 carry{uniform ? v.UP(insn.Bits(87, 3), insn.Bit(90))
+                                   : v.P(insn.Bits(87, 3), insn.Bit(90))};
+        result = v.ir.IAdd(result, PredicateBit(v.ir, carry));
+    }
+    v.X(uniform ? UReg(insn.Bits(16, 6)) : Reg(insn.Dest()), result);
+}
+
+void R2p(TranslatorVisitor& v, Instruction insn, bool uniform) {
+    const IR::U32 value{v.SrcA(insn, uniform)};
+    const IR::U32 mask{v.SrcB(insn, uniform)};
+    const u32 byte{static_cast<u32>(insn.Bits(76, 2))};
+    for (u32 index = 0; index < 7; ++index) {
+        const auto bit{[&](const IR::U32& word, u32 position) {
+            return v.ir.INotEqual(v.ir.BitwiseAnd(word, v.ir.Imm32(1U << position)),
+                                  v.ir.Imm32(0));
+        }};
+        const IR::U1 current{uniform ? v.UP(index) : v.P(index)};
+        const IR::U1 next{v.ir.Select(bit(mask, index), bit(value, byte * 8 + index), current)};
+        uniform ? v.SetUP(index, next) : v.SetP(index, next);
+    }
+}
+
+void P2r(TranslatorVisitor& v, Instruction insn, bool uniform) {
+    const IR::U32 src{v.SrcA(insn, uniform)};
+    const IR::U32 mask{v.SrcB(insn, uniform)};
+    const u32 shift{static_cast<u32>(insn.Bits(76, 2)) * 8};
+    IR::U32 packed{v.ir.Imm32(0)};
+    for (u32 index = 0; index < 7; ++index) {
+        const IR::U1 pred{uniform ? v.UP(index) : v.P(index)};
+        const IR::U32 bit{v.ir.Select(pred, v.ir.Imm32(1U << (shift + index)), v.ir.Imm32(0))};
+        packed = v.ir.BitwiseOr(packed, bit);
+    }
+    const IR::U32 shifted_mask{
+        v.ir.ShiftLeftLogical(v.ir.BitwiseAnd(mask, v.ir.Imm32(0x7f)), v.ir.Imm32(shift))};
+    const IR::U32 result{v.ir.BitwiseOr(v.ir.BitwiseAnd(src, v.ir.BitwiseNot(shifted_mask)),
+                                        v.ir.BitwiseAnd(packed, shifted_mask))};
+    v.X(uniform ? UReg(insn.Bits(16, 6)) : Reg(insn.Dest()), result);
+}
+
+void Sgxt(TranslatorVisitor& v, Instruction insn, bool uniform) {
+    const IR::U32 a{v.SrcA(insn, uniform)};
+    const IR::U32 bits{v.SrcB(insn, uniform)};
+    const IR::U32 count{insn.Bit(75) ? v.ir.BitwiseAnd(bits, v.ir.Imm32(31))
+                                     : v.ir.UMin(bits, v.ir.Imm32(32))};
+    v.X(uniform ? UReg(insn.Bits(16, 6)) : Reg(insn.Dest()),
+        v.ir.BitFieldExtract(a, v.ir.Imm32(0), count, insn.Bit(73)));
+}
+
 } // Anonymous namespace
 
 void TranslatorVisitor::IABS(Instruction insn) {
@@ -227,22 +290,11 @@ void TranslatorVisitor::UIADD3(Instruction insn) {
 }
 
 void TranslatorVisitor::IMAD(Instruction insn) {
-    if (insn.Bits(81, 3) != PT) {
-        throw NotImplementedException("IMAD with carry output");
-    }
-    // .X (bit 74) adds the carry predicate at bits 87-89, negated by bit 90, as in IADD3.
-    // The compiler pairs it with an IADD3 carry output for the high word of 64-bit sums.
-    const bool extended{insn.Bit(74)};
-    if (extended && NegC(insn)) {
-        throw NotImplementedException("IMAD.X with a negated addend");
-    }
-    const IR::U32 product{ir.IMul(SrcA(insn), SrcB(insn))};
-    const IR::U32 addend{NegC(insn) ? IR::U32{ir.INeg(SrcC(insn))} : SrcC(insn)};
-    IR::U32 result{ir.IAdd(product, addend)};
-    if (extended) {
-        result = ir.IAdd(result, PredicateBit(ir, P(insn.Bits(87, 3), insn.Bit(90))));
-    }
-    X(Reg(insn.Dest()), result);
+    Imad(*this, insn, false);
+}
+
+void TranslatorVisitor::UIMAD(Instruction insn) {
+    Imad(*this, insn, true);
 }
 
 void TranslatorVisitor::IMAD_WIDE(Instruction insn) {
@@ -309,15 +361,27 @@ void TranslatorVisitor::UPLOP3(Instruction insn) {
 
 // R2P PR, Ra.Bn, mask: predicates P0-P6 selected by the mask take the bits of byte n of Ra
 void TranslatorVisitor::R2P(Instruction insn) {
-    const IR::U32 value{SrcA(insn)};
-    const IR::U32 mask{SrcB(insn)};
-    const u32 byte{static_cast<u32>(insn.Bits(76, 2))};
-    for (u32 index = 0; index < 7; ++index) {
-        const auto bit{[&](const IR::U32& word, u32 position) {
-            return ir.INotEqual(ir.BitwiseAnd(word, ir.Imm32(1U << position)), ir.Imm32(0));
-        }};
-        SetP(index, IR::U1{ir.Select(bit(mask, index), bit(value, byte * 8 + index), P(index))});
-    }
+    R2p(*this, insn, false);
+}
+
+void TranslatorVisitor::UR2UP(Instruction insn) {
+    R2p(*this, insn, true);
+}
+
+void TranslatorVisitor::P2R(Instruction insn) {
+    P2r(*this, insn, false);
+}
+
+void TranslatorVisitor::UP2UR(Instruction insn) {
+    P2r(*this, insn, true);
+}
+
+void TranslatorVisitor::SGXT(Instruction insn) {
+    Sgxt(*this, insn, false);
+}
+
+void TranslatorVisitor::USGXT(Instruction insn) {
+    Sgxt(*this, insn, true);
 }
 
 void TranslatorVisitor::SHF(Instruction insn) {
@@ -340,33 +404,49 @@ void TranslatorVisitor::USEL(Instruction insn) {
 
 namespace {
 // Single-operand bit instructions read b from [32..64) with a bitwise-not modifier at 63
-IR::U32 BitSource(TranslatorVisitor& v, Instruction insn) {
-    const IR::U32 src{v.SrcB(insn)};
+IR::U32 BitSource(TranslatorVisitor& v, Instruction insn, bool uniform) {
+    const IR::U32 src{v.SrcB(insn, uniform)};
     const bool invert{insn.Form() != AluForm::ImmReg && insn.Bit(63)};
     return invert ? v.ir.BitwiseNot(src) : src;
+}
+
+void Flo(TranslatorVisitor& v, Instruction insn, bool uniform) {
+    if (insn.Bits(81, 3) != PT) {
+        throw NotImplementedException("FLO predicate output");
+    }
+    const IR::U32 src{BitSource(v, insn, uniform)};
+    IR::U32 result{insn.Bit(73) ? v.ir.FindSMsb(src) : v.ir.FindUMsb(src)};
+    if (insn.Bit(74)) {
+        // .SH returns the shift amount that brings the bit to the top
+        const IR::U32 none{v.ir.Imm32(0xffffffff)};
+        result = IR::U32{v.ir.Select(v.ir.IEqual(result, none), none, v.ir.ISub(v.ir.Imm32(31), result))};
+    }
+    v.X(uniform ? UReg(insn.Bits(16, 6)) : Reg(insn.Dest()), result);
 }
 } // Anonymous namespace
 
 void TranslatorVisitor::POPC(Instruction insn) {
-    X(Reg(insn.Dest()), ir.BitCount(BitSource(*this, insn)));
+    X(Reg(insn.Dest()), ir.BitCount(BitSource(*this, insn, false)));
+}
+
+void TranslatorVisitor::UPOPC(Instruction insn) {
+    X(UReg(insn.Bits(16, 6)), ir.BitCount(BitSource(*this, insn, true)));
 }
 
 void TranslatorVisitor::FLO(Instruction insn) {
-    if (insn.Bits(81, 3) != PT) {
-        throw NotImplementedException("FLO predicate output");
-    }
-    const IR::U32 src{BitSource(*this, insn)};
-    IR::U32 result{insn.Bit(73) ? ir.FindSMsb(src) : ir.FindUMsb(src)};
-    if (insn.Bit(74)) {
-        // .SH returns the shift amount that brings the bit to the top
-        const IR::U32 none{ir.Imm32(0xffffffff)};
-        result = IR::U32{ir.Select(ir.IEqual(result, none), none, ir.ISub(ir.Imm32(31), result))};
-    }
-    X(Reg(insn.Dest()), result);
+    Flo(*this, insn, false);
+}
+
+void TranslatorVisitor::UFLO(Instruction insn) {
+    Flo(*this, insn, true);
 }
 
 void TranslatorVisitor::BREV(Instruction insn) {
-    X(Reg(insn.Dest()), ir.BitReverse(SrcB(insn)));
+    X(Reg(insn.Dest()), ir.BitReverse(BitSource(*this, insn, false)));
+}
+
+void TranslatorVisitor::UBREV(Instruction insn) {
+    X(UReg(insn.Bits(16, 6)), ir.BitReverse(BitSource(*this, insn, true)));
 }
 
 namespace {
@@ -420,36 +500,49 @@ void TranslatorVisitor::UPRMT(Instruction insn) {
     X(UReg(insn.Bits(16, 6)), Permute(*this, insn, true));
 }
 
+namespace {
 // a shifted left by [75..80) plus b; .HI shifts the pair {c, a} and keeps the upper word
-void TranslatorVisitor::LEA(Instruction insn) {
-    if (NegA(insn)) {
+void Lea(TranslatorVisitor& v, Instruction insn, bool uniform) {
+    if (v.NegA(insn)) {
         throw NotImplementedException("LEA with negated operand");
     }
     const u32 shift{static_cast<u32>(insn.Bits(75, 5))};
     const bool high{insn.Bit(80)};
-    const IR::U32 a{SrcA(insn)};
+    const IR::U32 a{v.SrcA(insn, uniform)};
     IR::U32 shifted;
     if (!high) {
-        shifted = ir.ShiftLeftLogical(a, ir.Imm32(shift));
+        shifted = v.ir.ShiftLeftLogical(a, v.ir.Imm32(shift));
     } else if (shift == 0) {
-        shifted = SrcC(insn);
+        shifted = v.SrcC(insn, uniform);
     } else {
-        shifted = ir.BitwiseOr(ir.ShiftLeftLogical(SrcC(insn), ir.Imm32(shift)),
-                               ir.ShiftRightLogical(a, ir.Imm32(32 - shift)));
+        shifted = v.ir.BitwiseOr(v.ir.ShiftLeftLogical(v.SrcC(insn, uniform), v.ir.Imm32(shift)),
+                                 v.ir.ShiftRightLogical(a, v.ir.Imm32(32 - shift)));
     }
-    const IR::U32 b{SrcB(insn)};
-    IR::U32 sum{ir.IAdd(shifted, b)};
-    IR::U32 carries{CarryOf(ir, sum, b)};
+    const IR::U32 b{v.SrcB(insn, uniform)};
+    IR::U32 sum{v.ir.IAdd(shifted, b)};
+    IR::U32 carries{CarryOf(v.ir, sum, b)};
     if (insn.Bit(74)) {
-        const IR::U32 carry_in{PredicateBit(ir, P(insn.Bits(87, 3), insn.Bit(90)))};
-        const IR::U32 next{ir.IAdd(sum, carry_in)};
-        carries = ir.IAdd(carries, CarryOf(ir, next, carry_in));
+        const IR::U1 carry_pred{uniform ? v.UP(insn.Bits(87, 3), insn.Bit(90))
+                                        : v.P(insn.Bits(87, 3), insn.Bit(90))};
+        const IR::U32 carry_in{PredicateBit(v.ir, carry_pred)};
+        const IR::U32 next{v.ir.IAdd(sum, carry_in)};
+        carries = v.ir.IAdd(carries, CarryOf(v.ir, next, carry_in));
         sum = next;
     }
     if (insn.Bits(81, 3) != PT) {
-        SetP(insn.Bits(81, 3), ir.INotEqual(carries, ir.Imm32(0)));
+        const IR::U1 carry_out{v.ir.INotEqual(carries, v.ir.Imm32(0))};
+        uniform ? v.SetUP(insn.Bits(81, 3), carry_out) : v.SetP(insn.Bits(81, 3), carry_out);
     }
-    X(Reg(insn.Dest()), sum);
+    v.X(uniform ? UReg(insn.Bits(16, 6)) : Reg(insn.Dest()), sum);
+}
+} // Anonymous namespace
+
+void TranslatorVisitor::LEA(Instruction insn) {
+    Lea(*this, insn, false);
+}
+
+void TranslatorVisitor::ULEA(Instruction insn) {
+    Lea(*this, insn, true);
 }
 
 } // namespace Shader::Ampere

@@ -29,6 +29,7 @@ struct TranslatorVisitor {
     void IADD3(Instruction insn);
     void UIADD3(Instruction insn);
     void IMAD(Instruction insn);
+    void UIMAD(Instruction insn);
     void IMAD_WIDE(Instruction insn);
     void IMNMX(Instruction insn);
     void ISETP(Instruction insn);
@@ -38,16 +39,25 @@ struct TranslatorVisitor {
     void PLOP3(Instruction insn);
     void UPLOP3(Instruction insn);
     void R2P(Instruction insn);
+    void UR2UP(Instruction insn);
+    void P2R(Instruction insn);
+    void UP2UR(Instruction insn);
+    void SGXT(Instruction insn);
+    void USGXT(Instruction insn);
     void SHF(Instruction insn);
     void USHF(Instruction insn);
     void SEL(Instruction insn);
     void USEL(Instruction insn);
     void POPC(Instruction insn);
+    void UPOPC(Instruction insn);
     void FLO(Instruction insn);
+    void UFLO(Instruction insn);
     void BREV(Instruction insn);
+    void UBREV(Instruction insn);
     void PRMT(Instruction insn);
     void UPRMT(Instruction insn);
     void LEA(Instruction insn);
+    void ULEA(Instruction insn);
 
     // Conversion
     void F2F(Instruction insn);
@@ -80,6 +90,7 @@ struct TranslatorVisitor {
     void TEX(Instruction insn);
     void TLD(Instruction insn);
     void TLD4(Instruction insn);
+    void TMML(Instruction insn);
     void TXD(Instruction insn);
     void TXQ(Instruction insn);
 
