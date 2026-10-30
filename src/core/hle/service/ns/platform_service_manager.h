@@ -12,6 +12,10 @@
 #include "core/hle/service/service.h"
 #include "core/hle/service/set/settings_types.h"
 
+namespace Kernel {
+class KTransferMemory;
+} // namespace Kernel
+
 namespace Service {
 
 namespace FileSystem {
@@ -55,6 +59,15 @@ constexpr std::array<std::pair<FontArchives, const char*>, 7> SHARED_FONTS{
 void DecryptSharedFontToTTF(const std::vector<u32>& input, std::vector<u8>& output);
 void EncryptSharedFont(const std::vector<u32>& input, std::vector<u8>& output, std::size_t& offset);
 
+struct BuiltInFontDataInfo {
+    u8 type;
+    u8 is_loaded;
+    u16 pad;
+    u32 offset;
+    u32 size;
+};
+static_assert(sizeof(BuiltInFontDataInfo) == 0xc);
+
 class IPlatformServiceManager final : public ServiceFramework<IPlatformServiceManager> {
 public:
     explicit IPlatformServiceManager(Core::System& system_, const char* service_name_);
@@ -72,6 +85,12 @@ private:
                                           OutArray<u32, BufferAttr_HipcMapAlias> out_font_sizes,
                                           Out<bool> out_fonts_are_loaded, Out<u32> out_font_count,
                                           Set::LanguageCode language_code);
+    Result GetBuiltInFontSharedMemory(
+        OutCopyHandle<Kernel::KSharedMemory> out_shared_memory_native_handle, Out<u32> out_size);
+    Result GetBuiltInFontData(Out<bool> out_valid, Out<BuiltInFontDataInfo> out_info, u8 type,
+                              bool flag);
+    void GetBuiltInFontDataSet(HLERequestContext& ctx);
+    Result InitializeBuiltInFontTransferMemory(InCopyHandle<Kernel::KTransferMemory> tmem, u32 size);
 
     struct Impl;
     std::unique_ptr<Impl> impl;

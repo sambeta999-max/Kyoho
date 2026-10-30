@@ -19,8 +19,11 @@
 #include "core/file_sys/registered_cache.h"
 #include "core/file_sys/romfs.h"
 #include "core/file_sys/system_archive/system_archive.h"
+#include "core/hle/kernel/k_process.h"
 #include "core/hle/kernel/k_shared_memory.h"
+#include "core/hle/kernel/k_transfer_memory.h"
 #include "core/hle/kernel/kernel.h"
+#include "core/memory.h"
 #include "core/hle/service/cmif_serialization.h"
 #include "core/hle/service/filesystem/filesystem.h"
 #include "core/hle/service/ns/platform_service_manager.h"
@@ -105,8 +108,15 @@ IPlatformServiceManager::IPlatformServiceManager(Core::System& system_, const ch
         {104, nullptr, "RequestApplicationFunctionAuthorizationByProgramId"},
         {105, nullptr, "GetFunctionBlackListSystemVersionToAuthorize"},
         {106, nullptr, "GetFunctionBlackListVersion"},
+        {107, D<&IPlatformServiceManager::GetBuiltInFontSharedMemory>, "GetBuiltInFontSharedMemory"},
+        {108, D<&IPlatformServiceManager::GetBuiltInFontData>, "GetBuiltInFontData"},
+        {109, &IPlatformServiceManager::GetBuiltInFontDataSet, "GetBuiltInFontDataSet"},
+        {110, D<&IPlatformServiceManager::InitializeBuiltInFontTransferMemory>, "InitializeBuiltInFontTransferMemory"},
         {1000, nullptr, "LoadNgWordDataForPlatformRegionChina"},
         {1001, nullptr, "GetNgWordDataSizeForPlatformRegionChina"},
+        {2000, D<&IPlatformServiceManager::GetBuiltInFontSharedMemory>, "GetBuiltInFontSharedMemory"},
+        {2010, D<&IPlatformServiceManager::GetBuiltInFontData>, "GetBuiltInFontData"},
+        {2020, &IPlatformServiceManager::GetBuiltInFontDataSet, "GetBuiltInFontDataSet"},
     };
     // clang-format on
     RegisterHandlers(functions);
@@ -220,6 +230,77 @@ Result IPlatformServiceManager::GetSharedFontInOrderOfPriority(
 
     *out_fonts_are_loaded = true;
     *out_font_count = static_cast<u32>(max_size);
+    R_SUCCEED();
+}
+
+Result IPlatformServiceManager::GetBuiltInFontSharedMemory(
+    OutCopyHandle<Kernel::KSharedMemory> out_shared_memory_native_handle, Out<u32> out_size) {
+    LOG_DEBUG(Service_NS, "called");
+    std::memcpy(kernel.GetFontSharedMem().GetPointer(), impl->shared_font.data(),
+                impl->shared_font.size());
+    *out_shared_memory_native_handle = &kernel.GetFontSharedMem();
+    *out_size = static_cast<u32>(SHARED_FONT_MEM_SIZE);
+    R_SUCCEED();
+}
+
+Result IPlatformServiceManager::GetBuiltInFontData(Out<bool> out_valid,
+                                                   Out<BuiltInFontDataInfo> out_info, u8 type,
+                                                   bool flag) {
+    LOG_DEBUG(Service_NS, "called, type={}, flag={}", type, flag);
+    const auto& region = impl->GetSharedFontRegion(type);
+    *out_valid = region.size != 0;
+    *out_info = BuiltInFontDataInfo{
+        .type = type,
+        .is_loaded = static_cast<u8>(region.size != 0 ? 1 : 0),
+        .pad = 0,
+        .offset = region.offset,
+        .size = region.size,
+    };
+    R_SUCCEED();
+}
+
+void IPlatformServiceManager::GetBuiltInFontDataSet(HLERequestContext& ctx) {
+    IPC::RequestParser rp{ctx};
+    const auto language_code = rp.PopEnum<Set::LanguageCode>();
+    const bool flag = rp.Pop<bool>();
+    LOG_DEBUG(Service_NS, "called, language_code={:#x}, flag={}", language_code, flag);
+
+    const auto font_types = ctx.ReadBuffer(0);
+    const size_t max_out = ctx.GetWriteBufferSize(0) / sizeof(BuiltInFontDataInfo);
+    const size_t count =
+        std::min({max_out, font_types.size(), impl->shared_font_regions.size()});
+
+    std::vector<BuiltInFontDataInfo> out_infos(count);
+    for (size_t i = 0; i < count; ++i) {
+        const u8 type = font_types[i];
+        const auto& region = impl->GetSharedFontRegion(type);
+        out_infos[i] = BuiltInFontDataInfo{
+            .type = type,
+            .is_loaded = static_cast<u8>(region.size != 0 ? 1 : 0),
+            .pad = 0,
+            .offset = region.offset,
+            .size = region.size,
+        };
+    }
+    if (!out_infos.empty()) {
+        ctx.WriteBuffer(out_infos, 0);
+    }
+
+    IPC::ResponseBuilder rb{ctx, 4};
+    rb.Push(ResultSuccess);
+    rb.Push<u32>(1);
+    rb.Push<u32>(static_cast<u32>(count));
+}
+
+Result IPlatformServiceManager::InitializeBuiltInFontTransferMemory(
+    InCopyHandle<Kernel::KTransferMemory> tmem, u32 size) {
+    LOG_DEBUG(Service_NS, "called, size={:#x}", size);
+    if (tmem && tmem->GetOwner() != nullptr) {
+        const size_t copy_size =
+            std::min<size_t>({impl->shared_font.size(), tmem->GetSize(), size});
+        tmem->GetOwner()->GetMemory().WriteBlock(tmem->GetSourceAddress(), impl->shared_font.data(),
+                                                 copy_size);
+    }
     R_SUCCEED();
 }
 
