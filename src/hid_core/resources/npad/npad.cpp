@@ -212,6 +212,10 @@ void NPad::InitNewlyAddedController(Kernel::KernelCore& kernel, u64 aruid, Core:
         return;
     }
 
+    Core::HID::NpadStyleSet supported_style_set = Core::HID::NpadStyleSet::All;
+    npad_resource.GetSupportedNpadStyleSet(supported_style_set, aruid);
+    const Core::HID::NpadStyleTag supported_styles{supported_style_set};
+
     // Reset memory values
     shared_memory->style_tag.raw = Core::HID::NpadStyleSet::None;
     shared_memory->device_type.raw = 0;
@@ -269,7 +273,11 @@ void NPad::InitNewlyAddedController(Kernel::KernelCore& kernel, u64 aruid, Core:
     case Core::HID::NpadStyleIndex::JoyconDual:
         shared_memory->fullkey_color.attribute = ColorAttribute::Ok;
         shared_memory->joycon_color.attribute = ColorAttribute::Ok;
-        shared_memory->style_tag.joycon_dual.Assign(1);
+        if (supported_styles.joycon_dual_mouse && !supported_styles.joycon_dual) {
+            shared_memory->style_tag.joycon_dual_mouse.Assign(1);
+        } else {
+            shared_memory->style_tag.joycon_dual.Assign(1);
+        }
         if (controller.is_dual_left_connected) {
             shared_memory->joycon_color.left = body_colors.left;
             shared_memory->battery_level_left = battery_level.left.battery_level;
@@ -318,7 +326,11 @@ void NPad::InitNewlyAddedController(Kernel::KernelCore& kernel, u64 aruid, Core:
         shared_memory->joycon_color.attribute = ColorAttribute::Ok;
         shared_memory->joycon_color.left = body_colors.left;
         shared_memory->battery_level_dual = battery_level.left.battery_level;
-        shared_memory->style_tag.joycon_left.Assign(1);
+        if (supported_styles.joycon_left_mouse && !supported_styles.joycon_left) {
+            shared_memory->style_tag.joycon_left_mouse.Assign(1);
+        } else {
+            shared_memory->style_tag.joycon_left.Assign(1);
+        }
         shared_memory->device_type.joycon_left.Assign(1);
         shared_memory->system_properties.is_horizontal.Assign(1);
         shared_memory->system_properties.use_minus.Assign(1);
@@ -333,7 +345,11 @@ void NPad::InitNewlyAddedController(Kernel::KernelCore& kernel, u64 aruid, Core:
         shared_memory->joycon_color.attribute = ColorAttribute::Ok;
         shared_memory->joycon_color.right = body_colors.right;
         shared_memory->battery_level_right = battery_level.right.battery_level;
-        shared_memory->style_tag.joycon_right.Assign(1);
+        if (supported_styles.joycon_right_mouse && !supported_styles.joycon_right) {
+            shared_memory->style_tag.joycon_right_mouse.Assign(1);
+        } else {
+            shared_memory->style_tag.joycon_right.Assign(1);
+        }
         shared_memory->device_type.joycon_right.Assign(1);
         shared_memory->system_properties.is_horizontal.Assign(1);
         shared_memory->system_properties.use_plus.Assign(1);
@@ -578,7 +594,15 @@ void NPad::OnUpdate(Kernel::KernelCore& kernel, const Core::Timing::CoreTiming& 
                     npad->handheld_lifo.ReadCurrentEntry().state.sampling_number + 1;
                 npad->handheld_lifo.WriteNextEntry(pad_state);
                 break;
-            case Core::HID::NpadStyleIndex::JoyconDual:
+            case Core::HID::NpadStyleIndex::JoyconDual: {
+                Core::HID::NpadStyleSet supported_style_set = Core::HID::NpadStyleSet::All;
+                npad_resource.GetSupportedNpadStyleSet(supported_style_set, aruid);
+                const Core::HID::NpadStyleTag supported_styles{supported_style_set};
+                const bool use_mouse_style =
+                    supported_styles.joycon_dual_mouse && !supported_styles.joycon_dual;
+                npad->style_tag.joycon_dual.Assign(use_mouse_style ? 0 : 1);
+                npad->style_tag.joycon_dual_mouse.Assign(use_mouse_style ? 1 : 0);
+
                 pad_state.connection_status.raw = 0;
                 pad_state.connection_status.is_connected.Assign(1);
                 if (controller.is_dual_left_connected) {
@@ -594,7 +618,16 @@ void NPad::OnUpdate(Kernel::KernelCore& kernel, const Core::Timing::CoreTiming& 
                     npad->joy_dual_lifo.ReadCurrentEntry().state.sampling_number + 1;
                 npad->joy_dual_lifo.WriteNextEntry(pad_state);
                 break;
-            case Core::HID::NpadStyleIndex::JoyconLeft:
+            }
+            case Core::HID::NpadStyleIndex::JoyconLeft: {
+                Core::HID::NpadStyleSet supported_style_set = Core::HID::NpadStyleSet::All;
+                npad_resource.GetSupportedNpadStyleSet(supported_style_set, aruid);
+                const Core::HID::NpadStyleTag supported_styles{supported_style_set};
+                const bool use_mouse_style =
+                    supported_styles.joycon_left_mouse && !supported_styles.joycon_left;
+                npad->style_tag.joycon_left.Assign(use_mouse_style ? 0 : 1);
+                npad->style_tag.joycon_left_mouse.Assign(use_mouse_style ? 1 : 0);
+
                 pad_state.connection_status.raw = 0;
                 pad_state.connection_status.is_connected.Assign(1);
                 pad_state.connection_status.is_left_connected.Assign(1);
@@ -604,7 +637,16 @@ void NPad::OnUpdate(Kernel::KernelCore& kernel, const Core::Timing::CoreTiming& 
                     npad->joy_left_lifo.ReadCurrentEntry().state.sampling_number + 1;
                 npad->joy_left_lifo.WriteNextEntry(pad_state);
                 break;
-            case Core::HID::NpadStyleIndex::JoyconRight:
+            }
+            case Core::HID::NpadStyleIndex::JoyconRight: {
+                Core::HID::NpadStyleSet supported_style_set = Core::HID::NpadStyleSet::All;
+                npad_resource.GetSupportedNpadStyleSet(supported_style_set, aruid);
+                const Core::HID::NpadStyleTag supported_styles{supported_style_set};
+                const bool use_mouse_style =
+                    supported_styles.joycon_right_mouse && !supported_styles.joycon_right;
+                npad->style_tag.joycon_right.Assign(use_mouse_style ? 0 : 1);
+                npad->style_tag.joycon_right_mouse.Assign(use_mouse_style ? 1 : 0);
+
                 pad_state.connection_status.raw = 0;
                 pad_state.connection_status.is_connected.Assign(1);
                 pad_state.connection_status.is_right_connected.Assign(1);
@@ -614,6 +656,7 @@ void NPad::OnUpdate(Kernel::KernelCore& kernel, const Core::Timing::CoreTiming& 
                     npad->joy_right_lifo.ReadCurrentEntry().state.sampling_number + 1;
                 npad->joy_right_lifo.WriteNextEntry(pad_state);
                 break;
+            }
             case Core::HID::NpadStyleIndex::GameCube:
                 pad_state.connection_status.raw = 0;
                 pad_state.connection_status.is_connected.Assign(1);

@@ -44,9 +44,12 @@ static Core::Frontend::ControllerParameters ConvertToFrontendParameters(
         .explain_text = std::move(text),
         .allow_pro_controller = npad_style_set.fullkey == 1,
         .allow_handheld = npad_style_set.handheld == 1,
-        .allow_dual_joycons = npad_style_set.joycon_dual == 1,
-        .allow_left_joycon = npad_style_set.joycon_left == 1,
-        .allow_right_joycon = npad_style_set.joycon_right == 1,
+        .allow_dual_joycons =
+            npad_style_set.joycon_dual == 1 || npad_style_set.joycon_dual_mouse == 1,
+        .allow_left_joycon =
+            npad_style_set.joycon_left == 1 || npad_style_set.joycon_left_mouse == 1,
+        .allow_right_joycon =
+            npad_style_set.joycon_right == 1 || npad_style_set.joycon_right_mouse == 1,
     };
 }
 

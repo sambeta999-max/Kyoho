@@ -154,11 +154,11 @@ bool NPadData::IsNpadStyleIndexSupported(Core::HID::NpadStyleIndex style_index) 
     case Core::HID::NpadStyleIndex::Handheld:
         return bool(style.handheld);
     case Core::HID::NpadStyleIndex::JoyconDual:
-        return bool(style.joycon_dual);
+        return bool(style.joycon_dual) || bool(style.joycon_dual_mouse);
     case Core::HID::NpadStyleIndex::JoyconLeft:
-        return bool(style.joycon_left);
+        return bool(style.joycon_left) || bool(style.joycon_left_mouse);
     case Core::HID::NpadStyleIndex::JoyconRight:
-        return bool(style.joycon_right);
+        return bool(style.joycon_right) || bool(style.joycon_right_mouse);
     case Core::HID::NpadStyleIndex::GameCube:
         return bool(style.gamecube);
     case Core::HID::NpadStyleIndex::Pokeball:

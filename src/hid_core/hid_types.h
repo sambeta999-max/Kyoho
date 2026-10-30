@@ -269,6 +269,9 @@ enum class NpadStyleSet : u32 {
     Lucia = 1U << 9,
     Lagoon = 1U << 10,
     Lager = 1U << 11,
+    JoyDualMouse = 1U << 12,
+    JoyLeftMouse = 1U << 13,
+    JoyRightMouse = 1U << 14,
     SystemExt = 1U << 29,
     System = 1U << 30,
 
@@ -339,6 +342,9 @@ struct NpadStyleTag {
         BitField<9, 1, u32> lucia;
         BitField<10, 1, u32> lagoon;
         BitField<11, 1, u32> lager;
+        BitField<12, 1, u32> joycon_dual_mouse;
+        BitField<13, 1, u32> joycon_left_mouse;
+        BitField<14, 1, u32> joycon_right_mouse;
         BitField<29, 1, u32> system_ext;
         BitField<30, 1, u32> system;
     };
