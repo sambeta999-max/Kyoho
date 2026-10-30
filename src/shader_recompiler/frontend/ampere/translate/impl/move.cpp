@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "shader_recompiler/exception.h"
+#include "shader_recompiler/frontend/ampere/decode.h"
 #include "shader_recompiler/frontend/ampere/translate/impl/impl.h"
 #include "shader_recompiler/frontend/maxwell/translate/impl/common_funcs.h"
 
@@ -128,11 +129,28 @@ void TranslatorVisitor::LDC(Instruction insn) {
 }
 
 void TranslatorVisitor::ULDC(Instruction insn) {
-    if (insn.Bit(91)) {
+    const bool indexed{Decode(insn) == Opcode::ULDC_INDEXED};
+    if (!indexed && insn.Bit(91)) {
         throw NotImplementedException("Bindless ULDC");
     }
-    LoadConstant(*this, UReg(insn.Bits(16, 6)), static_cast<LoadSize>(insn.Bits(73, 3)),
-                 ir.Imm32(insn.CbufIndex()), ir.Imm32(insn.CbufOffset()));
+    const u64 mode{insn.Bits(78, 2)};
+    const IR::U32 imm_index{ir.Imm32(insn.CbufIndex())};
+    const IR::U32 imm_offset{ir.Imm32(static_cast<s32>(static_cast<s16>(insn.CbufOffset())))};
+    const IR::U32 address{indexed ? IR::U32{ir.IAdd(SrcA(insn, true), imm_offset)} : imm_offset};
+    IR::U32 index{imm_index};
+    IR::U32 offset{address};
+    switch (mode) {
+    case 0:
+        break;
+    case 2:
+        index = ir.IAdd(ir.BitFieldExtract(address, ir.Imm32(16), ir.Imm32(16)), imm_index);
+        offset = ir.BitFieldExtract(address, ir.Imm32(0), ir.Imm32(16));
+        break;
+    default:
+        throw NotImplementedException("ULDC mode {}", mode);
+    }
+    LoadConstant(*this, UReg(insn.Bits(16, 6)), static_cast<LoadSize>(insn.Bits(73, 3)), index,
+                 offset);
 }
 
 } // namespace Shader::Ampere

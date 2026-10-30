@@ -13,6 +13,8 @@ namespace {
 
 void Dispatch(TranslatorVisitor& v, Opcode opcode, Instruction insn) {
     switch (opcode) {
+    case Opcode::IABS:
+        return v.IABS(insn);
     case Opcode::IADD3:
         return v.IADD3(insn);
     case Opcode::UIADD3:
@@ -25,10 +27,16 @@ void Dispatch(TranslatorVisitor& v, Opcode opcode, Instruction insn) {
         return v.IMNMX(insn);
     case Opcode::ISETP:
         return v.ISETP(insn);
+    case Opcode::UISETP:
+        return v.UISETP(insn);
     case Opcode::LOP3:
         return v.LOP3(insn);
     case Opcode::ULOP3:
         return v.ULOP3(insn);
+    case Opcode::PLOP3:
+        return v.PLOP3(insn);
+    case Opcode::UPLOP3:
+        return v.UPLOP3(insn);
     case Opcode::R2P:
         return v.R2P(insn);
     case Opcode::SHF:
@@ -37,6 +45,8 @@ void Dispatch(TranslatorVisitor& v, Opcode opcode, Instruction insn) {
         return v.USHF(insn);
     case Opcode::SEL:
         return v.SEL(insn);
+    case Opcode::USEL:
+        return v.USEL(insn);
     case Opcode::POPC:
         return v.POPC(insn);
     case Opcode::FLO:
@@ -126,6 +136,8 @@ void Dispatch(TranslatorVisitor& v, Opcode opcode, Instruction insn) {
         return v.FFMA(insn);
     case Opcode::FMNMX:
         return v.FMNMX(insn);
+    case Opcode::FSET:
+        return v.FSET(insn);
     case Opcode::FSETP:
         return v.FSETP(insn);
     case Opcode::FSEL:
@@ -161,6 +173,7 @@ void Dispatch(TranslatorVisitor& v, Opcode opcode, Instruction insn) {
     case Opcode::LDC:
         return v.LDC(insn);
     case Opcode::ULDC:
+    case Opcode::ULDC_INDEXED:
         return v.ULDC(insn);
     case Opcode::EXIT:
         return v.EXIT(insn);
@@ -170,6 +183,8 @@ void Dispatch(TranslatorVisitor& v, Opcode opcode, Instruction insn) {
         return v.MEMBAR(insn);
     case Opcode::BRA:
     case Opcode::BRX:
+    case Opcode::CALL_REL:
+    case Opcode::RET:
     case Opcode::KILL:
         // Handled by the control flow graph
         return;

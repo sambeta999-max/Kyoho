@@ -75,7 +75,9 @@ std::optional<IR::Condition> CombinedCondition(const Instruction& insn) {
     if (IsTrue(*cond)) {
         return guard;
     }
-    throw NotImplementedException("Branch with both guard and condition predicates");
+    const auto [guard_pred, guard_negated]{guard->GetPred()};
+    const auto [cond_pred, cond_negated]{cond->GetPred()};
+    return IR::Condition{guard_pred, guard_negated, cond_pred, cond_negated};
 }
 
 // Relative targets are encoded in 32-bit words from the next instruction
@@ -160,7 +162,31 @@ CFG::AnalysisState CFG::AnalyzeInstAmpere(Block* block, FunctionId function_id, 
     case Opcode::YIELD:
         // Convergence barriers have no effect when each invocation runs independently
         return AnalysisState::Continue;
-    case Opcode::BRA: {
+    case Opcode::BRA:
+    case Opcode::CALL_REL: {
+        // CALL.REL.NOINC (bit 82) without a link setup is used as a forward branch (e.g. loop
+        // exits and LUT shaders). When preceded by a link-register setup, treat it as a call.
+        if (opcode == Opcode::CALL_REL && offset >= 16) {
+            const Instruction prev{env.ReadInstruction(offset - 16),
+                                   env.ReadInstruction(offset - 8)};
+            if (Ampere::Decode(prev) == Opcode::MOV && prev.Form() == Ampere::AluForm::ImmReg &&
+                prev.Imm32() == offset + 16 && insn.Pred() == PT && !insn.PredNegated()) {
+                const Location cal_pc{Ampere::ToLocation(RelativeTarget(offset, insn))};
+                const auto it{std::ranges::find(functions, cal_pc, &Function::entrypoint)};
+                const bool exists{it != functions.end()};
+                const FunctionId call_id{
+                    exists ? static_cast<size_t>(std::distance(functions.begin(), it))
+                           : functions.size()};
+                if (!exists) {
+                    functions.emplace_back(block_pool, cal_pc);
+                }
+                block->end_class = EndClass::Call;
+                block->function_call = call_id;
+                block->return_block = AddLabel(block, block->stack, pc + 1, function_id);
+                block->end = pc;
+                return AnalysisState::Branch;
+            }
+        }
         const std::optional cond{CombinedCondition(insn)};
         if (!cond) {
             return AnalysisState::Continue;
@@ -172,6 +198,19 @@ CFG::AnalysisState CFG::AnalyzeInstAmpere(Block* block, FunctionId function_id, 
         block->branch_true = AddLabel(block, block->stack,
                                       Ampere::ToLocation(RelativeTarget(offset, insn)), function_id);
         block->end = pc;
+        return AnalysisState::Branch;
+    }
+    case Opcode::RET: {
+        const std::optional cond{CombinedCondition(insn)};
+        if (!cond) {
+            return AnalysisState::Continue;
+        }
+        if (!IsTrue(*cond)) {
+            AnalyzeCondInst(block, function_id, pc, EndClass::Return, *cond);
+            return AnalysisState::Branch;
+        }
+        block->end = pc;
+        block->end_class = EndClass::Return;
         return AnalysisState::Branch;
     }
     case Opcode::EXIT: {
@@ -237,8 +276,6 @@ CFG::AnalysisState CFG::AnalyzeInstAmpere(Block* block, FunctionId function_id, 
     case Opcode::BRXU:
         throw NotImplementedException("Indirect branch {}", opcode);
     case Opcode::CALL_ABS:
-    case Opcode::CALL_REL:
-    case Opcode::RET:
         throw NotImplementedException("Function call {}", opcode);
     case Opcode::Invalid:
         throw NotImplementedException("Invalid instruction {:016x} {:016x} at {:#x}", insn.hi,

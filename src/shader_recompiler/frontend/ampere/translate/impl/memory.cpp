@@ -56,29 +56,40 @@ s32 ImmediateOffset(Instruction insn) {
 IR::U64 GlobalAddress(TranslatorVisitor& v, Instruction insn, u32 ureg_offset, u32 reg_64_bit) {
     const bool uniform_form{HasUniformAddress(insn)};
     const bool reg_is_64{uniform_form ? insn.Bit(reg_64_bit) : insn.Bit(72)};
-    // With a 64-bit register address, a 64-bit uniform register is a memory descriptor
-    // (desc[URx]) and does not take part in the address; checked on GA102
-    const bool is_descriptor{uniform_form && reg_is_64 && insn.Bit(72)};
-    const bool has_ureg{uniform_form && !is_descriptor};
-    const bool ureg_is_64{has_ureg && insn.Bit(72)};
-    // Built as IAdd64(base, immediate), the form storage buffer tracking expects
-    std::optional<IR::U64> base;
+    const bool ureg_is_64{uniform_form && insn.Bit(72)};
+    // Built as IAdd64(PackUint2x32(CompositeConstruct(lo, hi)), immediate), the form storage
+    // buffer tracking in GlobalMemoryToStorageBufferPass expects
+    std::optional<std::pair<IR::U32, IR::U32>> parts;
     const auto add_register{[&](IR::Reg reg, bool is_64) {
         if (IR::IsZero(reg)) {
             return;
         }
-        const IR::U64 value{is_64 ? v.L(reg) : IR::U64{v.ir.UConvert(64, v.X(reg))}};
-        base = base ? IR::U64{v.ir.IAdd(*base, value)} : value;
+        if (is_64 && !IR::IsAligned(reg, 2)) {
+            throw NotImplementedException("Unaligned source register {}", reg);
+        }
+        const IR::U32 lo{v.X(reg)};
+        const IR::U32 hi{is_64 ? v.X(reg + 1) : v.ir.Imm32(0)};
+        if (!parts) {
+            parts.emplace(lo, hi);
+            return;
+        }
+        const IR::U32 sum_lo{v.ir.IAdd(parts->first, lo)};
+        const IR::U32 carry{
+            v.ir.Select(v.ir.ILessThan(sum_lo, lo, false), v.ir.Imm32(1), v.ir.Imm32(0))};
+        const IR::U32 sum_hi{v.ir.IAdd(v.ir.IAdd(parts->second, hi), carry)};
+        parts = {sum_lo, sum_hi};
     }};
     add_register(Reg(insn.SrcA()), reg_is_64);
-    if (has_ureg) {
+    if (uniform_form) {
         add_register(UReg(insn.Bits(ureg_offset, 6)), ureg_is_64);
     }
     const s64 offset{ImmediateOffset(insn)};
-    if (!base) {
+    if (!parts) {
         return v.ir.Imm64(static_cast<u64>(offset));
     }
-    return offset == 0 ? *base : IR::U64{v.ir.IAdd(*base, v.ir.Imm64(static_cast<u64>(offset)))};
+    const IR::U64 base{
+        v.ir.PackUint2x32(v.ir.CompositeConstruct(parts->first, parts->second))};
+    return offset == 0 ? base : IR::U64{v.ir.IAdd(base, v.ir.Imm64(static_cast<u64>(offset)))};
 }
 
 IR::U32 WindowAddress(TranslatorVisitor& v, Instruction insn, u32 ureg_offset, bool has_stride) {

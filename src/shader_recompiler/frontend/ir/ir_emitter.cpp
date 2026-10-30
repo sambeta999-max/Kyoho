@@ -279,10 +279,15 @@ static U1 GetFlowTest(IREmitter& ir, FlowTest flow_test) {
 U1 IREmitter::Condition(IR::Condition cond) {
     const FlowTest flow_test{cond.GetFlowTest()};
     const auto [pred, is_negated]{cond.GetPred()};
-    if (flow_test == FlowTest::T) {
-        return GetPred(pred, is_negated);
+    const auto [cond_pred, cond_negated]{cond.GetCondPred()};
+    U1 result{GetPred(pred, is_negated)};
+    if (!IsTrue(cond_pred) || cond_negated) {
+        result = LogicalAnd(result, GetPred(cond_pred, cond_negated));
     }
-    return LogicalAnd(GetPred(pred, is_negated), GetFlowTest(*this, flow_test));
+    if (flow_test == FlowTest::T) {
+        return result;
+    }
+    return LogicalAnd(result, GetFlowTest(*this, flow_test));
 }
 
 U1 IREmitter::GetFlowTestResult(FlowTest test) {

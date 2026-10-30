@@ -162,7 +162,61 @@ void Shf(TranslatorVisitor& v, Instruction insn, bool uniform) {
     v.X(uniform ? UReg(insn.Bits(16, 6)) : Reg(insn.Dest()), result);
 }
 
+void Isetp(TranslatorVisitor& v, Instruction insn, bool uniform) {
+    if (insn.Bit(72)) {
+        throw NotImplementedException("ISETP.EX");
+    }
+    const auto compare_op{static_cast<Maxwell::CompareOp>(insn.Bits(76, 3))};
+    const auto bop{static_cast<Maxwell::BooleanOp>(insn.Bits(74, 2))};
+    const IR::U1 comparison{Maxwell::IntegerCompare(v.ir, v.SrcA(insn, uniform),
+                                                    v.SrcB(insn, uniform), compare_op,
+                                                    insn.Bit(73))};
+    const IR::U1 accumulator{uniform ? v.UP(insn.Bits(87, 3), insn.Bit(90))
+                                     : v.P(insn.Bits(87, 3), insn.Bit(90))};
+    const IR::U1 first{Maxwell::PredicateCombine(v.ir, comparison, accumulator, bop)};
+    const IR::U1 second{
+        Maxwell::PredicateCombine(v.ir, v.ir.LogicalNot(comparison), accumulator, bop)};
+    if (uniform) {
+        v.SetUP(insn.Bits(81, 3), first);
+        v.SetUP(insn.Bits(84, 3), second);
+    } else {
+        v.SetP(insn.Bits(81, 3), first);
+        v.SetP(insn.Bits(84, 3), second);
+    }
+}
+
+void Plop3(TranslatorVisitor& v, Instruction insn, bool uniform) {
+    const auto apply_lut{[&](const IR::U1& a, const IR::U1& b, const IR::U1& c, u64 lut) {
+        const auto mask{[&](const IR::U1& p) {
+            return IR::U32{v.ir.Select(p, v.ir.Imm32(~0u), v.ir.Imm32(0u))};
+        }};
+        return v.ir.INotEqual(Maxwell::ApplyLUT(v.ir, mask(a), mask(b), mask(c), lut),
+                              v.ir.Imm32(0u));
+    }};
+    const IR::U1 pa{uniform ? v.UP(insn.Bits(87, 3), insn.Bit(90))
+                            : v.P(insn.Bits(87, 3), insn.Bit(90))};
+    const IR::U1 pb{uniform ? v.UP(insn.Bits(77, 3), insn.Bit(80))
+                            : v.P(insn.Bits(77, 3), insn.Bit(80))};
+    const IR::U1 pc{(uniform || insn.Bit(67)) ? v.UP(insn.Bits(68, 3), insn.Bit(71))
+                                              : v.P(insn.Bits(68, 3), insn.Bit(71))};
+    const u64 lut_0{insn.Bits(64, 3) | (insn.Bits(72, 5) << 3)};
+    const u64 lut_1{insn.Bits(16, 8)};
+    const IR::U1 out_0{apply_lut(pa, pb, pc, lut_0)};
+    const IR::U1 out_1{apply_lut(pa, pb, pc, lut_1)};
+    if (uniform) {
+        v.SetUP(insn.Bits(81, 3), out_0);
+        v.SetUP(insn.Bits(84, 3), out_1);
+    } else {
+        v.SetP(insn.Bits(81, 3), out_0);
+        v.SetP(insn.Bits(84, 3), out_1);
+    }
+}
+
 } // Anonymous namespace
+
+void TranslatorVisitor::IABS(Instruction insn) {
+    X(Reg(insn.Dest()), ir.IAbs(SrcB(insn)));
+}
 
 void TranslatorVisitor::IADD3(Instruction insn) {
     Add3(*this, insn, false);
@@ -230,17 +284,11 @@ void TranslatorVisitor::IMNMX(Instruction insn) {
 }
 
 void TranslatorVisitor::ISETP(Instruction insn) {
-    if (insn.Bit(72)) {
-        throw NotImplementedException("ISETP.EX");
-    }
-    const auto compare_op{static_cast<Maxwell::CompareOp>(insn.Bits(76, 3))};
-    const auto bop{static_cast<Maxwell::BooleanOp>(insn.Bits(74, 2))};
-    const IR::U1 comparison{
-        Maxwell::IntegerCompare(ir, SrcA(insn), SrcB(insn), compare_op, insn.Bit(73))};
-    const IR::U1 accumulator{P(insn.Bits(87, 3), insn.Bit(90))};
-    SetP(insn.Bits(81, 3), Maxwell::PredicateCombine(ir, comparison, accumulator, bop));
-    SetP(insn.Bits(84, 3),
-         Maxwell::PredicateCombine(ir, ir.LogicalNot(comparison), accumulator, bop));
+    Isetp(*this, insn, false);
+}
+
+void TranslatorVisitor::UISETP(Instruction insn) {
+    Isetp(*this, insn, true);
 }
 
 void TranslatorVisitor::LOP3(Instruction insn) {
@@ -249,6 +297,14 @@ void TranslatorVisitor::LOP3(Instruction insn) {
 
 void TranslatorVisitor::ULOP3(Instruction insn) {
     Lop3(*this, insn, true);
+}
+
+void TranslatorVisitor::PLOP3(Instruction insn) {
+    Plop3(*this, insn, false);
+}
+
+void TranslatorVisitor::UPLOP3(Instruction insn) {
+    Plop3(*this, insn, true);
 }
 
 // R2P PR, Ra.Bn, mask: predicates P0-P6 selected by the mask take the bits of byte n of Ra
@@ -275,6 +331,11 @@ void TranslatorVisitor::USHF(Instruction insn) {
 void TranslatorVisitor::SEL(Instruction insn) {
     const IR::U1 cond{P(insn.Bits(87, 3), insn.Bit(90))};
     X(Reg(insn.Dest()), IR::U32{ir.Select(cond, SrcA(insn), SrcB(insn))});
+}
+
+void TranslatorVisitor::USEL(Instruction insn) {
+    const IR::U1 cond{UP(insn.Bits(87, 3), insn.Bit(90))};
+    X(UReg(insn.Bits(16, 6)), IR::U32{ir.Select(cond, SrcA(insn, true), SrcB(insn, true))});
 }
 
 namespace {

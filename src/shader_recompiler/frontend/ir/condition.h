@@ -19,10 +19,16 @@ public:
 
     explicit Condition(FlowTest flow_test_, Pred pred_, bool pred_negated_ = false) noexcept
         : flow_test{static_cast<u16>(flow_test_)}, pred{static_cast<u8>(pred_)},
-          pred_negated{pred_negated_ ? u8{1} : u8{0}} {}
+          pred_negated{pred_negated_ ? u8{1} : u8{0}}, cond_pred{static_cast<u8>(Pred::PT)},
+          cond_negated{0} {}
 
     explicit Condition(Pred pred_, bool pred_negated_ = false) noexcept
         : Condition(FlowTest::T, pred_, pred_negated_) {}
+
+    explicit Condition(Pred pred_, bool pred_negated_, Pred cond_pred_, bool cond_negated_) noexcept
+        : flow_test{static_cast<u16>(FlowTest::T)}, pred{static_cast<u8>(pred_)},
+          pred_negated{pred_negated_ ? u8{1} : u8{0}}, cond_pred{static_cast<u8>(cond_pred_)},
+          cond_negated{cond_negated_ ? u8{1} : u8{0}} {}
 
     explicit Condition(bool value) : Condition(Pred::PT, !value) {}
 
@@ -36,10 +42,16 @@ public:
         return {static_cast<IR::Pred>(pred), pred_negated != 0};
     }
 
+    [[nodiscard]] std::pair<IR::Pred, bool> GetCondPred() const noexcept {
+        return {static_cast<IR::Pred>(cond_pred), cond_negated != 0};
+    }
+
 private:
-    u16 flow_test;
-    u8 pred;
-    u8 pred_negated;
+    u16 flow_test{static_cast<u16>(FlowTest::T)};
+    u8 pred{static_cast<u8>(Pred::PT)};
+    u8 pred_negated{0};
+    u8 cond_pred{static_cast<u8>(Pred::PT)};
+    u8 cond_negated{0};
 };
 
 std::string NameOf(Condition condition);

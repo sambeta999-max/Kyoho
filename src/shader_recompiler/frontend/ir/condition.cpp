@@ -22,6 +22,14 @@ std::string NameOf(Condition condition) {
         ret += '!';
     }
     ret += fmt::to_string(pred);
+    const auto [cond_pred, cond_negated]{condition.GetCondPred()};
+    if (!IsTrue(cond_pred) || cond_negated) {
+        ret += '&';
+        if (cond_negated) {
+            ret += '!';
+        }
+        ret += fmt::to_string(cond_pred);
+    }
     return ret;
 }
 

@@ -25,18 +25,23 @@ struct TranslatorVisitor {
     IR::IREmitter ir;
 
     // Integer
+    void IABS(Instruction insn);
     void IADD3(Instruction insn);
     void UIADD3(Instruction insn);
     void IMAD(Instruction insn);
     void IMAD_WIDE(Instruction insn);
     void IMNMX(Instruction insn);
     void ISETP(Instruction insn);
+    void UISETP(Instruction insn);
     void LOP3(Instruction insn);
     void ULOP3(Instruction insn);
+    void PLOP3(Instruction insn);
+    void UPLOP3(Instruction insn);
     void R2P(Instruction insn);
     void SHF(Instruction insn);
     void USHF(Instruction insn);
     void SEL(Instruction insn);
+    void USEL(Instruction insn);
     void POPC(Instruction insn);
     void FLO(Instruction insn);
     void BREV(Instruction insn);
@@ -90,6 +95,7 @@ struct TranslatorVisitor {
     void FMUL(Instruction insn);
     void FFMA(Instruction insn);
     void FMNMX(Instruction insn);
+    void FSET(Instruction insn);
     void FSETP(Instruction insn);
     void FSEL(Instruction insn);
     void MUFU(Instruction insn);
