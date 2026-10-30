@@ -365,9 +365,13 @@ private:
         const auto* packet = ctx.CommandBuffer();
         Result result = Kernel::ResultInvalidCombination;
         if (packet[0] == 0xda && packet[1] == 1) {
-            result = packet[2] < MaximumEventCount ? ResultSuccess : Kernel::ResultOutOfRange;
+            const u32 index = packet[2];
+            result = index < MaximumEventCount ? ResultSuccess : Kernel::ResultOutOfRange;
             if (result.IsSuccess()) {
-                CancelRequest(packet[2]);
+                CancelRequest(index);
+                if (auto* event = m_events[index]) {
+                    event->Signal(kernel);
+                }
             }
         }
         IPC::ResponseBuilder rb{ctx, 2};
