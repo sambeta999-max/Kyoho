@@ -169,6 +169,7 @@ void Dispatch(TranslatorVisitor& v, Opcode opcode, Instruction insn) {
     case Opcode::MEMBAR:
         return v.MEMBAR(insn);
     case Opcode::BRA:
+    case Opcode::BRX:
     case Opcode::KILL:
         // Handled by the control flow graph
         return;

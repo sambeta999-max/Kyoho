@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <algorithm>
 #include <optional>
+#include <vector>
 
 #include "shader_recompiler/exception.h"
 #include "shader_recompiler/frontend/ampere/decode.h"
@@ -83,6 +85,66 @@ u32 RelativeTarget(u32 offset, const Instruction& insn) {
     return static_cast<u32>(static_cast<s64>(offset) + 16 + words * 4);
 }
 
+constexpr u32 RZ{255};
+
+// Jump table of an indirect branch: entries are 32-bit words in a constant buffer
+struct BranchTable {
+    u32 cbuf_index{};
+    u32 cbuf_offset{};
+    u32 num_entries{};
+};
+
+// Finds the jump table of BRX Ra by walking back to the start of its block. The compiler emits
+//   IMNMX.U32 Ri, Rx, max ; SHF.L.U32 Rj, Ri, 2 ; LDC Ra, c[bank][Rj + offset] ; BRX Ra
+// where the clamp bounds the table to max + 1 entries.
+std::optional<BranchTable> TrackBranchTable(Environment& env, u32 brx_offset, u32 begin_offset) {
+    const auto read{[&](u32 offset) {
+        return Instruction{env.ReadInstruction(offset), env.ReadInstruction(offset + 8)};
+    }};
+    // Last unconditional writer of reg before offset, or nullopt when it isn't in the block
+    const auto writer{[&](u32 reg, u32 offset) -> std::optional<std::pair<u32, Instruction>> {
+        while (offset > begin_offset) {
+            offset -= 16;
+            const Instruction insn{read(offset)};
+            if (insn.Dest() == reg && Ampere::Decode(insn) != Opcode::Invalid) {
+                if (insn.Pred() != PT || insn.PredNegated()) {
+                    return std::nullopt;
+                }
+                return std::pair{offset, insn};
+            }
+        }
+        return std::nullopt;
+    }};
+    const Instruction brx{read(brx_offset)};
+    const auto load{writer(brx.SrcA(), brx_offset)};
+    if (!load || Ampere::Decode(load->second) != Opcode::LDC || load->second.Bits(78, 2) != 0 ||
+        load->second.Bit(91) || load->second.SrcA() == RZ) {
+        return std::nullopt;
+    }
+    const Instruction ldc{load->second};
+    const auto scale{writer(ldc.SrcA(), load->first)};
+    if (!scale || Ampere::Decode(scale->second) != Opcode::SHF ||
+        scale->second.Form() != Ampere::AluForm::ImmReg || scale->second.Bit(76) ||
+        scale->second.Bits(32, 32) != 2 || scale->second.Bits(64, 8) != RZ) {
+        return std::nullopt;
+    }
+    const auto clamp{writer(scale->second.SrcA(), scale->first)};
+    if (!clamp || Ampere::Decode(clamp->second) != Opcode::IMNMX ||
+        clamp->second.Form() != Ampere::AluForm::ImmReg || clamp->second.Bit(73) ||
+        clamp->second.Bits(87, 3) != PT || clamp->second.Bit(90)) {
+        return std::nullopt;
+    }
+    const u32 max_index{static_cast<u32>(clamp->second.Bits(32, 32))};
+    if (max_index >= 256) {
+        return std::nullopt;
+    }
+    return BranchTable{
+        .cbuf_index = ldc.CbufIndex(),
+        .cbuf_offset = static_cast<u32>(static_cast<s32>(static_cast<s16>(ldc.CbufOffset()))),
+        .num_entries = max_index + 1,
+    };
+}
+
 } // Anonymous namespace
 
 CFG::AnalysisState CFG::AnalyzeInstAmpere(Block* block, FunctionId function_id, Location pc) {
@@ -141,7 +203,37 @@ CFG::AnalysisState CFG::AnalyzeInstAmpere(Block* block, FunctionId function_id, 
         block->end_class = EndClass::Kill;
         return AnalysisState::Branch;
     }
-    case Opcode::BRX:
+    case Opcode::BRX: {
+        // Target: the next instruction plus Ra plus the signed immediate, as BRA
+        if (insn.Pred() != PT || insn.PredNegated()) {
+            throw NotImplementedException("Conditional indirect branch");
+        }
+        const std::optional table{TrackBranchTable(env, offset, Ampere::ToOffset(block->begin))};
+        if (!table) {
+            throw NotImplementedException("Untracked indirect branch at {:#x}", offset);
+        }
+        const u32 base{RelativeTarget(offset, insn)};
+        std::vector<u32> targets;
+        for (u32 i = 0; i < table->num_entries; ++i) {
+            targets.push_back(base + env.ReadCbufValue(table->cbuf_index,
+                                                       table->cbuf_offset + i * 4));
+        }
+        std::ranges::sort(targets);
+        targets.erase(std::unique(targets.begin(), targets.end()), targets.end());
+        block->indirect_branches.reserve(targets.size());
+        for (const u32 target : targets) {
+            block->indirect_branches.push_back({
+                .block = AddLabel(block, block->stack, Ampere::ToLocation(target), function_id),
+                .address = target,
+            });
+        }
+        block->cond = IR::Condition{true};
+        block->end = pc + 1;
+        block->end_class = EndClass::IndirectBranch;
+        block->branch_reg = static_cast<IR::Reg>(insn.SrcA());
+        block->branch_offset = static_cast<s32>(base);
+        return AnalysisState::Branch;
+    }
     case Opcode::BRXU:
         throw NotImplementedException("Indirect branch {}", opcode);
     case Opcode::CALL_ABS:
