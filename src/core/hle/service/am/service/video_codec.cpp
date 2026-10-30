@@ -389,8 +389,9 @@ private:
                     const u32 block_height = VideoImageBlockHeight(target->height);
                     std::vector<u8> tiled(Tegra::Texture::CalculateSize(
                         true, 4, target->width, target->height, 1, block_height, 0));
+                    // Native applications sample with the console's GOB layout
                     Tegra::Texture::SwizzleTexture(tiled, linear, 4, target->width,
-                                                   target->height, 1, block_height, 0);
+                                                   target->height, 1, block_height, 0, 1, true);
                     memory.WriteBlock(target->address + layout.luma_offset, tiled.data(),
                                       tiled.size());
                 }

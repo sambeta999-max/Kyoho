@@ -183,6 +183,7 @@ struct AstcPushConstants {
     u32 x_shift;
     u32 block_height;
     u32 block_height_mask;
+    u32 native_tiling;
 };
 
 struct QueriesPrefixScanPushConstants {
@@ -583,6 +584,7 @@ void ASTCDecoderPass::Assemble(Image& image, const StagingBufferRef& map,
                 .x_shift = params.x_shift,
                 .block_height = params.block_height,
                 .block_height_mask = params.block_height_mask,
+                .native_tiling = params.native_tiling,
             };
             const VkDescriptorSet set = descriptor_allocator.Commit();
             device.GetLogical().UpdateDescriptorSet(set, *descriptor_template, descriptor_data);
