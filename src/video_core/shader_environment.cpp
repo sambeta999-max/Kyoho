@@ -219,6 +219,7 @@ void GenericEnvironment::Serialize(std::ofstream& file) const {
         .write(reinterpret_cast<const char*>(&viewport_transform_state),
                sizeof(viewport_transform_state))
         .write(reinterpret_cast<const char*>(&stage), sizeof(stage))
+        .write(reinterpret_cast<const char*>(&is_ampere), sizeof(is_ampere))
         .write(reinterpret_cast<const char*>(code.data()), code_size);
     for (const auto& [key, type] : texture_types) {
         file.write(reinterpret_cast<const char*>(&key), sizeof(key))
@@ -498,7 +499,8 @@ void FileEnvironment::Deserialize(std::ifstream& file) {
         .read(reinterpret_cast<char*>(&read_lowest), sizeof(read_lowest))
         .read(reinterpret_cast<char*>(&read_highest), sizeof(read_highest))
         .read(reinterpret_cast<char*>(&viewport_transform_state), sizeof(viewport_transform_state))
-        .read(reinterpret_cast<char*>(&stage), sizeof(stage));
+        .read(reinterpret_cast<char*>(&stage), sizeof(stage))
+        .read(reinterpret_cast<char*>(&is_ampere), sizeof(is_ampere));
     code.resize(Common::DivCeil(code_size, sizeof(u64)));
     file.read(reinterpret_cast<char*>(code.data()), code_size);
     for (size_t i = 0; i < num_texture_types; ++i) {
@@ -535,7 +537,7 @@ void FileEnvironment::Deserialize(std::ifstream& file) {
         initial_offset = 0;
     } else {
         file.read(reinterpret_cast<char*>(&sph), sizeof(sph));
-        initial_offset = sizeof(sph);
+        initial_offset = ProgramHeaderSize();
         if (stage == Shader::Stage::Geometry) {
             file.read(reinterpret_cast<char*>(&gp_passthrough_mask), sizeof(gp_passthrough_mask));
         }
@@ -615,10 +617,6 @@ std::optional<Shader::ReplaceConstant> FileEnvironment::GetReplaceConstBuffer(u3
 
 void SerializePipeline(std::span<const char> key, std::span<const GenericEnvironment* const> envs,
                        const std::filesystem::path& filename, u32 cache_version) try {
-    // The cache format has no instruction set field, so Ampere programs are not stored
-    if (std::ranges::any_of(envs, [](const GenericEnvironment* env) { return env->IsAmpere(); })) {
-        return;
-    }
     std::ofstream file(filename, std::ios::binary | std::ios::ate | std::ios::app);
     file.exceptions(std::ifstream::failbit);
     if (!file.is_open()) {
