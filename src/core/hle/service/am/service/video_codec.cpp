@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
+#include <chrono>
+#include <thread>
 #include <cstring>
 #include <deque>
 #include <span>
@@ -263,10 +265,11 @@ private:
         rb.Push<u64>(fence.value);
     }
 
-    /// Queues an image for the next picture and returns the fence of that picture
-    Fence Enqueue(u32 image) {
+    /// Queues an image for the next picture and returns the fence of that picture. The image is
+    /// written once the application's release fence, if any, has been reached.
+    Fence Enqueue(u32 image, std::optional<Fence> release = std::nullopt) {
         const Fence fence{*syncpoint, ++next_target};
-        free_images.push_back({image, fence.value});
+        free_images.push_back({image, release});
         WritePending();
         return fence;
     }
@@ -301,7 +304,8 @@ private:
         if (packet[0] == 0x14a && (packet[1] & 0x3ff) == 8 && syncpoint) {
             result = pools->Find(packet[2]) ? ResultSuccess : Kernel::ResultNotFound;
             if (result.IsSuccess()) {
-                fence = Enqueue(packet[2]);
+                const Fence release{~packet[4], u64{packet[6]} | (u64{packet[7]} << 32)};
+                fence = Enqueue(packet[2], release);
             }
         }
         PushFence(ctx, result, fence);
@@ -337,6 +341,25 @@ private:
         rb.Push<u64>(submitted);
     }
 
+    /// Waits until the GPU work that samples a released image has been processed, so a picture is
+    /// not written while the image is still read. Bounded in case the fence is never signaled.
+    void WaitForRelease(const std::optional<Fence>& release) {
+        auto& host_syncpoints = system.Host1x().GetSyncpointManager();
+        if (!release || release->syncpoint >= Nvidia::MaxSyncPoints) {
+            return;
+        }
+        const u32 value = static_cast<u32>(release->value);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{200};
+        while (!host_syncpoints.IsReadyGuest(release->syncpoint, value)) {
+            if (std::chrono::steady_clock::now() >= deadline) {
+                LOG_WARNING(Service_AM, "Video image release fence {}:{} timed out",
+                            release->syncpoint, value);
+                return;
+            }
+            std::this_thread::sleep_for(std::chrono::microseconds{200});
+        }
+    }
+
     /// Writes decoded pictures into queued images and signals their fences
     void WritePending() {
         auto& memory = process->GetMemory();
@@ -344,6 +367,7 @@ private:
         while (!pending.empty() && !free_images.empty()) {
             const auto& frame = pending.front();
             const u32 image = free_images.front().first;
+            WaitForRelease(free_images.front().second);
             free_images.pop_front();
             if (const auto target = pools->Find(image)) {
                 const auto& layout = target->layout;
@@ -436,7 +460,7 @@ private:
     std::optional<u32> syncpoint;
     u64 next_target{};
     u64 submitted{};
-    std::deque<std::pair<u32, u64>> free_images;
+    std::deque<std::pair<u32, std::optional<Fence>>> free_images;
     std::deque<VideoCommon::DecodedVideoFrame> pending;
     std::deque<Properties> properties;
 };

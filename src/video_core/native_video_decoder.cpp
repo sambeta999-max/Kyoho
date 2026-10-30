@@ -130,7 +130,7 @@ private:
         if (frame->format != target) {
             scaler = sws_getCachedContext(scaler, width, height,
                                           static_cast<AVPixelFormat>(frame->format), width, height,
-                                          target, SWS_POINT, nullptr, nullptr, nullptr);
+                                          target, SWS_BILINEAR, nullptr, nullptr, nullptr);
             if (!scaler) {
                 LOG_ERROR(HW_GPU, "No conversion from pixel format {} to {}", frame->format,
                           static_cast<int>(target));
