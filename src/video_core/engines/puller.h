@@ -158,6 +158,7 @@ private:
         WriteLong = 0x2,
         AcquireGequal = 0x4,
         AcquireMask = 0x8,
+        Reduction = 0x10,
     };
 
 #define ASSERT_REG_POSITION(field_name, position)                                                  \

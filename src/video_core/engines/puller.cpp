@@ -98,7 +98,12 @@ void Puller::ProcessFenceActionMethod(DmaPusher& dma_pusher) {
 }
 
 void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
-    const auto semaphoreOperationMask = 0xF;
+    static constexpr std::array<SemaphoreReduction, 8> HOST_REDUCTIONS{
+        SemaphoreReduction::Min, SemaphoreReduction::Max, SemaphoreReduction::Xor,
+        SemaphoreReduction::And, SemaphoreReduction::Or,  SemaphoreReduction::Add,
+        SemaphoreReduction::Inc, SemaphoreReduction::Dec,
+    };
+    const auto semaphoreOperationMask = 0x1F;
     const auto op = GpuSemaphoreOperation(regs.semaphore_trigger & semaphoreOperationMask);
     const bool native = dma_pusher.channel_state.native_abi;
     if (op == GpuSemaphoreOperation::WriteLong) {
@@ -109,6 +114,23 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
                                ? VideoCommon::QueryPropertiesFlags::IsAFence
                                : VideoCommon::QueryPropertiesFlags::HasTimeout;
         dma_pusher.rasterizer->Query(sequence_address, VideoCommon::QueryType::Payload, flags, payload, 0);
+    } else if (op == GpuSemaphoreOperation::Reduction) {
+        const u32 red_op = (regs.semaphore_trigger >> 27) & 0xF;
+        std::optional<SemaphoreReduction> reduction;
+        if (red_op < HOST_REDUCTIONS.size()) {
+            reduction = HOST_REDUCTIONS[red_op];
+        } else {
+            LOG_ERROR(HW_GPU, "Unknown host semaphore reduction {}", red_op);
+        }
+        const SemaphoreRelease release{
+            .address = regs.semaphore_address.SemaphoreAddress(),
+            .payload = regs.semaphore_sequence,
+            .payload_64 = false,
+            .timestamp = (regs.semaphore_trigger & (1U << 24)) == 0,
+            .reduction = reduction,
+            .reduction_signed = (regs.semaphore_trigger >> 31) == 0,
+        };
+        ReleaseSemaphore(*dma_pusher.rasterizer, dma_pusher.memory_manager, release);
     } else if (native) {
         HostSemaphore semaphore{
             .address = regs.semaphore_address.SemaphoreAddress(),
@@ -211,8 +233,14 @@ void Puller::AcquireOrSuspend(DmaPusher& dma_pusher, const HostSemaphore& semaph
 }
 
 bool Puller::CanResumeNativeAcquire(DmaPusher& dma_pusher) const {
-    return pending_acquire && !dma_pusher.memory_manager.IsShuttingDown() &&
-           IsAcquired(dma_pusher, *pending_acquire);
+    if (!pending_acquire || dma_pusher.memory_manager.IsShuttingDown()) {
+        return false;
+    }
+    if (IsAcquired(dma_pusher, *pending_acquire)) {
+        return true;
+    }
+    dma_pusher.rasterizer->ReleaseFences();
+    return IsAcquired(dma_pusher, *pending_acquire);
 }
 
 bool Puller::ResumeNativeAcquire(DmaPusher& dma_pusher) {

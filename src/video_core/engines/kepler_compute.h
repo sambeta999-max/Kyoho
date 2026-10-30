@@ -250,8 +250,11 @@ public:
 private:
     void ProcessLaunch();
 
-    /// Handles a PCAS action of AMPERE_COMPUTE_B on the QMD at launch_desc_loc
-    void SignalPcas(u32 action, u32 count);
+    /// Handles a PCAS action of AMPERE_COMPUTE_B on a QMD address
+    void SignalPcas(GPUVAddr address, u32 action, u32 count);
+
+    /// Launches an inline QMD 3.0 loaded via LOAD_INLINE_QMD_DATA(0..63)
+    void ExecuteInlineQmd();
 
     /// Launches a QMD 3.0 whose dependencies are met and performs its releases
     void ExecuteQmd(const QmdV3& qmd);

@@ -16,7 +16,7 @@ namespace Tegra::Engines {
 /// those of NVC7C0_QMDV03_00 in clc7c0qmd.h (open-gpu-doc).
 struct QmdV3 {
     static constexpr u32 NUM_WORDS = 64;
-    static constexpr u32 NUM_RELEASES = 2;
+    static constexpr u32 NUM_RELEASES = 3;
 
     enum class DependentAction : u32 {
         IncrementPut = 0,
@@ -56,7 +56,8 @@ struct QmdV3 {
     }
 
     [[nodiscard]] constexpr std::optional<SemaphoreRelease> GetRelease(u32 index) const {
-        const u32 base = 768 + index * 128;
+        constexpr std::array<u32, NUM_RELEASES> RELEASE_BASES{768, 896, 1664};
+        const u32 base = RELEASE_BASES[index];
         if (Field(base + 55, base + 55) == 0) {
             return std::nullopt;
         }

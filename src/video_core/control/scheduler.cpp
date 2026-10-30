@@ -38,7 +38,7 @@ void Scheduler::Push(GPU& gpu, s32 channel, CommandList&& entries) {
 void Scheduler::ResumePending(GPU& gpu) {
     // Resuming a channel can release the semaphore another channel waits on, so repeat until no
     // channel makes progress
-    for (size_t pass = 0; pass < pending_native_channels.size(); ++pass) {
+    for (size_t pass = 0; pass < 64; ++pass) {
         bool progress = false;
         for (const auto& state : pending_native_channels) {
             auto& dma_pusher = state->payload->dma_pusher;

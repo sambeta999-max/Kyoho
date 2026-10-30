@@ -12,6 +12,7 @@
 #include "core/core.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/maxwell_dma.h"
+#include "video_core/engines/semaphore.h"
 #include "video_core/guest_memory.h"
 #include "video_core/memory_manager.h"
 #include "video_core/renderer_base.h"
@@ -63,6 +64,11 @@ void MaxwellDMA::Launch() {
     // TODO(Subv): Perform more research and implement all features of this engine.
     const LaunchDMA& launch = regs.launch_dma;
     ASSERT(launch.interrupt_type == LaunchDMA::InterruptType::NONE);
+
+    if (launch.data_transfer_type == LaunchDMA::DataTransferType::NONE) {
+        ReleaseSemaphore();
+        return;
+    }
 
     if (launch.multi_line_enable) {
         const bool is_src_pitch = launch.src_memory_layout == LaunchDMA::MemoryLayout::PITCH;
@@ -347,26 +353,39 @@ void MaxwellDMA::CopyBlockLinearToBlockLinear() {
 }
 
 void MaxwellDMA::ReleaseSemaphore() {
-    const auto type = regs.launch_dma.semaphore_type;
-    const GPUVAddr address = regs.semaphore.address;
-    const u32 payload = regs.semaphore.payload;
-    VideoCommon::QueryPropertiesFlags flags{VideoCommon::QueryPropertiesFlags::IsAFence};
-    switch (type) {
-    case LaunchDMA::SemaphoreType::NONE:
-        break;
-    case LaunchDMA::SemaphoreType::RELEASE_ONE_WORD_SEMAPHORE: {
-        rasterizer->Query(address, VideoCommon::QueryType::Payload, flags, payload, 0);
-        break;
+    const auto& launch = regs.launch_dma;
+    const auto type = launch.semaphore_type.Value();
+    if (type == LaunchDMA::SemaphoreType::NONE) {
+        return;
     }
-    case LaunchDMA::SemaphoreType::RELEASE_FOUR_WORD_SEMAPHORE: {
-        rasterizer->Query(address, VideoCommon::QueryType::Payload,
-                          flags | VideoCommon::QueryPropertiesFlags::HasTimeout, payload, 0);
-        break;
+    static constexpr std::array<SemaphoreReduction, 8> DMA_REDUCTIONS{
+        SemaphoreReduction::Min, SemaphoreReduction::Max, SemaphoreReduction::Xor,
+        SemaphoreReduction::And, SemaphoreReduction::Or,  SemaphoreReduction::Add,
+        SemaphoreReduction::Inc, SemaphoreReduction::Dec,
+    };
+    const bool payload_64 = type == LaunchDMA::SemaphoreType::RELEASE_TWO_WORD_SEMAPHORE ||
+                            type == LaunchDMA::SemaphoreType::RELEASE_FOUR_WORD_SEMAPHORE;
+    const bool timestamp = type == LaunchDMA::SemaphoreType::RELEASE_FOUR_WORD_SEMAPHORE;
+    const u64 full_payload =
+        payload_64
+            ? (static_cast<u64>(regs.semaphore.payload_upper) << 32) | regs.semaphore.payload
+            : regs.semaphore.payload;
+    SemaphoreRelease release{
+        .address = regs.semaphore.address,
+        .payload = full_payload,
+        .payload_64 = payload_64,
+        .timestamp = timestamp,
+        .reduction = std::nullopt,
+        .reduction_signed =
+            launch.semaphore_reduction_sign == LaunchDMA::SemaphoreReductionSign::SIGNED,
+    };
+    if (launch.reduction_enable != 0) {
+        const u32 op = static_cast<u32>(launch.semaphore_reduction.Value());
+        if (op < DMA_REDUCTIONS.size()) {
+            release.reduction = DMA_REDUCTIONS[op];
+        }
     }
-    default:
-        ASSERT_MSG(false, "Unknown semaphore type: {}", static_cast<u32>(type.Value()));
-        break;
-    }
+    Tegra::Engines::ReleaseSemaphore(*rasterizer, memory_manager, release);
 }
 
 } // namespace Tegra::Engines

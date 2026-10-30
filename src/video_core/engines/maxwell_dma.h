@@ -112,8 +112,9 @@ public:
     struct Semaphore {
         PackedGPUVAddr address;
         u32 payload;
+        u32 payload_upper;
     };
-    static_assert(sizeof(Semaphore) == 12);
+    static_assert(sizeof(Semaphore) == 16);
 
     struct RenderEnable {
         enum class Mode : u32 {
@@ -149,6 +150,7 @@ public:
             NONE = 0,
             RELEASE_ONE_WORD_SEMAPHORE = 1,
             RELEASE_FOUR_WORD_SEMAPHORE = 2,
+            RELEASE_TWO_WORD_SEMAPHORE = 3,
         };
 
         enum class InterruptType : u32 {
@@ -282,7 +284,7 @@ private:
                 u32 pm_trigger;
                 INSERT_PADDING_BYTES_NOINIT(0xFC);
                 Semaphore semaphore;
-                INSERT_PADDING_BYTES_NOINIT(0x8);
+                INSERT_PADDING_BYTES_NOINIT(0x4);
                 RenderEnable render_enable;
                 PhysMode src_phys_mode;
                 PhysMode dst_phys_mode;

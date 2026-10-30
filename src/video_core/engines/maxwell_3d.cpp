@@ -653,7 +653,23 @@ void Maxwell3D::ProcessQueryGet() {
     const u32 subreport = regs.report_semaphore.query.sub_report;
     switch (regs.report_semaphore.query.operation) {
     case Regs::ReportSemaphore::Operation::Release:
-        if (regs.report_semaphore.query.short_query != 0) {
+    case Regs::ReportSemaphore::Operation::ReportOnly:
+        if (query_type == VideoCommon::QueryType::Payload &&
+            regs.report_semaphore.query.reduction_enable != 0) {
+            const SemaphoreRelease release{
+                .address = sequence_address,
+                .payload = payload,
+                .payload_64 = false,
+                .timestamp = regs.report_semaphore.query.short_query == 0,
+                .reduction = static_cast<SemaphoreReduction>(
+                    regs.report_semaphore.query.reduction_op.Value()),
+                .reduction_signed = regs.report_semaphore.query.format_signed.Value() == 1,
+            };
+            ReleaseSemaphore(*rasterizer, memory_manager, release);
+            break;
+        }
+        if (regs.report_semaphore.query.operation == Regs::ReportSemaphore::Operation::Release &&
+            regs.report_semaphore.query.short_query != 0) {
             flags |= VideoCommon::QueryPropertiesFlags::IsAFence;
         }
         rasterizer->Query(sequence_address, query_type, flags, payload, subreport);
@@ -662,9 +678,6 @@ void Maxwell3D::ProcessQueryGet() {
         // TODO(Blinkhawk): Under this operation, the GPU waits for the CPU to write a value that
         // matches the current payload.
         UNIMPLEMENTED_MSG("Unimplemented query operation ACQUIRE");
-        break;
-    case Regs::ReportSemaphore::Operation::ReportOnly:
-        rasterizer->Query(sequence_address, query_type, flags, payload, subreport);
         break;
     case Regs::ReportSemaphore::Operation::Trap:
         UNIMPLEMENTED_MSG("Unimplemented query operation TRAP");

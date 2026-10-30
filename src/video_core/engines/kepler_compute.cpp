@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <bitset>
+#include <cstring>
 #include "common/assert.h"
 #include "common/logging.h"
 #include "core/core.h"
@@ -20,12 +21,24 @@ namespace Tegra::Engines {
 
 namespace {
 
-// AMPERE_COMPUTE_B methods, as word indices
+// SEND_SIGNALING_PCAS2_B
 constexpr u32 SEND_SIGNALING_PCAS2_B = 0x02C0 / sizeof(u32);
+// SET_INLINE_QMD_ADDRESS_A and LOAD_INLINE_QMD_DATA(0..63) of AMPERE_COMPUTE_B
+constexpr u32 SET_INLINE_QMD_ADDRESS_A = 0x031C / sizeof(u32);
+constexpr u32 LOAD_INLINE_QMD_DATA_BEGIN = 0x0320 / sizeof(u32);
+constexpr u32 LOAD_INLINE_QMD_DATA_END = LOAD_INLINE_QMD_DATA_BEGIN + 64;
 // SET_REPORT_SEMAPHORE_PAYLOAD_LOWER, followed by PAYLOAD_UPPER, ADDRESS_LOWER, ADDRESS_UPPER and
 // REPORT_SEMAPHORE_EXECUTE
 constexpr u32 REPORT_SEMAPHORE = 0x0158 / sizeof(u32);
 constexpr u32 REPORT_SEMAPHORE_EXECUTE = REPORT_SEMAPHORE + 4;
+// Legacy SET_SEMAPHORE_A, SET_SEMAPHORE_B, SET_SEMAPHORE_PAYLOAD and SEMAPHORE_EXECUTE (0x1B00..0x1B0C)
+constexpr u32 REPORT_SEMAPHORE_LEGACY = 0x1B00 / sizeof(u32);
+constexpr u32 REPORT_SEMAPHORE_LEGACY_EXECUTE = REPORT_SEMAPHORE_LEGACY + 3;
+// MME DMA methods of AMPERE_COMPUTE_B: SET_MME_MEM_ADDRESS_A to SET_MME_DATA_FIFO_CONFIG, and
+// MME_DMA_WRITE_METHOD_BARRIER
+constexpr u32 AMPERE_MME_DMA_BEGIN = 0x0550 / sizeof(u32);
+constexpr u32 AMPERE_MME_DMA_END = 0x0578 / sizeof(u32);
+constexpr u32 AMPERE_MME_DMA_WRITE_METHOD_BARRIER = 0x0DEC / sizeof(u32);
 // LOAD_MME_INSTRUCTION_RAM_POINTER, LOAD_MME_INSTRUCTION_RAM, LOAD_MME_START_ADDRESS_RAM_POINTER
 // and LOAD_MME_START_ADDRESS_RAM, at the offsets of the 3D class
 constexpr u32 LOAD_MME_INSTRUCTION_RAM_POINTER = 0x0114 / sizeof(u32);
@@ -96,7 +109,13 @@ KeplerCompute::KeplerCompute(MemoryManager& memory_manager_)
     execution_mask[KEPLER_COMPUTE_REG_INDEX(data_upload)] = true;
     execution_mask[KEPLER_COMPUTE_REG_INDEX(launch)] = true;
     execution_mask[SEND_SIGNALING_PCAS2_B] = true;
+    execution_mask[LOAD_INLINE_QMD_DATA_END - 1] = true;
     execution_mask[REPORT_SEMAPHORE_EXECUTE] = true;
+    execution_mask[REPORT_SEMAPHORE_LEGACY_EXECUTE] = true;
+    execution_mask[AMPERE_MME_DMA_WRITE_METHOD_BARRIER] = true;
+    for (size_t method = AMPERE_MME_DMA_BEGIN; method < AMPERE_MME_DMA_END; ++method) {
+        execution_mask[method] = true;
+    }
     execution_mask[LOAD_MME_INSTRUCTION_RAM_POINTER] = true;
     execution_mask[LOAD_MME_INSTRUCTION_RAM] = true;
     execution_mask[LOAD_MME_START_ADDRESS_RAM_POINTER] = true;
@@ -179,6 +198,51 @@ void KeplerCompute::CallMethod(Core::System& system, u32 method, u32 method_argu
                 .Execute(*rasterizer, memory_manager);
         }
         break;
+    case REPORT_SEMAPHORE_LEGACY_EXECUTE: {
+        const u32 address_high = regs.reg_array[REPORT_SEMAPHORE_LEGACY];
+        const u32 address_low = regs.reg_array[REPORT_SEMAPHORE_LEGACY + 1];
+        const u32 payload = regs.reg_array[REPORT_SEMAPHORE_LEGACY + 2];
+        const GPUVAddr sequence_address =
+            (static_cast<GPUVAddr>(address_high & 0xFF) << 32) | address_low;
+        const u32 operation = method_argument & 0x3;
+        const bool reduction_enable = (method_argument & (1U << 3)) != 0;
+        const bool short_query = (method_argument & ((1U << 12) | (1U << 28))) != 0;
+        const u32 report = (method_argument >> 23) & 0x1F;
+        const u32 subreport = (method_argument >> 5) & 0x7;
+        if (operation == 0 || operation == 2) {
+            if (report == 0 && reduction_enable) {
+                const SemaphoreRelease release{
+                    .address = sequence_address,
+                    .payload = payload,
+                    .payload_64 = false,
+                    .timestamp = !short_query,
+                    .reduction = static_cast<SemaphoreReduction>((method_argument >> 9) & 0x7),
+                    .reduction_signed = ((method_argument >> 17) & 0x3) == 1,
+                };
+                ReleaseSemaphore(*rasterizer, memory_manager, release);
+                break;
+            }
+            VideoCommon::QueryPropertiesFlags flags{};
+            if (!short_query) {
+                flags |= VideoCommon::QueryPropertiesFlags::HasTimeout;
+            } else if (operation == 0) {
+                flags |= VideoCommon::QueryPropertiesFlags::IsAFence;
+            }
+            rasterizer->Query(sequence_address, static_cast<VideoCommon::QueryType>(report), flags,
+                              payload, subreport);
+        } else {
+            LOG_ERROR(HW_GPU, "Unimplemented KeplerCompute legacy report semaphore operation {}",
+                      operation);
+        }
+        break;
+    }
+    case LOAD_INLINE_QMD_DATA_END - 1:
+        if (is_ampere) {
+            ConsumeSink(system);
+            regs.reg_array[method] = method_argument;
+            ExecuteInlineQmd();
+        }
+        break;
     case SEND_SIGNALING_PCAS2_B:
     case KEPLER_COMPUTE_REG_INDEX(launch): {
         if (method == SEND_SIGNALING_PCAS2_B && !is_ampere) {
@@ -200,15 +264,21 @@ void KeplerCompute::CallMethod(Core::System& system, u32 method, u32 method_argu
             ProcessLaunch();
         } else if (method == SEND_SIGNALING_PCAS2_B) {
             // The count of dependence actions is OFFSET_MINUS_ONE at [14..24) plus one
-            SignalPcas(method_argument & 0xF, ((method_argument >> 14) & 0x3FF) + 1);
+            SignalPcas(launch_desc_loc, method_argument & 0xF,
+                       ((method_argument >> 14) & 0x3FF) + 1);
         } else if ((method_argument & 2) != 0) {
             // SEND_SIGNALING_PCAS_B with SCHEDULE
-            SignalPcas(static_cast<u32>(PcasAction::Schedule), 1);
+            SignalPcas(launch_desc_loc, static_cast<u32>(PcasAction::Schedule), 1);
         }
         indirect_compute = std::nullopt;
         break;
     }
     default:
+        if (is_ampere && ((method >= AMPERE_MME_DMA_BEGIN && method < AMPERE_MME_DMA_END) ||
+                          method == AMPERE_MME_DMA_WRITE_METHOD_BARRIER)) {
+            ComputeMacroHost host{system, *this, memory_manager};
+            TuringMacro().ProcessMethod(method, method_argument, host);
+        }
         break;
     }
 }
@@ -277,14 +347,14 @@ void KeplerCompute::ProcessLaunch() {
     rasterizer->DispatchCompute();
 }
 
-void KeplerCompute::SignalPcas(u32 action, u32 count) {
+void KeplerCompute::SignalPcas(GPUVAddr address, u32 action, u32 count) {
     struct Request {
         GPUVAddr address;
         PcasAction action;
         u32 count;
     };
     // Executing a QMD can signal its dependent QMD, which is handled in the same loop
-    std::vector<Request> requests{{regs.launch_desc_loc.Address(), PcasAction{action}, count}};
+    std::vector<Request> requests{{address, PcasAction{action}, count}};
     while (!requests.empty()) {
         const Request request = requests.back();
         requests.pop_back();
@@ -305,12 +375,11 @@ void KeplerCompute::SignalPcas(u32 action, u32 count) {
         case PcasAction::InvalidateCopySchedule:
         case PcasAction::PrefetchSchedule:
         case PcasAction::InvalidatePrefetchCopySchedule:
-        case PcasAction::InvalidatePrefetchCopyForceRequireScheduling: {
-            auto& qmd_state = qmd_states[request.address];
-            qmd_state.dependencies += static_cast<s32>(read_qmd().DependenceCounter());
-            qmd_state.scheduled = true;
+        case PcasAction::InvalidatePrefetchCopyForceRequireScheduling:
+            qmd_states[request.address].dependencies +=
+                static_cast<s32>(read_qmd().DependenceCounter());
+            qmd_states[request.address].scheduled = true;
             break;
-        }
         case PcasAction::DecrementDependence:
             qmd_states[request.address].dependencies -= static_cast<s32>(request.count);
             break;
@@ -352,6 +421,35 @@ void KeplerCompute::SignalPcas(u32 action, u32 count) {
         if (qmd.HasSecondDependent()) {
             LOG_ERROR(HW_GPU, "Second dependent QMD is not implemented");
         }
+    }
+}
+
+void KeplerCompute::ExecuteInlineQmd() {
+    QmdV3 qmd{};
+    std::memcpy(qmd.words.data(), &regs.reg_array[LOAD_INLINE_QMD_DATA_BEGIN], sizeof(qmd.words));
+    if (regs.reg_array[SET_INLINE_QMD_ADDRESS_A] != 0) {
+        const GPUVAddr qmd_address =
+            static_cast<GPUVAddr>(regs.reg_array[SET_INLINE_QMD_ADDRESS_A]) << 8;
+        memory_manager.WriteBlock(qmd_address, qmd.words.data(), sizeof(qmd.words));
+    }
+    ExecuteQmd(qmd);
+    if (const auto dependent = qmd.GetDependent()) {
+        switch (dependent->action) {
+        case QmdV3::DependentAction::Schedule:
+            SignalPcas(dependent->address, static_cast<u32>(PcasAction::Schedule), 1);
+            break;
+        case QmdV3::DependentAction::InvalidateCopySchedule:
+            SignalPcas(dependent->address, static_cast<u32>(PcasAction::InvalidateCopySchedule), 1);
+            break;
+        case QmdV3::DependentAction::DecrementDependence:
+            SignalPcas(dependent->address, static_cast<u32>(PcasAction::DecrementDependence), 1);
+            break;
+        default:
+            break;
+        }
+    }
+    if (qmd.HasSecondDependent()) {
+        LOG_ERROR(HW_GPU, "Second dependent QMD is not implemented");
     }
 }
 
