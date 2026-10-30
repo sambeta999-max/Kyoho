@@ -727,8 +727,11 @@ private:
         const u32 present_height = (packet[7] >> 16) + 1;
         const u32 image_width = (image->preference[2] & 0xffffU) + 1;
         const u32 image_height = (image->preference[2] >> 16) + 1;
+        const u64 bpp = NativeImageBytesPerPixel(image->preference[6]);
         if (!(packet[6] == 0 && present_width <= image_width && present_height <= image_height &&
-              packet[8] == 3 && image->preference[4] == 7 && state.output_encoding == 0x14)) {
+              packet[8] == 3 && image->preference[4] == 7 && bpp != 0 &&
+              (state.output_encoding == 0x14 || state.output_encoding == 0x24 ||
+               state.output_encoding == 0x38))) {
             LOG_WARNING(Service_AM, "unsupported presentation words={:08x} preference={:08x} encoding={:#x}",
                         fmt::join(std::span<const u32>(packet + 6, 16), ","),
                         fmt::join(image->preference, ","), state.output_encoding);
@@ -751,8 +754,22 @@ private:
         auto native = std::make_shared<android::NvGraphicBuffer>();
         native->width = static_cast<s32>((image->preference[2] & 0xffffU) + 1);
         native->height = static_cast<s32>((image->preference[2] >> 16) + 1);
-        native->stride = static_cast<s32>(image->preference[5] * 16);
-        native->format = android::PixelFormat::Rgba8888;
+        native->stride = static_cast<s32>(image->preference[5] * (64 / bpp));
+        switch (image->preference[6]) {
+        case 3:
+            native->format = android::PixelFormat::Bgra8888;
+            break;
+        case 4:
+            native->format = android::PixelFormat::Rgb10a2;
+            break;
+        case 5:
+        case 6:
+            native->format = android::PixelFormat::RgbaFp16;
+            break;
+        default:
+            native->format = android::PixelFormat::Rgba8888;
+            break;
+        }
         native->external_format = native->format;
         native->buffer_id = image->memory_id;
         auto buffer = std::make_shared<android::GraphicBuffer>(m_images->module->GetContainer().GetNvMapFile(), native);
@@ -815,8 +832,8 @@ private:
             result = Kernel::ResultNotFound;
             if (token && state != m_client_states.end()) {
                 result = Kernel::ResultNotImplemented;
-                // Only the SDK's observed default output encoding is supported.
-                if (encoding == 0x14) {
+                // 0x14 = sRGB, 0x24 = PQ (HDR10), 0x38 = scRGB linear.
+                if (encoding == 0x14 || encoding == 0x24 || encoding == 0x38) {
                     state->output_encoding = encoding;
                     result = ResultSuccess;
                 }

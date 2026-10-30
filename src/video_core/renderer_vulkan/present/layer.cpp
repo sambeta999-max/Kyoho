@@ -51,6 +51,10 @@ VkFormat GetFormat(const Tegra::FramebufferConfig& framebuffer) {
         return VK_FORMAT_R5G6B5_UNORM_PACK16;
     case Service::android::PixelFormat::Bgra8888:
         return VK_FORMAT_B8G8R8A8_UNORM;
+    case Service::android::PixelFormat::Rgb10a2:
+        return VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+    case Service::android::PixelFormat::RgbaFp16:
+        return VK_FORMAT_R16G16B16A16_SFLOAT;
     default:
         UNIMPLEMENTED_MSG("Unknown framebuffer pixel format: {}",
                           static_cast<u32>(framebuffer.pixel_format));
