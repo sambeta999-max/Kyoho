@@ -841,7 +841,8 @@ bool IsValidEntry(const Tegra::MemoryManager& gpu_memory, const TICEntry& config
     }
     const ImageInfo info{config};
     const size_t guest_size_bytes = CalculateGuestSizeInBytes(info);
-    return gpu_memory.GpuToCpuAddress(address, guest_size_bytes).has_value();
+    return gpu_memory.GpuToCpuAddress(address, guest_size_bytes).has_value() ||
+           gpu_memory.IsFullyMappedRange(address, guest_size_bytes);
 }
 
 boost::container::small_vector<BufferImageCopy, 16> UnswizzleImage(Tegra::MemoryManager& gpu_memory,

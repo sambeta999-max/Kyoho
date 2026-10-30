@@ -1621,7 +1621,12 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
             join_bad_overlap_ids.push_back(overlap_id);
         }
     };
-    ForEachImageInRegion(cpu_addr, size_bytes, region_check);
+    if (cpu_addr < ~(1ULL << 40ULL)) {
+        ForEachImageInRegion(cpu_addr, size_bytes, region_check);
+    } else {
+        ForEachImageInRegionGPU(channel_state->gpu_memory.GetID(), gpu_addr, size_bytes,
+                                region_check);
+    }
     const auto region_check_gpu = [&](ImageId overlap_id, ImageBase& overlap) {
         if (!join_overlaps_found.contains(overlap_id)) {
             if (True(overlap.flags & ImageFlagBits::Remapped)) {
@@ -1665,7 +1670,8 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
 
     new_image.allocation_tick = frame_tick;
 
-    if (!gpu_memory->IsContinuousRange(new_image.gpu_addr, new_image.guest_size_bytes) &&
+    if (new_image.cpu_addr < ~(1ULL << 40ULL) &&
+        !gpu_memory->IsContinuousRange(new_image.gpu_addr, new_image.guest_size_bytes) &&
         new_info.is_sparse) {
         new_image.flags |= ImageFlagBits::Sparse;
     }
@@ -1862,9 +1868,6 @@ ImageId TextureCache<P>::FindDMAImage(const ImageInfo& info, GPUVAddr gpu_addr) 
     std::optional<DAddr> cpu_addr = gpu_memory->GpuToCpuAddress(gpu_addr);
     if (!cpu_addr) {
         cpu_addr = gpu_memory->GpuToCpuAddress(gpu_addr, CalculateGuestSizeInBytes(info));
-        if (!cpu_addr) {
-            return ImageId{};
-        }
     }
     ImageId image_id{};
     boost::container::small_vector<ImageId, 8> image_ids;
@@ -1891,7 +1894,12 @@ ImageId TextureCache<P>::FindDMAImage(const ImageInfo& info, GPUVAddr gpu_addr) 
         }
         return false;
     };
-    ForEachImageInRegion(*cpu_addr, CalculateGuestSizeInBytes(info), lambda);
+    if (cpu_addr) {
+        ForEachImageInRegion(*cpu_addr, CalculateGuestSizeInBytes(info), lambda);
+    } else {
+        ForEachImageInRegionGPU(channel_state->gpu_memory.GetID(), gpu_addr,
+                                CalculateGuestSizeInBytes(info), lambda);
+    }
     if (image_ids.size() <= 1) [[likely]] {
         return image_id;
     }
