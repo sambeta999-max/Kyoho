@@ -43,26 +43,72 @@ NvResult nvhost_tsg_gpu::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> 
     LOG_DEBUG(Service_NVDRV, "native TSG ioctl={:#x}, input={}, output={}, words={:#x},{:#x},{:#x},{:#x},{:#x},{:#x},{:#x},{:#x}",
               command.raw, input.size(), output.size(), words[0], words[1], words[2], words[3],
               words[4], words[5], words[6], words[7]);
-    if (command.raw != 0xc0045401 && command.raw != 0xc0045402) { return NvResult::NotImplemented; }
-    if (!process || input.size() != 4 || output.size() != 4) { return NvResult::BadParameter; }
-    const DeviceFD channel_fd = static_cast<s32>(words[0]);
-    if (command.cmd == 1) {
-        if (channels.contains(channel_fd)) { return NvResult::Busy; }
-        if (channels.size() >= 64) { return NvResult::InsufficientMemory; }
+    if (command.group != 'T') {
+        return NvResult::NotImplemented;
+    }
+    if (!process) {
+        return NvResult::BadParameter;
+    }
+    switch (command.cmd) {
+    case 0x1:  // BIND_CHANNEL
+    case 0xb:  // BIND_CHANNEL_EX
+    {
+        const size_t expected_size = (command.cmd == 0xb) ? 0x18 : 0x4;
+        if (input.size() < expected_size || output.size() < expected_size) {
+            return NvResult::BadParameter;
+        }
+        const DeviceFD channel_fd = static_cast<s32>(words[0]);
+        if (channels.contains(channel_fd)) {
+            return NvResult::Busy;
+        }
+        if (channels.size() >= 64) {
+            return NvResult::InsufficientMemory;
+        }
         const auto device = module.GetDevice<nvdevice>(channel_fd);
-        if (!device || device->GetType() != Type::GpuChannel) { return NvResult::BadParameter; }
+        if (!device || device->GetType() != Type::GpuChannel) {
+            return NvResult::BadParameter;
+        }
         const auto channel = std::static_pointer_cast<nvhost_gpu>(device);
         const auto result = channel->BindToTsg(fd, process);
-        if (result != NvResult::Success) { return result; }
+        if (result != NvResult::Success) {
+            return result;
+        }
         channels.emplace(channel_fd, channel);
-    } else {
+        std::copy(input.begin(), input.end(), output.begin());
+        return NvResult::Success;
+    }
+    case 0x2:  // UNBIND_CHANNEL
+    {
+        if (input.size() < 4 || output.size() < 4) {
+            return NvResult::BadParameter;
+        }
+        const DeviceFD channel_fd = static_cast<s32>(words[0]);
         const auto it = channels.find(channel_fd);
-        if (it == channels.end()) { return NvResult::BadParameter; }
+        if (it == channels.end()) {
+            return NvResult::BadParameter;
+        }
         it->second->UnbindFromTsg(fd);
         channels.erase(it);
+        std::copy(input.begin(), input.end(), output.begin());
+        return NvResult::Success;
     }
-    std::copy(input.begin(), input.end(), output.begin());
-    return NvResult::Success;
+    case 0x3:  // ENABLE
+    case 0x4:  // DISABLE
+    case 0x5:  // PREEMPT
+    case 0x7:  // SET_TIMESLICE
+    case 0x8:  // SET_RUNLIST_INTERLEAVE
+    case 0x9:  // READ_SINGLE_SM_ERROR_STATE
+    case 0xd:  // SET_L2_MAX_WAYS_EVICT_LAST
+        if (!output.empty() && input.size() == output.size()) {
+            std::copy(input.begin(), input.end(), output.begin());
+        }
+        return NvResult::Success;
+    case 0xa:  // GET_TIMEDOUT
+        std::fill(output.begin(), output.end(), u8{0});
+        return NvResult::Success;
+    default:
+        return NvResult::NotImplemented;
+    }
 }
 
 NvResult nvhost_tsg_gpu::Ioctl2(DeviceFD fd, Ioctl command, std::span<const u8> input,
@@ -72,6 +118,11 @@ NvResult nvhost_tsg_gpu::Ioctl2(DeviceFD fd, Ioctl command, std::span<const u8> 
 
 NvResult nvhost_tsg_gpu::Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input,
                                 std::span<u8> output, std::span<u8> inline_output) {
+    if (command.group == 'T' && command.cmd == 0xc) {
+        std::fill(output.begin(), output.end(), u8{0});
+        std::fill(inline_output.begin(), inline_output.end(), u8{0});
+        return NvResult::Success;
+    }
     return NvResult::NotImplemented;
 }
 
