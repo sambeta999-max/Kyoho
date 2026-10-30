@@ -512,9 +512,13 @@ void VisitUsages(Info& info, IR::Inst& inst) {
         const IR::Value index{inst.Arg(0)};
         const IR::Value offset{inst.Arg(1)};
         if (index.IsImmediate()) {
-            AddConstantBufferDescriptor(info, index.U32(), 1);
+            const u32 cbuf_index = index.U32();
+            if (cbuf_index >= Info::MAX_CBUFS) {
+                break;
+            }
+            AddConstantBufferDescriptor(info, cbuf_index, 1);
             u32 element_size = GetElementSize(info.used_constant_buffer_types, inst.GetOpcode());
-            u32& size{info.constant_buffer_used_sizes[index.U32()]};
+            u32& size{info.constant_buffer_used_sizes[cbuf_index]};
             if (offset.IsImmediate()) {
                 size = Common::AlignUp((std::max)(size, offset.U32() + element_size), 16u);
             } else {

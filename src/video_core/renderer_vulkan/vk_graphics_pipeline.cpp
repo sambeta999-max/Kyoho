@@ -529,8 +529,11 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
         const auto& info{stage_infos[stage]};
         if (info.uses_render_area) {
             render_area.uses_render_area = true;
-            render_area.words = {static_cast<float>(regs.surface_clip.width),
-                                 static_cast<float>(regs.surface_clip.height)};
+            const u32 clip_width = regs.surface_clip.width;
+            const u32 clip_height = regs.surface_clip.height;
+            const bool clip_set = clip_width != 0 && clip_height != 0;
+            render_area.words = {static_cast<float>(clip_set ? clip_width : u32{regs.rt[0].width}),
+                                 static_cast<float>(clip_set ? clip_height : u32{regs.rt[0].height})};
         }
     }};
     if constexpr (Spec::enabled_stages[0]) {
