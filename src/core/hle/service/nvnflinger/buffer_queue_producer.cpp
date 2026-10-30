@@ -437,6 +437,7 @@ Status BufferQueueProducer::AttachBuffer(s32* out_slot,
     slots[*out_slot].buffer_state = BufferState::Dequeued;
     slots[*out_slot].fence = Fence::NoFence();
     slots[*out_slot].request_buffer_called = true;
+    slots[*out_slot].acquire_called = false;
 
     return return_flags;
 }
