@@ -5,9 +5,11 @@
 
 #include <array>
 #include <vector>
+#include <optional>
 
 #include "core/hle/service/service.h"
 #include "core/hle/service/am/service/graphics_syncpoint_cache.h"
+#include "core/hle/service/am/service/video_codec.h"
 #include "core/hle/service/kernel_helpers.h"
 #include "core/hle/service/os/event.h"
 
@@ -44,6 +46,12 @@ private:
     void GetNvidiaDriver(HLERequestContext& ctx);
     void CalculateImageRequirements(HLERequestContext& ctx);
     void CreateNativeMemory(HLERequestContext& ctx);
+    void MapNativeImage(HLERequestContext& ctx);
+    void UnmapNativeImage(HLERequestContext& ctx);
+    void QueryNativeImage(HLERequestContext& ctx);
+    /// GpuOunceUserImageDescriptor of a decoder image sampled by the GPU, which also switches its
+    /// pool to block linear storage
+    std::optional<std::array<u32, 32>> MakeGpuImageDescriptor(u32 handle, u64 offset);
     void CreateNativeImage(HLERequestContext& ctx);
     void DestroyNativeImage(HLERequestContext& ctx);
     void ConfigureNativeWindowImagePool(HLERequestContext& ctx);
@@ -73,6 +81,16 @@ private:
     void FinalizeChatImageContext(HLERequestContext& ctx);
     void SetGraphicsFrameMode(HLERequestContext& ctx);
     void OpenGpuTimeSession(HLERequestContext& ctx);
+    void InitializeVideoDecoderContext(HLERequestContext& ctx);
+    void CalculateDecoderImagePoolBuffer(HLERequestContext& ctx);
+    void CreateDecoderImagePool(HLERequestContext& ctx);
+    void DestroyDecoderImagePool(HLERequestContext& ctx);
+    void GetDecoderImageDescriptor(HLERequestContext& ctx);
+    void OpenVideoDecoderSession(HLERequestContext& ctx);
+    void FinalizeVideoDecoderContext(HLERequestContext& ctx);
+    void InitializeVideoEncoderContext(HLERequestContext& ctx);
+    void OpenVideoEncoderSession(HLERequestContext& ctx);
+    void FinalizeVideoEncoderContext(HLERequestContext& ctx);
     void BindSyncpointMemory(HLERequestContext& ctx);
     void RefreshSyncpointCache();
 
@@ -82,6 +100,10 @@ private:
     bool m_chat_image_context_initialized{};
     // Frame length, restart and GPU timeslice modes, in command order.
     std::array<u32, 3> m_frame_modes{};
+    bool m_video_decoder_context_initialized{};
+    std::shared_ptr<VideoImagePoolRegistry> m_video_image_pools{
+        std::make_shared<VideoImagePoolRegistry>()};
+    bool m_video_encoder_context_initialized{};
     std::optional<size_t> m_native_memory_session;
     std::vector<u32> m_native_memories;
     std::shared_ptr<NativeImageRegistry> m_image_registry;

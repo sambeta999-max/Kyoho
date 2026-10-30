@@ -22,10 +22,15 @@
 #include "core/hle/service/am/service/graphics_supervisor.h"
 #include "core/hle/service/am/service/graphics_session.h"
 #include "core/hle/service/am/service/gpu_session.h"
+#include "core/hle/service/am/service/video_codec.h"
+#include "video_core/host1x/host1x.h"
+#include "video_core/pte_kind.h"
+#include "video_core/textures/decoders.h"
 #include "core/hle/service/am/service/graphics_supervisor_protocol.h"
 #include "core/hle/service/am/service/graphics_syncpoint_cache.h"
 #include "core/hle/service/am/service/native_image_layout.h"
 #include "core/hle/service/ipc_helpers.h"
+#include "core/hle/service/nvdrv/devices/nvhost_as_gpu.h"
 #include "core/hle/service/nvdrv/nvdrv_interface.h"
 #include "core/hle/service/nvdrv/core/container.h"
 #include "core/hle/service/nvdrv/core/syncpoint_manager.h"
@@ -225,13 +230,28 @@ private:
 class ISyncpointSupervisor final : public ServiceFramework<ISyncpointSupervisor> {
 public:
     ISyncpointSupervisor(Core::System& system, std::shared_ptr<Nvidia::Module> module)
-        : ServiceFramework{system, "ISyncpointSupervisor"}, m_module{std::move(module)} {
+        : ServiceFramework{system, "ISyncpointSupervisor"}, m_module{std::move(module)},
+          m_context{system, "SyncpointSupervisor"} {
         static const FunctionInfo functions[] = {
             {1, &ISyncpointSupervisor::GetMaximumEventCount, "GetMaximumEventCount"},
             {21, &ISyncpointSupervisor::SetEventCount, "SetEventCount"},
+            {22, &ISyncpointSupervisor::GetEvent, "GetEvent"},
+            {201, &ISyncpointSupervisor::RequestEvent, "RequestEvent"},
+            {202, &ISyncpointSupervisor::CancelEvent, "CancelEvent"},
             {103, &ISyncpointSupervisor::QueryCounter, "QueryCounter"},
         };
         RegisterHandlersTipc(functions);
+    }
+
+    ~ISyncpointSupervisor() override {
+        for (u32 index = 0; index < MaximumEventCount; ++index) {
+            CancelRequest(index);
+        }
+        for (auto* event : m_events) {
+            if (event) {
+                m_context.CloseEvent(event);
+            }
+        }
     }
 
     Result HandleSyncRequest(Kernel::KServerSession& session, HLERequestContext& ctx) override {
@@ -272,6 +292,88 @@ private:
         LOG_DEBUG(Service_AM, "syncpoint event count={}, result={:#x}", m_event_count, result.raw);
     }
 
+    // nn::syncpt event slots below the count set by command 21: a u32 index, and the event as a
+    // move handle before the result
+    void GetEvent(HLERequestContext& ctx) {
+        const auto* packet = ctx.CommandBuffer();
+        Result result = Kernel::ResultInvalidCombination;
+        Kernel::KReadableEvent* readable{};
+        if (packet[0] == 0x26 && packet[1] == 1) {
+            const u32 index = packet[2];
+            result = index < m_event_count ? ResultSuccess : Kernel::ResultOutOfRange;
+            if (result.IsSuccess()) {
+                auto*& event = m_events[index];
+                if (!event) {
+                    event = m_context.CreateEvent("SyncpointEvent");
+                }
+                readable = &event->GetReadableEvent();
+                readable->Open(kernel);
+            }
+            LOG_DEBUG(Service_AM, "syncpoint event index={}, result={:#x}", index, result.raw);
+        }
+        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+        rb.Push(result.raw);
+        ctx.AddMoveObject(readable);
+    }
+
+    /// Drops the pending syncpoint action of an event slot
+    void CancelRequest(u32 index) {
+        if (auto& request = m_requests[index]) {
+            system.Host1x().GetSyncpointManager().DeregisterGuestAction(request->first,
+                                                                         request->second);
+            request.reset();
+        }
+    }
+
+    // nn::syncpt::sdk::RequestSyncPointEvent: the event slot, the counter of a NativeSyncHandle
+    // (the inverted syncpoint id), its u64 value and a mode word. The slot's event is signaled
+    // when the syncpoint reaches the value.
+    void RequestEvent(HLERequestContext& ctx) {
+        const auto* packet = ctx.CommandBuffer();
+        Result result = Kernel::ResultInvalidCombination;
+        if (packet[0] == 0xd9 && packet[1] == 5) {
+            const u32 index = packet[2];
+            const u32 id = ~packet[3];
+            const u32 value = packet[4];
+            auto& syncpoints = m_module->GetContainer().GetSyncpointManager();
+            result = index < m_event_count && m_events[index] ? ResultSuccess
+                                                               : Kernel::ResultOutOfRange;
+            if (result.IsSuccess() && !syncpoints.IsSyncpointAllocated(id)) {
+                result = Kernel::ResultNotFound;
+            }
+            if (result.IsSuccess()) {
+                CancelRequest(index);
+                auto* event = m_events[index];
+                event->Clear(kernel);
+                auto& host_syncpoints = system.Host1x().GetSyncpointManager();
+                if (host_syncpoints.IsReadyGuest(id, value)) {
+                    event->Signal(kernel);
+                } else {
+                    auto handle = host_syncpoints.RegisterGuestAction(
+                        id, value, [this, event] { event->Signal(kernel); });
+                    m_requests[index].emplace(id, handle);
+                }
+            }
+            LOG_DEBUG(Service_AM, "syncpoint event index={} id={} value={}, result={:#x}", index,
+                      id, value, result.raw);
+        }
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(result.raw);
+    }
+
+    void CancelEvent(HLERequestContext& ctx) {
+        const auto* packet = ctx.CommandBuffer();
+        Result result = Kernel::ResultInvalidCombination;
+        if (packet[0] == 0xda && packet[1] == 1) {
+            result = packet[2] < MaximumEventCount ? ResultSuccess : Kernel::ResultOutOfRange;
+            if (result.IsSuccess()) {
+                CancelRequest(packet[2]);
+            }
+        }
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(result.raw);
+    }
+
     void QueryCounter(HLERequestContext& ctx) {
         const auto* packet = ctx.CommandBuffer();
         Result result = Kernel::ResultInvalidCombination;
@@ -290,7 +392,12 @@ private:
     }
 
     std::shared_ptr<Nvidia::Module> m_module;
+    KernelHelpers::ServiceContext m_context;
     u32 m_event_count{};
+    std::array<Kernel::KEvent*, MaximumEventCount> m_events{};
+    std::array<std::optional<std::pair<u32, Tegra::Host1x::SyncpointManager::ActionHandle>>,
+               MaximumEventCount>
+        m_requests{};
 };
 
 class IVi2Session final : public ServiceFramework<IVi2Session> {
@@ -999,6 +1106,9 @@ IGraphicsSupervisor::IGraphicsSupervisor(Core::System& system, Kernel::KProcess*
         {401, &IGraphicsSupervisor::InitializeGpuContext, "InitializeGpuContext"},
         {402, &IGraphicsSupervisor::InitializeGpuContext, "ActivateGpuContext"},
         {423, &IGraphicsSupervisor::BindNativeGpuMemory, "BindNativeGpuMemory"},
+        {426, &IGraphicsSupervisor::MapNativeImage, "MapNativeImage"},
+        {427, &IGraphicsSupervisor::UnmapNativeImage, "UnmapNativeImage"},
+        {428, &IGraphicsSupervisor::QueryNativeImage, "QueryNativeImage"},
         {429, &IGraphicsSupervisor::CreateNativeImage, "CreateNativeImage"},
         {430, &IGraphicsSupervisor::DestroyNativeImage, "DestroyNativeImage"},
         {434, &IGraphicsSupervisor::RegisterGpuAddressSpace, "RegisterGpuAddressSpace"},
@@ -1010,6 +1120,17 @@ IGraphicsSupervisor::IGraphicsSupervisor(Core::System& system, Kernel::KProcess*
         {1112, &IGraphicsSupervisor::SetGraphicsFrameMode, "SetGraphicsFrameRestartMode"},
         {1113, &IGraphicsSupervisor::SetGraphicsFrameMode, "SetGraphicsFrameGpuTimesliceMode"},
         {1121, &IGraphicsSupervisor::OpenGpuTimeSession, "OpenGpuTimeSession"},
+        {901, &IGraphicsSupervisor::InitializeVideoDecoderContext, "InitializeVideoDecoderContext"},
+        {991, &IGraphicsSupervisor::CalculateDecoderImagePoolBuffer, "CalculateDecoderImagePoolBuffer"},
+        {911, &IGraphicsSupervisor::CreateDecoderImagePool, "CreateDecoderImagePool"},
+        {921, &IGraphicsSupervisor::DestroyDecoderImagePool, "DestroyDecoderImagePool"},
+        {961, &IGraphicsSupervisor::GetDecoderImageDescriptor, "GetDecoderImageDescriptor"},
+        {902, &IGraphicsSupervisor::OpenVideoDecoderSession, "OpenVideoDecoderSession"},
+        {903, &IGraphicsSupervisor::FinalizeVideoDecoderContext, "FinalizeVideoDecoderContext"},
+        {905, &IGraphicsSupervisor::OpenVideoDecoderSession, "OpenVideoDecoderSessionWithMode"},
+        {1001, &IGraphicsSupervisor::InitializeVideoEncoderContext, "InitializeVideoEncoderContext"},
+        {1002, &IGraphicsSupervisor::OpenVideoEncoderSession, "OpenVideoEncoderSession"},
+        {1003, &IGraphicsSupervisor::FinalizeVideoEncoderContext, "FinalizeVideoEncoderContext"},
         {1201, &IGraphicsSupervisor::InitializeChatImageContext, "InitializeChatImageContext"},
         {1202, &IGraphicsSupervisor::OpenChatImageSession, "OpenChatImageSession"},
         {1203, &IGraphicsSupervisor::FinalizeChatImageContext, "FinalizeChatImageContext"},
@@ -1369,6 +1490,251 @@ void IGraphicsSupervisor::OpenCameraSession(HLERequestContext& ctx) {
 
 void IGraphicsSupervisor::FinalizeCameraContext(HLERequestContext& ctx) {
     FinalizeSubsystemContext(ctx, m_camera_context_initialized);
+}
+
+// nn::codec::video::detail::ipc::Initialize: 901 and 1001 initialize the decoder and encoder
+// contexts, 902 and 1002 open their root sessions. 905 is 902 with a u8 that lifts the default
+// decode resolution limit (ShimLibraryGlobal::SetResolutionUnlimitedModeEnabled).
+// nn::codec::CalculateDecoderImagePoolBuffer: a VideoDecoderImagePreference (16 words: the type
+// and the inclusive maximum x and y, nothing else set) and an image count. Sizes come from
+// VideoImageSize.
+void IGraphicsSupervisor::CalculateDecoderImagePoolBuffer(HLERequestContext& ctx) {
+    const auto* packet = ctx.CommandBuffer();
+    Result result = Kernel::ResultInvalidCombination;
+    u64 size{};
+    constexpr u64 Alignment = 0x10000;
+    if (packet[0] == 0x3ef && packet[1] == 17 && packet[2] == 0 &&
+        VideoImageFormatFromPreference(packet[3])) {
+        const u64 width = (packet[4] & 0xffffU) + 1;
+        const u64 height = (packet[4] >> 16) + 1;
+        const u32 count = packet[18];
+        result = count != 0 && width <= 8192 && height <= 8192 ? ResultSuccess
+                                                               : Kernel::ResultInvalidSize;
+        size = VideoImageSize(static_cast<u32>(width), static_cast<u32>(height)) * count;
+        LOG_DEBUG(Service_AM, "decoder image pool {}x{} count={}, size={:#x}", width, height,
+                  count, size);
+    }
+    IPC::ResponseBuilder rb{ctx, 6};
+    rb.Push(result.raw);
+    rb.Push<u64>(size);
+    rb.Push<u64>(Alignment);
+}
+
+// nn::codec::InitializeDecoderImagePool: the VideoDecoderImagePreference (16 words), the image
+// count and the native memory holding the pool. The reply is the handle of image 0; image i has
+// the handle plus i.
+void IGraphicsSupervisor::CreateDecoderImagePool(HLERequestContext& ctx) {
+    const auto* packet = ctx.CommandBuffer();
+    Result result = Kernel::ResultInvalidCombination;
+    u32 handle{};
+    const auto format = VideoImageFormatFromPreference(packet[3]);
+    if (packet[0] == 0x39f && packet[1] == 18 && packet[2] == 0 && format) {
+        const u32 width = (packet[4] & 0xffffU) + 1;
+        const u32 height = (packet[4] >> 16) + 1;
+        const u32 count = packet[18];
+        const u32 memory_id = packet[19];
+        result = Kernel::ResultNotFound;
+        if (m_nv_module && std::ranges::find(m_native_memories, memory_id) != m_native_memories.end()) {
+            const auto memory = m_nv_module->GetContainer().GetNvMapFile().GetHandle(memory_id);
+            result = Kernel::ResultInvalidSize;
+            if (memory && memory->address && count &&
+                VideoImageSize(width, height) * count <= memory->size) {
+                handle = m_next_native_image_id;
+                m_next_native_image_id += count;
+                m_video_image_pools->Add({*format, handle, count, width, height,
+                                          memory->address, memory->size, memory_id});
+                result = ResultSuccess;
+            }
+        }
+        LOG_DEBUG(Service_AM, "decoder image pool {}x{} count={}, memory={}, handle={:#x}, result={:#x}",
+                  width, height, count, memory_id, handle, result.raw);
+    }
+    IPC::ResponseBuilder rb{ctx, 3};
+    rb.Push(result.raw);
+    rb.Push(handle);
+}
+
+void IGraphicsSupervisor::DestroyDecoderImagePool(HLERequestContext& ctx) {
+    const auto* packet = ctx.CommandBuffer();
+    Result result = Kernel::ResultInvalidCombination;
+    if (packet[0] == 0x3a9 && packet[1] == 2) {
+        result = m_video_image_pools->Remove(packet[2]) ? ResultSuccess : Kernel::ResultNotFound;
+    }
+    IPC::ResponseBuilder rb{ctx, 2};
+    rb.Push(result.raw);
+}
+
+// The nn::gsv::CpuUserImageDescriptor through which nn::gs::sdk::ReadUserImage{Rgba,Nv12} copy
+// a picture out of the pool. Format 8 is pitch-linear RGBA, offset at 8 and pitch (u64) at 0x10;
+// format 0xa is pitch-linear NV12, adding the chroma offset at 0x18 and pitch at 0x20. Offsets
+// are relative to the pool buffer.
+void IGraphicsSupervisor::GetDecoderImageDescriptor(HLERequestContext& ctx) {
+    const auto* packet = ctx.CommandBuffer();
+    Result result = Kernel::ResultInvalidCombination;
+    std::array<u32, 32> descriptor{};
+    if (packet[0] == 0x3d1 && packet[1] == 1) {
+        const auto image = m_video_image_pools->Find(packet[2]);
+        result = image ? ResultSuccess : Kernel::ResultNotFound;
+        if (image) {
+            descriptor[0] = image->format == VideoImageFormat::Rgba ? 0x8 : 0xa;
+            descriptor[2] = static_cast<u32>(image->layout.luma_offset);
+            descriptor[4] = static_cast<u32>(image->layout.luma_pitch);
+            descriptor[6] = static_cast<u32>(image->layout.chroma_offset);
+            descriptor[8] = static_cast<u32>(image->layout.chroma_pitch);
+        }
+    }
+    IPC::ResponseBuilder rb{ctx, 34};
+    rb.Push(result.raw);
+    for (const u32 word : descriptor) {
+        rb.Push(word);
+    }
+}
+
+// nn::gpu::sdk::QueryNativeImage, through which nvnNativeImageInitialize imports an image as a
+// memory pool and nvnTextureInitializeFromNativeImage builds a texture on it. The reply has two
+// reserved words, the u64 base address, the 0x80 byte nn::gsv::GpuOunceUserImageDescriptor and
+// the GpuOunceUserImageFlags word. Descriptor: byte 0 is 1; word 2 holds width - 1 and height - 1
+// as u16; the u64 at 0x20 has 1 in its low byte and the layout in its high word (1: RGBA, NVN
+// formats RGBA8/BGRA8 and their sRGB forms; 2: YUV, formats 0x99-0x9c); the u64 at 0x28 holds the
+// image offset from the base (low) and its size (high). The memory pool spans the pages of the
+// image and the texture starts at the offset within the first page. No layout flag is passed to
+// the texture builder, so the image is block linear with the default block height.
+std::optional<std::array<u32, 32>> IGraphicsSupervisor::MakeGpuImageDescriptor(u32 handle,
+                                                                               u64 offset) {
+    const auto image = m_video_image_pools->Find(handle);
+    if (!image || image->format != VideoImageFormat::Rgba) {
+        return std::nullopt;
+    }
+    m_video_image_pools->SetBlockLinear(handle);
+    std::array<u32, 32> descriptor{};
+    descriptor[0] = 1;
+    descriptor[2] = (image->width - 1) | ((image->height - 1) << 16);
+    descriptor[8] = 1;
+    descriptor[9] = 1;
+    descriptor[10] = static_cast<u32>(offset);
+    descriptor[11] = static_cast<u32>(Tegra::Texture::CalculateSize(
+        true, 4, image->width, image->height, 1, VideoImageBlockHeight(image->height), 0));
+    return descriptor;
+}
+
+void IGraphicsSupervisor::QueryNativeImage(HLERequestContext& ctx) {
+    const auto* packet = ctx.CommandBuffer();
+    Result result = Kernel::ResultInvalidCombination;
+    u64 base{};
+    std::array<u32, 32> descriptor{};
+    if (packet[0] == 0x1bc && packet[1] == 1) {
+        const auto image = m_video_image_pools->Find(packet[2]);
+        const auto image_descriptor =
+            image ? MakeGpuImageDescriptor(packet[2], image->layout.luma_offset) : std::nullopt;
+        result = Kernel::ResultNotImplemented;
+        if (image_descriptor) {
+            base = image->address;
+            descriptor = *image_descriptor;
+            result = ResultSuccess;
+        }
+        LOG_DEBUG(Service_AM, "native image query {:#x}, result={:#x}", packet[2], result.raw);
+    }
+    IPC::ResponseBuilder rb{ctx, 39};
+    rb.Push(result.raw);
+    rb.Push<u32>(0);
+    rb.Push<u32>(0);
+    rb.Push<u64>(base);
+    for (const u32 word : descriptor) {
+        rb.Push(word);
+    }
+    rb.Push<u32>(0);
+}
+
+// nn::gpu::sdk::MapNativeImage: the image handle, a reserved 1, the GPU address space (an
+// nvhost-as descriptor) and a permission byte. The reply is the GPU address of the image, the
+// size of the mapping and the descriptor and flags of QueryNativeImage, the image offset in the
+// descriptor counting from the returned address. UnmapNativeImage takes the image, the address
+// space and the address and size from the map reply.
+void IGraphicsSupervisor::MapNativeImage(HLERequestContext& ctx) {
+    const auto* packet = ctx.CommandBuffer();
+    Result result = Kernel::ResultInvalidCombination;
+    u64 address{};
+    u64 size{};
+    std::array<u32, 32> descriptor{};
+    if (packet[0] == 0x1ba && packet[1] == 4 && packet[3] == 1) {
+        const auto image = m_video_image_pools->Find(packet[2]);
+        const auto image_descriptor = image ? MakeGpuImageDescriptor(packet[2], 0) : std::nullopt;
+        result = Kernel::ResultNotImplemented;
+        if (image_descriptor && m_nv_module) {
+            result = Kernel::ResultNotFound;
+            if (const auto as =
+                    m_nv_module->GetDevice<Nvidia::Devices::nvhost_as_gpu>(packet[4])) {
+                size = Common::AlignUp((*image_descriptor)[11], 0x1000);
+                address = as->MapNativeImage(image->memory_id, image->layout.luma_offset, size,
+                                             static_cast<u8>(Tegra::PTEKind::GENERIC_16BX2));
+                result = address ? ResultSuccess : Kernel::ResultOutOfAddressSpace;
+                descriptor = *image_descriptor;
+            }
+        }
+        LOG_DEBUG(Service_AM, "native image map {:#x} as={}, permission={}, address={:#x}, size={:#x}, result={:#x}",
+                  packet[2], packet[4], packet[5] & 0xff, address, size, result.raw);
+    }
+    if (result.IsError()) {
+        size = 0;
+    }
+    IPC::ResponseBuilder rb{ctx, 39};
+    rb.Push(result.raw);
+    rb.Push<u64>(address);
+    rb.Push<u64>(size);
+    for (const u32 word : descriptor) {
+        rb.Push(word);
+    }
+    rb.Push<u32>(0);
+}
+
+void IGraphicsSupervisor::UnmapNativeImage(HLERequestContext& ctx) {
+    const auto* packet = ctx.CommandBuffer();
+    Result result = Kernel::ResultInvalidCombination;
+    if (packet[0] == 0x1bb && packet[1] == 6) {
+        const u64 address = u64{packet[4]} | (u64{packet[5]} << 32);
+        result = Kernel::ResultNotFound;
+        if (m_nv_module && m_video_image_pools->Find(packet[2])) {
+            if (const auto as =
+                    m_nv_module->GetDevice<Nvidia::Devices::nvhost_as_gpu>(packet[3])) {
+                result = as->UnmapNativeImage(address) == Nvidia::NvResult::Success
+                             ? ResultSuccess
+                             : Kernel::ResultInvalidAddress;
+            }
+        }
+        LOG_DEBUG(Service_AM, "native image unmap {:#x} as={}, address={:#x}, result={:#x}",
+                  packet[2], packet[3], address, result.raw);
+    }
+    IPC::ResponseBuilder rb{ctx, 2};
+    rb.Push(result.raw);
+}
+
+void IGraphicsSupervisor::InitializeVideoDecoderContext(HLERequestContext& ctx) {
+    InitializeSubsystemContext(ctx, m_video_decoder_context_initialized);
+}
+
+void IGraphicsSupervisor::OpenVideoDecoderSession(HLERequestContext& ctx) {
+    OpenSubsystemSession(ctx, m_video_decoder_context_initialized,
+                         ctx.GetCommand() == 905 ? 1 : 0,
+                         MakeVideoCodecRootSession(system, VideoCodecKind::Decoder, m_process,
+                                                   m_nv_module, m_video_image_pools));
+}
+
+void IGraphicsSupervisor::FinalizeVideoDecoderContext(HLERequestContext& ctx) {
+    FinalizeSubsystemContext(ctx, m_video_decoder_context_initialized);
+}
+
+void IGraphicsSupervisor::InitializeVideoEncoderContext(HLERequestContext& ctx) {
+    InitializeSubsystemContext(ctx, m_video_encoder_context_initialized);
+}
+
+void IGraphicsSupervisor::OpenVideoEncoderSession(HLERequestContext& ctx) {
+    OpenSubsystemSession(ctx, m_video_encoder_context_initialized, 0,
+                         MakeVideoCodecRootSession(system, VideoCodecKind::Encoder, m_process,
+                                                   m_nv_module, m_video_image_pools));
+}
+
+void IGraphicsSupervisor::FinalizeVideoEncoderContext(HLERequestContext& ctx) {
+    FinalizeSubsystemContext(ctx, m_video_encoder_context_initialized);
 }
 
 void IGraphicsSupervisor::OpenGpuTimeSession(HLERequestContext& ctx) {

@@ -70,6 +70,9 @@ public:
     NvResult DestroyNativeSparse(u64 address, u64 size);
     NvResult GetNativeSyncpointShim(u64& address, u32& stride, u32& count);
     NvResult ModifyNativeKind(u64 address, u64 size, u8 requested, u8 fallback);
+    /// Maps part of an nvmap handle at an address picked by the allocator; returns 0 on failure
+    u64 MapNativeImage(u32 handle, u64 buffer_offset, u64 size, u8 kind);
+    NvResult UnmapNativeImage(u64 address);
 
     struct VaRegion {
         u64 offset;

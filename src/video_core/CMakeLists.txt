@@ -78,6 +78,8 @@ add_library(video_core STATIC
     host1x/codec_types.h
     host1x/ffmpeg.cpp
     host1x/ffmpeg.h
+    native_video_decoder.cpp
+    native_video_decoder.h
     host1x/control.cpp
     host1x/control.h
     host1x/gpu_device_memory_manager.cpp

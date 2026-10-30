@@ -161,6 +161,25 @@ NvResult nvhost_as_gpu::MapNative4K(u32 handle_id, u64 address, u64 buffer_offse
     return result;
 }
 
+u64 nvhost_as_gpu::MapNativeImage(u32 handle_id, u64 buffer_offset, u64 size, u8 kind) {
+    if (!size || !Common::IsAligned(buffer_offset, VM::YUZU_PAGESIZE)) {
+        return 0;
+    }
+    IoctlMapBufferEx mapping{};
+    mapping.kind = kind;
+    mapping.handle = handle_id;
+    mapping.page_size = VM::YUZU_PAGESIZE;
+    mapping.buffer_offset = static_cast<s64>(buffer_offset);
+    mapping.mapping_size = Common::AlignUp(size, VM::YUZU_PAGESIZE);
+    return MapBufferEx(mapping) == NvResult::Success ? static_cast<u64>(mapping.offset) : 0;
+}
+
+NvResult nvhost_as_gpu::UnmapNativeImage(u64 address) {
+    IoctlUnmapBuffer release{};
+    release.offset = static_cast<s64>(address);
+    return UnmapBuffer(release);
+}
+
 NvResult nvhost_as_gpu::UnmapNative4K(u64 address, u64 size) {
     if (!m_extended_abi || !size || !Common::IsAligned(address, VM::YUZU_PAGESIZE) ||
         !Common::IsAligned(size, VM::YUZU_PAGESIZE)) {

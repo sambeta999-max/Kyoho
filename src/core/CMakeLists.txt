@@ -467,6 +467,8 @@ add_library(core STATIC
     hle/service/am/service/graphics_session.cpp
     hle/service/am/service/graphics_session.h
     hle/service/am/service/graphics_supervisor.cpp
+    hle/service/am/service/video_codec.cpp
+    hle/service/am/service/video_codec.h
     hle/service/am/service/graphics_supervisor.h
     hle/service/am/service/graphics_supervisor_protocol.h
     hle/service/am/service/graphics_syncpoint_cache.h
