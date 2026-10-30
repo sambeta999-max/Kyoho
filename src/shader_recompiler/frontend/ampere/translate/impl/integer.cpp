@@ -99,12 +99,21 @@ void Add3(TranslatorVisitor& v, Instruction insn, bool uniform) {
     v.X(uniform ? UReg(insn.Bits(16, 6)) : Reg(insn.Dest()), sum);
 }
 
+// The predicate output at [81..84) is set when the result is nonzero, combined with the predicate
+// at [87..90) (negated by bit 90) by OR, or by AND with .PAND (bit 80)
 void Lop3(TranslatorVisitor& v, Instruction insn, bool uniform) {
-    if (insn.Bits(81, 3) != PT) {
-        throw NotImplementedException("LOP3 predicate output");
-    }
     const IR::U32 result{Maxwell::ApplyLUT(v.ir, v.SrcA(insn, uniform), v.SrcB(insn, uniform),
                                            v.SrcC(insn, uniform), insn.Bits(72, 8))};
+    const u64 pred_dest{insn.Bits(81, 3)};
+    if (pred_dest != PT) {
+        const IR::U1 nonzero{v.ir.INotEqual(result, v.ir.Imm32(0))};
+        const u64 pred_src{insn.Bits(87, 3)};
+        const bool pred_negated{insn.Bit(90)};
+        const IR::U1 input{uniform ? v.UP(pred_src, pred_negated) : v.P(pred_src, pred_negated)};
+        const IR::U1 value{insn.Bit(80) ? v.ir.LogicalAnd(nonzero, input)
+                                        : v.ir.LogicalOr(nonzero, input)};
+        uniform ? v.SetUP(pred_dest, value) : v.SetP(pred_dest, value);
+    }
     v.X(uniform ? UReg(insn.Bits(16, 6)) : Reg(insn.Dest()), result);
 }
 
@@ -240,6 +249,19 @@ void TranslatorVisitor::LOP3(Instruction insn) {
 
 void TranslatorVisitor::ULOP3(Instruction insn) {
     Lop3(*this, insn, true);
+}
+
+// R2P PR, Ra.Bn, mask: predicates P0-P6 selected by the mask take the bits of byte n of Ra
+void TranslatorVisitor::R2P(Instruction insn) {
+    const IR::U32 value{SrcA(insn)};
+    const IR::U32 mask{SrcB(insn)};
+    const u32 byte{static_cast<u32>(insn.Bits(76, 2))};
+    for (u32 index = 0; index < 7; ++index) {
+        const auto bit{[&](const IR::U32& word, u32 position) {
+            return ir.INotEqual(ir.BitwiseAnd(word, ir.Imm32(1U << position)), ir.Imm32(0));
+        }};
+        SetP(index, IR::U1{ir.Select(bit(mask, index), bit(value, byte * 8 + index), P(index))});
+    }
 }
 
 void TranslatorVisitor::SHF(Instruction insn) {

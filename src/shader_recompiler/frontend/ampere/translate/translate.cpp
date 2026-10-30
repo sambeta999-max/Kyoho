@@ -29,6 +29,8 @@ void Dispatch(TranslatorVisitor& v, Opcode opcode, Instruction insn) {
         return v.LOP3(insn);
     case Opcode::ULOP3:
         return v.ULOP3(insn);
+    case Opcode::R2P:
+        return v.R2P(insn);
     case Opcode::SHF:
         return v.SHF(insn);
     case Opcode::USHF:

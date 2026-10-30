@@ -33,6 +33,7 @@ struct TranslatorVisitor {
     void ISETP(Instruction insn);
     void LOP3(Instruction insn);
     void ULOP3(Instruction insn);
+    void R2P(Instruction insn);
     void SHF(Instruction insn);
     void USHF(Instruction insn);
     void SEL(Instruction insn);
