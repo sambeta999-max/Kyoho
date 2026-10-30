@@ -304,18 +304,13 @@ void Puller::CallPullerMethod(DmaPusher& dma_pusher, const MethodCall& method_ca
         LOG_ERROR(HW_GPU, "Special puller engine method NonStallInterrupt not implemented");
         break;
     }
-    case BufferMethods::MemOpA: {
-        LOG_ERROR(HW_GPU, "Memory Operation A");
+    case BufferMethods::MemOpA:
+    case BufferMethods::MemOpC:
         break;
-    }
-    case BufferMethods::MemOpB: {
+    case BufferMethods::MemOpB:
+    case BufferMethods::MemOpD: {
         // Implement this better.
         dma_pusher.rasterizer->InvalidateGPUCache();
-        break;
-    }
-    case BufferMethods::MemOpC:
-    case BufferMethods::MemOpD: {
-        LOG_ERROR(HW_GPU, "Memory Operation C,D");
         break;
     }
     case BufferMethods::SemaphoreAcquire: {

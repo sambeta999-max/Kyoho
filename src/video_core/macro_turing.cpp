@@ -306,7 +306,7 @@ bool TuringMacroEngine::Execute(u32 start, std::span<const u32> parameters, Host
                 result = carry;
                 break;
             case AluOp::Extended:
-                if (x == EXTENDED_READ_FIFO_BARRIER && y == 1) {
+                if (x == EXTENDED_READ_FIFO_BARRIER) {
                     ReadFifoBarrier(host);
                 } else {
                     LOG_ERROR(HW_GPU, "Unknown MME extended operation {:#x}, {:#x}", x, y);
@@ -469,9 +469,9 @@ void TuringMacroEngine::ReadFifoBarrier(Host& host) {
     if (read_fifo_count == 0) {
         return;
     }
-    fifo.resize(read_fifo_count);
-    host.ReadMemory(MemoryAddress(), fifo);
-    fifo_position = 0;
+    const size_t offset = fifo.size();
+    fifo.resize(offset + read_fifo_count);
+    host.ReadMemory(MemoryAddress(), std::span<u32>{fifo.data() + offset, read_fifo_count});
     read_fifo_count = 0;
 }
 
@@ -502,9 +502,13 @@ bool TuringMacroEngine::ProcessMethod(u32 method, u32 value, Host& host) {
         }
         return true;
     }
-    case MME_DMA_READ_FIFOED:
-        read_fifo_count = value;
+    case MME_DMA_READ_FIFOED: {
+        const size_t offset = fifo.size();
+        fifo.resize(offset + value);
+        host.ReadMemory(MemoryAddress(), std::span<u32>{fifo.data() + offset, value});
+        read_fifo_count = 0;
         return true;
+    }
     case MME_DMA_REDUCTION: {
         // Reduces the data RAM word (or pair) at the data RAM address into memory
         const auto op = static_cast<Engines::SemaphoreReduction>(value & 7);

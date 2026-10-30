@@ -444,7 +444,7 @@ void System::Stop() {
     }
 
     if (execution_mode == ExecutionMode::Auto) {
-        terminate_event.Wait();
+        terminate_event.WaitFor(std::chrono::seconds(1));
     }
 }
 

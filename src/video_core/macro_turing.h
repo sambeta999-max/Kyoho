@@ -58,7 +58,7 @@ private:
     void ReadFifoBarrier(Host& host);
 
     [[nodiscard]] GPUVAddr MemoryAddress() const {
-        return (GPUVAddr{mem_address_high & 0xFF} << 32) | mem_address_low;
+        return (GPUVAddr{mem_address_high & 0x1FFFFFF} << 32) | mem_address_low;
     }
 
     std::array<u32, NUM_INSTRUCTIONS * INSTRUCTION_WORDS> code{};

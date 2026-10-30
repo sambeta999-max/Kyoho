@@ -298,14 +298,6 @@ private:
     /// code_loc
     GPUVAddr ampere_program_address{};
 
-    /// QMDs with outstanding dependencies, by address. Dependence changes may arrive before the
-    /// QMD is scheduled.
-    struct QmdState {
-        s32 dependencies{};
-        bool scheduled{};
-    };
-    std::unordered_map<GPUVAddr, QmdState> qmd_states;
-
     /// Macro engine of AMPERE_COMPUTE_B, used when the channel has no TSG context
     TuringMacroEngine turing_macro;
     std::array<u32, 0x80> macro_positions{};

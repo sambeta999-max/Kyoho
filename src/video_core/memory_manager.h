@@ -10,6 +10,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <unordered_map>
 #include <vector>
 #include <boost/container/small_vector.hpp>
 
@@ -161,6 +162,14 @@ public:
     const u8* GetSpan(const GPUVAddr src_addr, const std::size_t size) const;
     u8* GetSpan(const GPUVAddr src_addr, const std::size_t size);
 
+    struct QmdState {
+        s32 dependencies{};
+        bool scheduled{};
+    };
+    [[nodiscard]] std::unordered_map<GPUVAddr, QmdState>& QmdStates() {
+        return qmd_states;
+    }
+
 private:
     template <typename FuncMapped, typename FuncReserved, typename FuncUnmapped>
     inline void MemoryOperation(GPUVAddr gpu_src_addr, std::size_t size, bool is_big_page, FuncMapped&& func_mapped, FuncReserved&& func_reserved, FuncUnmapped&& func_unmapped) const;
@@ -238,6 +247,7 @@ private:
     static std::atomic<size_t> unique_identifier_generator;
 
     Common::ScratchBuffer<u8> tmp_buffer;
+    std::unordered_map<GPUVAddr, QmdState> qmd_states;
 };
 
 } // namespace Tegra

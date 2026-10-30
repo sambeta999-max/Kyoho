@@ -21,6 +21,7 @@ namespace {
 // Match NVK/Nouveau's initial pushbuffer subchannel layout.
 constexpr u32 Nvk3DSubchannel = 0;
 constexpr u32 NvkComputeSubchannel = 1;
+constexpr u32 NvkM2mfSubchannel = 2;
 constexpr u32 Nvk2DSubchannel = 3;
 constexpr u32 NvkCopySubchannel = 4;
 
@@ -29,7 +30,8 @@ void BindNvkDefaultSubchannels(ChannelState::Payload& payload) {
     dma_pusher.BindSubchannel(&payload.maxwell_3d, Nvk3DSubchannel, Engines::EngineTypes::Maxwell3D);
     dma_pusher.BindSubchannel(&payload.kepler_compute, NvkComputeSubchannel,
                               Engines::EngineTypes::KeplerCompute);
-    // Subchannel 2 is M2MF there; Eden does not expose a 0x9039 engine yet.
+    dma_pusher.BindSubchannel(&payload.kepler_memory, NvkM2mfSubchannel,
+                              Engines::EngineTypes::KeplerMemory);
     dma_pusher.BindSubchannel(&payload.fermi_2d, Nvk2DSubchannel, Engines::EngineTypes::Fermi2D);
     dma_pusher.BindSubchannel(&payload.maxwell_dma, NvkCopySubchannel,
                               Engines::EngineTypes::MaxwellDMA);

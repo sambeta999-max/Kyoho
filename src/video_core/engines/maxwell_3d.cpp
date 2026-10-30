@@ -771,6 +771,9 @@ void Maxwell3D::ProcessCBBind(size_t stage_index) {
     // Bind the buffer currently in CB_ADDRESS to the specified index in the desired shader
     // stage.
     const auto& bind_data = regs.bind_groups[stage_index];
+    if (bind_data.shader_slot >= Regs::MaxConstBuffers) {
+        return;
+    }
     auto& buffer = state.shader_stages[stage_index].const_buffers[bind_data.shader_slot];
     buffer.enabled = bind_data.valid.Value() != 0;
     buffer.address = regs.const_buffer.Address();

@@ -23,8 +23,9 @@ namespace {
 
 // SEND_SIGNALING_PCAS2_B
 constexpr u32 SEND_SIGNALING_PCAS2_B = 0x02C0 / sizeof(u32);
-// SET_INLINE_QMD_ADDRESS_A and LOAD_INLINE_QMD_DATA(0..63) of AMPERE_COMPUTE_B
-constexpr u32 SET_INLINE_QMD_ADDRESS_A = 0x031C / sizeof(u32);
+// SET_INLINE_QMD_ADDRESS_A/B and LOAD_INLINE_QMD_DATA(0..63) of AMPERE_COMPUTE_B
+constexpr u32 SET_INLINE_QMD_ADDRESS_A = 0x0318 / sizeof(u32);
+constexpr u32 SET_INLINE_QMD_ADDRESS_B = 0x031C / sizeof(u32);
 constexpr u32 LOAD_INLINE_QMD_DATA_BEGIN = 0x0320 / sizeof(u32);
 constexpr u32 LOAD_INLINE_QMD_DATA_END = LOAD_INLINE_QMD_DATA_BEGIN + 64;
 // SET_REPORT_SEMAPHORE_PAYLOAD_LOWER, followed by PAYLOAD_UPPER, ADDRESS_LOWER, ADDRESS_UPPER and
@@ -353,6 +354,7 @@ void KeplerCompute::SignalPcas(GPUVAddr address, u32 action, u32 count) {
         PcasAction action;
         u32 count;
     };
+    auto& qmd_states = memory_manager.QmdStates();
     // Executing a QMD can signal its dependent QMD, which is handled in the same loop
     std::vector<Request> requests{{address, PcasAction{action}, count}};
     while (!requests.empty()) {
@@ -427,10 +429,16 @@ void KeplerCompute::SignalPcas(GPUVAddr address, u32 action, u32 count) {
 void KeplerCompute::ExecuteInlineQmd() {
     QmdV3 qmd{};
     std::memcpy(qmd.words.data(), &regs.reg_array[LOAD_INLINE_QMD_DATA_BEGIN], sizeof(qmd.words));
-    if (regs.reg_array[SET_INLINE_QMD_ADDRESS_A] != 0) {
-        const GPUVAddr qmd_address =
-            static_cast<GPUVAddr>(regs.reg_array[SET_INLINE_QMD_ADDRESS_A]) << 8;
-        memory_manager.WriteBlock(qmd_address, qmd.words.data(), sizeof(qmd.words));
+    const GPUVAddr qmd_address =
+        ((static_cast<GPUVAddr>(regs.reg_array[SET_INLINE_QMD_ADDRESS_A] & 0x1FFFFFF) << 32) |
+         static_cast<GPUVAddr>(regs.reg_array[SET_INLINE_QMD_ADDRESS_B]))
+        << 8;
+    if (qmd_address != 0) {
+        rasterizer->AccelerateInlineToMemory(
+            qmd_address, sizeof(qmd.words),
+            std::span<const u8>{reinterpret_cast<const u8*>(qmd.words.data()), sizeof(qmd.words)});
+        SignalPcas(qmd_address, static_cast<u32>(PcasAction::InvalidateCopySchedule), 1);
+        return;
     }
     ExecuteQmd(qmd);
     if (const auto dependent = qmd.GetDependent()) {
