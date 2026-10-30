@@ -152,6 +152,7 @@ private:
     void Close(HLERequestContext& ctx);
     void DuplicateSocket(HLERequestContext& ctx);
     void EventFd(HLERequestContext& ctx);
+    void Unknown36(HLERequestContext& ctx);
 
     template <typename Work>
     void ExecuteWork(HLERequestContext& ctx, Work work);

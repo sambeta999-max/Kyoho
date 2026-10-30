@@ -515,6 +515,17 @@ void BSD_USA::EventFd(HLERequestContext& ctx) {
     BuildErrnoResponse(ctx, Errno::SUCCESS);
 }
 
+void BSD_USA::Unknown36(HLERequestContext& ctx) {
+    IPC::RequestParser rp{ctx};
+    const u64 value = rp.Pop<u64>();
+
+    LOG_WARNING(Service, "(STUBBED) called. value={:#x}", value);
+
+    IPC::ResponseBuilder rb{ctx, 3};
+    rb.Push(ResultSuccess);
+    rb.Push<u32>(0);
+}
+
 template <typename Work>
 void BSD_USA::ExecuteWork(HLERequestContext& ctx, Work work) {
     work.Execute(this);
@@ -1121,7 +1132,7 @@ BSD_USA::BSD_USA(Core::System& system_, const char* name, bool is_user_)
         {33, nullptr, "RegisterClientShared"}, //10.0.0+
         {34, nullptr, "GetSocketStatistics"}, //15.0.0+
         {35, nullptr, "NifIoctl"}, //17.0.0+
-        {36, nullptr, "Unknown36"}, //18.0.0+
+        {36, &BSD_USA::Unknown36, "Unknown36"}, //18.0.0+
         {37, nullptr, "Unknown37"}, //18.0.0+
         {38, nullptr, "Unknown38"}, //18.0.0+
         {39, nullptr, "Unknown39"}, //20.0.0+

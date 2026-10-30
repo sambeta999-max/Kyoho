@@ -196,8 +196,33 @@ struct SfNetworkProfileData {
     SfWirelessSettingData wireless_setting_data{};
     INSERT_PADDING_BYTES(1);
 };
+
+struct SfIpSettingDataV2 {
+    IpAddressSetting ip_address_setting{};
+    DnsSetting dns_setting{};
+    ProxySetting proxy_setting{};
+    std::array<u8, 0x36> proxy_extension{};
+    u16 mtu{};
+};
+static_assert(sizeof(SfIpSettingDataV2) == 0xF8, "SfIpSettingDataV2 has incorrect size.");
+
+// This is nn::nifm::detail::sf::NetworkProfileDataV2 (for >= 20.0.0)
+struct SfNetworkProfileDataV2 {
+    SfIpSettingDataV2 ip_setting_data{};
+    u128 uuid{};
+    std::array<char, 0x40> network_name{};
+    u8 profile_type{};
+    u8 interface_type{};
+    u8 is_auto_connect{};
+    u8 is_large_capacity{};
+    u8 unknown_14c{};
+    SfWirelessSettingData wireless_setting_data{};
+    INSERT_PADDING_BYTES(2);
+};
 #pragma pack(pop)
 static_assert(sizeof(SfNetworkProfileData) == 0x17C, "SfNetworkProfileData has incorrect size.");
+static_assert(sizeof(SfNetworkProfileDataV2) == 0x1B4,
+              "SfNetworkProfileDataV2 has incorrect size.");
 
 // This is nn::nifm::NetworkProfileData
 #pragma pack(push, 1)
@@ -586,7 +611,23 @@ void IGeneralService::GetCurrentNetworkProfile(HLERequestContext& ctx) {
         }
     }
 
-    ctx.WriteBuffer(profile);
+    if (ctx.GetWriteBufferSize() >= sizeof(SfNetworkProfileDataV2)) {
+        SfNetworkProfileDataV2 profile_v2{};
+        profile_v2.ip_setting_data.ip_address_setting = profile.ip_setting_data.ip_address_setting;
+        profile_v2.ip_setting_data.dns_setting = profile.ip_setting_data.dns_setting;
+        profile_v2.ip_setting_data.proxy_setting = profile.ip_setting_data.proxy_setting;
+        profile_v2.ip_setting_data.mtu = profile.ip_setting_data.mtu;
+        profile_v2.uuid = profile.uuid;
+        profile_v2.network_name = profile.network_name;
+        profile_v2.profile_type = profile.profile_type;
+        profile_v2.interface_type = profile.interface_type;
+        profile_v2.is_auto_connect = profile.is_auto_connect;
+        profile_v2.is_large_capacity = profile.is_large_capacity;
+        profile_v2.wireless_setting_data = profile.wireless_setting_data;
+        ctx.WriteBuffer(profile_v2);
+    } else {
+        ctx.WriteBuffer(profile);
+    }
 
     IPC::ResponseBuilder rb{ctx, 2};
     rb.Push(ResultSuccess);
@@ -659,8 +700,9 @@ void IGeneralService::GetNetworkProfile(HLERequestContext& ctx) {
 
     IPC::RequestParser rp{ctx};
 
-    ASSERT_MSG(ctx.GetWriteBufferSize() == sizeof(SfNetworkProfileData),
-               "Caller expects SfNetworkProfileData (0x17C bytes)");
+    ASSERT_MSG(ctx.GetWriteBufferSize() == sizeof(SfNetworkProfileData) ||
+                   ctx.GetWriteBufferSize() == sizeof(SfNetworkProfileDataV2),
+               "Caller expects SfNetworkProfileData (0x17C or 0x1B4 bytes)");
 
     const auto net_iface = Network::GetSelectedNetworkInterface();
 
@@ -717,7 +759,23 @@ void IGeneralService::GetNetworkProfile(HLERequestContext& ctx) {
         }
     }
 
-    ctx.WriteBuffer(profile);
+    if (ctx.GetWriteBufferSize() >= sizeof(SfNetworkProfileDataV2)) {
+        SfNetworkProfileDataV2 profile_v2{};
+        profile_v2.ip_setting_data.ip_address_setting = profile.ip_setting_data.ip_address_setting;
+        profile_v2.ip_setting_data.dns_setting = profile.ip_setting_data.dns_setting;
+        profile_v2.ip_setting_data.proxy_setting = profile.ip_setting_data.proxy_setting;
+        profile_v2.ip_setting_data.mtu = profile.ip_setting_data.mtu;
+        profile_v2.uuid = profile.uuid;
+        profile_v2.network_name = profile.network_name;
+        profile_v2.profile_type = profile.profile_type;
+        profile_v2.interface_type = profile.interface_type;
+        profile_v2.is_auto_connect = profile.is_auto_connect;
+        profile_v2.is_large_capacity = profile.is_large_capacity;
+        profile_v2.wireless_setting_data = profile.wireless_setting_data;
+        ctx.WriteBuffer(profile_v2);
+    } else {
+        ctx.WriteBuffer(profile);
+    }
 
     IPC::ResponseBuilder rb{ctx, 2};
     rb.Push(ResultSuccess);
@@ -866,10 +924,15 @@ void IGeneralService::GetCurrentIpAddress(HLERequestContext& ctx) {
 void IGeneralService::CreateTemporaryNetworkProfile(HLERequestContext& ctx) {
     LOG_DEBUG(Service_NIFM, "called");
 
-    ASSERT_MSG(ctx.GetReadBufferSize() == 0x17c, "SfNetworkProfileData is not the correct size");
+    ASSERT_MSG(ctx.GetReadBufferSize() == sizeof(SfNetworkProfileData) ||
+                   ctx.GetReadBufferSize() == sizeof(SfNetworkProfileDataV2),
+               "SfNetworkProfileData is not the correct size");
     u128 uuid{};
     auto buffer = ctx.ReadBuffer();
-    std::memcpy(&uuid, buffer.data() + 8, sizeof(u128));
+    const size_t uuid_offset = ctx.GetReadBufferSize() == sizeof(SfNetworkProfileDataV2)
+                                   ? offsetof(SfNetworkProfileDataV2, uuid)
+                                   : 8;
+    std::memcpy(&uuid, buffer.data() + uuid_offset, sizeof(u128));
 
     IPC::ResponseBuilder rb{ctx, 6, 0, 1};
 
@@ -1103,7 +1166,12 @@ IGeneralService::IGeneralService(Core::System& system_)
         {47, &IGeneralService::GetScanDataV3, "GetScanData"}, // 19.0.0+
         {50, nullptr, "IsRewriteFeatureEnabled"}, // 18.0.0+
         {51, nullptr, "CreateRewriteRule"}, // 18.0.0+
-        {52, nullptr, "DestroyRewriteRule"} // 18.0.0+
+        {52, nullptr, "DestroyRewriteRule"}, // 18.0.0+
+        {100, &IGeneralService::EnumerateNetworkInterfaces, "EnumerateNetworkInterfaces"}, // 20.0.0+
+        {101, &IGeneralService::GetCurrentNetworkProfile, "GetCurrentNetworkProfile"}, // 20.0.0+
+        {102, &IGeneralService::GetNetworkProfile, "GetNetworkProfile"}, // 20.0.0+
+        {103, &IGeneralService::SetNetworkProfile, "SetNetworkProfile"}, // 20.0.0+
+        {104, &IGeneralService::CreateTemporaryNetworkProfile, "CreateTemporaryNetworkProfile"} // 20.0.0+
     };
     // clang-format on
 
