@@ -19,6 +19,12 @@
 // For FileTimeStampRaw
 #include <sys/stat.h>
 
+#ifdef _WIN32
+#include <cstdio>
+#else
+#include <sys/resource.h>
+#endif
+
 #ifdef _MSC_VER
 #define stat _stat64
 #endif
@@ -33,7 +39,22 @@ namespace FS = Common::FS;
 
 namespace {
 
-constexpr size_t MaxOpenFiles = 8192;
+// Stay below the process open-file limit (the C runtime limit on Windows, RLIMIT_NOFILE elsewhere)
+// with headroom for saves, shader caches, and the next file opened before eviction runs.
+size_t MaxOpenFiles() {
+#ifdef _WIN32
+    static const size_t limit = static_cast<size_t>((std::max)(_getmaxstdio() - 512, 64));
+#else
+    static const size_t limit = [] {
+        struct rlimit rl;
+        if (getrlimit(RLIMIT_NOFILE, &rl) != 0 || rl.rlim_cur == RLIM_INFINITY) {
+            return size_t{8192};
+        }
+        return static_cast<size_t>(std::max<rlim_t>(rl.rlim_cur, 576) - 512);
+    }();
+#endif
+    return (std::min)(size_t{8192}, limit);
+}
 
 bool IsWithinRoot(std::string_view root, std::string_view full_path) {
     if (root.empty())
@@ -251,7 +272,7 @@ void RealVfsFilesystem::DropReference(std::unique_ptr<FileReference>&& reference
 }
 
 void RealVfsFilesystem::EvictSingleReferenceLocked() {
-    if (num_open_files < MaxOpenFiles || open_references.empty()) {
+    if (num_open_files < MaxOpenFiles() || open_references.empty()) {
         return;
     }
 
