@@ -131,18 +131,27 @@ void TranslatorVisitor::HMUL2(Instruction insn) {
                 promoted, false);
 }
 
+// .RELU (bit 79) clamps negative results to zero; NaN passes through as in PTX fma.relu
 void TranslatorVisitor::HFMA2(Instruction insn) {
-    if (insn.Bit(79)) {
-        throw NotImplementedException("HFMA2.RELU");
-    }
     HalfOperand a{OperandA(*this, insn)};
     HalfOperand b{OperandB(*this, insn)};
     HalfOperand c{OperandC(*this, insn)};
     const std::array<HalfOperand*, 3> operands{&a, &b, &c};
     const bool promoted{Promote(ir, operands)};
     const IR::FpControl control{Control(insn)};
-    WriteResult(*this, insn, ir.FPFma(a.lhs, b.lhs, c.lhs, control),
-                ir.FPFma(a.rhs, b.rhs, c.rhs, control), promoted, true);
+    IR::F16F32F64 lhs{ir.FPFma(a.lhs, b.lhs, c.lhs, control)};
+    IR::F16F32F64 rhs{ir.FPFma(a.rhs, b.rhs, c.rhs, control)};
+    if (insn.Bit(79)) {
+        const auto relu{[&](const IR::F16F32F64& value) {
+            const IR::F32 wide{value.Type() == IR::Type::F32 ? IR::F32{value}
+                                                              : IR::F32{ir.FPConvert(32, value)}};
+            return IR::F16F32F64{
+                ir.Select(ir.FPLessThan(wide, ir.Imm32(0.0f)), ir.Imm32(0.0f), wide)};
+        }};
+        WriteResult(*this, insn, relu(lhs), relu(rhs), true, true);
+        return;
+    }
+    WriteResult(*this, insn, lhs, rhs, promoted, true);
 }
 
 void TranslatorVisitor::HMNMX2(Instruction insn) {
@@ -205,16 +214,20 @@ void TranslatorVisitor::HSETP2(Instruction insn) {
     }
 }
 
-// F2FP.PACK_AB converts a to the upper and b to the lower half
+// F2FP.PACK_AB converts a to the upper and b to the lower half. F2FP.MERGE_C (bit 78) converts
+// b to the lower half and keeps the low half of c as the upper one (checked on a GA102).
 void TranslatorVisitor::F2FP(Instruction insn) {
-    if (insn.Bit(78)) {
-        throw NotImplementedException("F2FP.MERGE_C");
-    }
     constexpr std::array rounding{IR::FpRounding::RN, IR::FpRounding::RM, IR::FpRounding::RP,
                                   IR::FpRounding::RZ};
     const IR::FpControl control{.no_contraction = true, .rounding = rounding[insn.Bits(79, 2)]};
-    const IR::F16 high{ir.FPConvert(16, F(Reg(insn.SrcA())), control)};
     const IR::F16 low{ir.FPConvert(16, ir.BitCast<IR::F32>(SrcB(insn)), control)};
+    if (insn.Bit(78)) {
+        const IR::U32 packed{ir.PackFloat2x16(ir.CompositeConstruct(low, low))};
+        X(Reg(insn.Dest()),
+          ir.BitFieldInsert(packed, SrcC(insn), ir.Imm32(16), ir.Imm32(16)));
+        return;
+    }
+    const IR::F16 high{ir.FPConvert(16, F(Reg(insn.SrcA())), control)};
     X(Reg(insn.Dest()), ir.PackFloat2x16(ir.CompositeConstruct(low, high)));
 }
 

@@ -110,11 +110,21 @@ void TranslatorVisitor::FSEL(Instruction insn) {
     F(Reg(insn.Dest()), IR::F32{ir.Select(cond, FloatSrcA(insn), FloatSrcB(insn))});
 }
 
+// MUFU.F16 reads the half of Rb picked by bit 60 (.H1) with |x| at 62 and -x at 63, and writes
+// the F16 result to the low half with the high half zeroed (checked on a GA102).
 void TranslatorVisitor::MUFU(Instruction insn) {
-    if (insn.Bit(73)) {
-        throw NotImplementedException("MUFU.F16");
+    const bool is_f16{insn.Bit(73)};
+    if (is_f16 && insn.Form() != AluForm::RegReg) {
+        throw NotImplementedException("MUFU.F16 form {}", static_cast<u32>(insn.Form()));
     }
-    const IR::F32 src{FloatSrcB(insn)};
+    IR::F32 src;
+    if (is_f16) {
+        const IR::Value halves{ir.UnpackFloat2x16(Wide(insn))};
+        const IR::F16 half{ir.CompositeExtract(halves, insn.Bit(60) ? 1 : 0)};
+        src = ir.FPConvert(32, IR::F16{ir.FPAbsNeg(half, insn.Bit(62), insn.Bit(63))});
+    } else {
+        src = FloatSrcB(insn);
+    }
     // Sine and cosine take their argument in revolutions, the compiler scales it by 1/(2*pi)
     const auto radians{[&] { return IR::F32{ir.FPMul(src, ir.Imm32(2.0f * std::numbers::pi_v<f32>))}; }};
     IR::F32 result;
@@ -142,6 +152,11 @@ void TranslatorVisitor::MUFU(Instruction insn) {
         break;
     default:
         throw NotImplementedException("MUFU operation {}", insn.Bits(74, 6));
+    }
+    if (is_f16) {
+        const IR::F16 half{ir.FPConvert(16, result)};
+        X(Reg(insn.Dest()), ir.PackFloat2x16(ir.CompositeConstruct(half, IR::F16{ir.FPConvert(16, ir.Imm32(0.0f))})));
+        return;
     }
     F(Reg(insn.Dest()), result);
 }
