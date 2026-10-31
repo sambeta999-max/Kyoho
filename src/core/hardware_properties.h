@@ -15,11 +15,12 @@ namespace Hardware {
 
 constexpr u64 BASE_CLOCK_RATE = 1'020'000'000; // Default CPU Frequency = 1020 MHz
 constexpr u64 CNTFREQ = 19'200'000;            // CNTPCT_EL0 Frequency = 19.2 MHz
-constexpr u32 NUM_CPU_CORES = 4;               // Number of CPU Cores - sync with dynarmic exclusive_monitor.h
+// Switch 2 applications run on six cores (virtual cores 0..5); Switch 1 ones use 0..3
+constexpr u32 NUM_CPU_CORES = 6;               // Number of CPU Cores - sync with dynarmic exclusive_monitor.h
 
 // Virtual to Physical core map.
 constexpr std::array<s32, Common::BitSize<u64>()> VirtualToPhysicalCoreMap{
-    0, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 1, 2, 3, 4, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3,
 };
 
