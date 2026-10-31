@@ -196,21 +196,28 @@ void TranslatorVisitor::SUST(Instruction insn) {
                   ir.CompositeConstruct(color[0], color[1], color[2], color[3]), access.info);
 }
 
-// SUATOM.D Rd, [Ra], Rb, cbuf: raw 32-bit image atomics. The operation is at [87..91) and the
-// type at [73..76) as in ATOMG. The constant buffer form is 2 here, not 5 as for SULD and SUST.
-void TranslatorVisitor::SUATOM(Instruction insn) {
-    if (insn.Form() != AluForm::RegImm || insn.Bit(72) || insn.Bits(81, 3) != 7) {
-        throw NotImplementedException("SUATOM form {} with .BA {} or predicate output",
+namespace {
+
+// SUATOM.D Rd, [Ra], Rb, cbuf and SURED.D [Ra], Rb, cbuf: raw 32-bit image atomics. The
+// operation is at [87..91) and the type at [73..76) as in ATOMG. The constant buffer form is 2
+// here, not 5 as for SULD and SUST.
+// SUATOM can also write a predicate at [81..84); SURED has no such field.
+IR::Value SurfaceAtomic(TranslatorVisitor& v, Instruction insn, const char* name,
+                        bool has_predicate) {
+    IR::IREmitter& ir{v.ir};
+    if (insn.Form() != AluForm::RegImm || insn.Bit(72) ||
+        (has_predicate && insn.Bits(81, 3) != 7)) {
+        throw NotImplementedException("{} form {} with .BA {} or predicate output", name,
                                       static_cast<u32>(insn.Form()), insn.Bit(72));
     }
     const u64 type{insn.Bits(73, 3)};
     if (type > 1) {
-        throw NotImplementedException("SUATOM type {}", type);
+        throw NotImplementedException("{} type {}", name, type);
     }
     const bool is_signed{type == 1};
-    Access access{MakeAccess(*this, insn, false, AluForm::RegImm)};
+    Access access{MakeAccess(v, insn, false, AluForm::RegImm)};
     access.info.image_format.Assign(ImageFormat::R32_UINT);
-    const IR::U32 value{X(Reg(insn.SrcBReg()))};
+    const IR::U32 value{v.X(Reg(insn.SrcBReg()))};
     const IR::Value& handle{access.handle};
     const IR::Value& coords{access.coords};
     IR::Value result;
@@ -243,9 +250,19 @@ void TranslatorVisitor::SUATOM(Instruction insn) {
         result = ir.ImageAtomicExchange(handle, coords, value, access.info);
         break;
     default:
-        throw NotImplementedException("SUATOM operation {}", insn.Bits(87, 4));
+        throw NotImplementedException("{} operation {}", name, insn.Bits(87, 4));
     }
-    X(Reg(insn.Dest()), IR::U32{result});
+    return result;
+}
+
+} // Anonymous namespace
+
+void TranslatorVisitor::SUATOM(Instruction insn) {
+    X(Reg(insn.Dest()), IR::U32{SurfaceAtomic(*this, insn, "SUATOM", true)});
+}
+
+void TranslatorVisitor::SURED(Instruction insn) {
+    static_cast<void>(SurfaceAtomic(*this, insn, "SURED", false));
 }
 
 } // namespace Shader::Ampere

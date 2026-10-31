@@ -157,6 +157,8 @@ void Dispatch(TranslatorVisitor& v, Opcode opcode, Instruction insn) {
         return v.SUST(insn);
     case Opcode::SUATOM:
         return v.SUATOM(insn);
+    case Opcode::SURED:
+        return v.SURED(insn);
     case Opcode::FADD:
         return v.FADD(insn);
     case Opcode::FSWZADD:

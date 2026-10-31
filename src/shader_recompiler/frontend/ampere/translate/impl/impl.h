@@ -83,6 +83,7 @@ struct TranslatorVisitor {
     void SULD(Instruction insn);
     void SUST(Instruction insn);
     void SUATOM(Instruction insn);
+    void SURED(Instruction insn);
 
     // Attributes
     void ALD(Instruction insn);
