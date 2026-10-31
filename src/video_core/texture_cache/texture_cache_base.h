@@ -111,6 +111,10 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
     static constexpr bool IMPLEMENTS_ASYNC_DOWNLOADS = P::IMPLEMENTS_ASYNC_DOWNLOADS;
 
     static constexpr size_t UNSET_CHANNEL{(std::numeric_limits<size_t>::max)()};
+    /// Largest image JoinImages may build out of overlapping images
+    static constexpr size_t MaxJoinedImageBytes = 1_GiB;
+    /// Largest image the cache creates; larger descriptors (sparse textures) read as null
+    static constexpr size_t MaxImageBytes = 1_GiB;
 
 #ifdef YUZU_LEGACY
     static constexpr s64 TARGET_THRESHOLD = 3_GiB;

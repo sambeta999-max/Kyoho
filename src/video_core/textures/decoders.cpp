@@ -87,10 +87,15 @@ void SwizzleImpl(std::span<u8> output, std::span<const u8> input, u32 width, u32
                 const u32 unswizzled_offset =
                     slice * pitch * height + line * pitch + column * BYTES_PER_PIXEL;
 
-                u8* const dst = &output[TO_LINEAR ? swizzled_offset : unswizzled_offset];
-                const u8* const src = &input[TO_LINEAR ? unswizzled_offset : swizzled_offset];
-
-                std::memcpy(dst, src, BYTES_PER_PIXEL);
+                const u32 dst_offset = TO_LINEAR ? swizzled_offset : unswizzled_offset;
+                const u32 src_offset = TO_LINEAR ? unswizzled_offset : swizzled_offset;
+                if (dst_offset + BYTES_PER_PIXEL > output.size() ||
+                    src_offset + BYTES_PER_PIXEL > input.size()) [[unlikely]] {
+                    // A guest layout larger than the buffer it was sized for (seen with Switch 2
+                    // images); the pixels outside are left untouched instead of faulting
+                    continue;
+                }
+                std::memcpy(&output[dst_offset], &input[src_offset], BYTES_PER_PIXEL);
             }
         }
     }
@@ -146,10 +151,15 @@ void SwizzleSubrectImpl(std::span<u8> output, std::span<const u8> input, u32 wid
                 const u32 unswizzled_offset =
                     slice * pitch * height + line * pitch + column * BYTES_PER_PIXEL;
 
-                u8* const dst = &output[TO_LINEAR ? swizzled_offset : unswizzled_offset];
-                const u8* const src = &input[TO_LINEAR ? unswizzled_offset : swizzled_offset];
-
-                std::memcpy(dst, src, BYTES_PER_PIXEL);
+                const u32 dst_offset = TO_LINEAR ? swizzled_offset : unswizzled_offset;
+                const u32 src_offset = TO_LINEAR ? unswizzled_offset : swizzled_offset;
+                if (dst_offset + BYTES_PER_PIXEL > output.size() ||
+                    src_offset + BYTES_PER_PIXEL > input.size()) [[unlikely]] {
+                    // A guest layout larger than the buffer it was sized for (seen with Switch 2
+                    // images); the pixels outside are left untouched instead of faulting
+                    continue;
+                }
+                std::memcpy(&output[dst_offset], &input[src_offset], BYTES_PER_PIXEL);
             }
         }
         unprocessed_lines -= lines_in_y;

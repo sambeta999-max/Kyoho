@@ -171,6 +171,7 @@ private:
     std::unique_ptr<DeviceMemoryManagerAllocator<Traits>> impl;
 
     const uintptr_t physical_base;
+    const size_t physical_size;
     DeviceInterface* device_inter;
 
     struct TrackedEntry {

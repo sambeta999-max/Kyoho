@@ -8,6 +8,7 @@
 #include <limits>
 #include <memory>
 #include <type_traits>
+#include <utility>
 #include <algorithm>
 #include <vector>
 
@@ -171,7 +172,8 @@ struct DeviceMemoryManagerAllocator {
 
 template <typename Traits>
 DeviceMemoryManager<Traits>::DeviceMemoryManager(const DeviceMemory& device_memory_)
-    : physical_base{uintptr_t(device_memory_.buffer.BackingBasePointer())}
+    : physical_base{uintptr_t(device_memory_.buffer.BackingBasePointer())},
+      physical_size{device_memory_.buffer.BackingSize()}
     , device_inter{nullptr}
     , compressed_device_addr(Kernel::Board::Nintendo::Nx::KSystemControl::Init::GetIntendedMemorySize() >> Memory::YUZU_PAGEBITS)
     , tracked_entries(device_as_size >> Memory::YUZU_PAGEBITS)
@@ -215,6 +217,17 @@ void DeviceMemoryManager<Traits>::Map(DAddr address, VAddr virtual_address, size
     for (size_t i = 0; i < num_pages; i++) {
         const VAddr new_vaddress = virtual_address + i * Memory::YUZU_PAGESIZE;
         auto* ptr = process_memory->GetPointerSilent(Common::ProcessAddress(new_vaddress));
+        if (ptr != nullptr && GetRawPhysicalAddr(ptr) >= physical_size) [[unlikely]] {
+            // Process memory that is not emulated DRAM (a host buffer mapped into the guest)
+            // cannot be addressed through the compressed physical pointer; it would decode to
+            // an unrelated host address.
+            static bool warned{};
+            if (!std::exchange(warned, true)) {
+                LOG_WARNING(HW_Memory, "Device mapping of non-DRAM process memory at {:#x}",
+                            new_vaddress);
+            }
+            ptr = nullptr;
+        }
         if (ptr == nullptr) [[unlikely]] {
             tracked_entries.GetUnchecked(start_page_d + i).compressed_physical_ptr = 0;
             continue;

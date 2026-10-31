@@ -555,7 +555,9 @@ ImageViewId TextureCache<P>::VisitImageView(u32 index, bool compute) {
             const auto [pair, is_new_tc] = channel_state->image_views.try_emplace(descriptor);
             if (is_new_tc)
                 pair->second = CreateImageView(descriptor);
-            PrepareImageView(pair->second, false, false);
+            if (pair->second != NULL_IMAGE_VIEW_ID) {
+                PrepareImageView(pair->second, false, false);
+            }
             channel_state->image_view_ids.insert_or_assign(map_index, pair->second);
             return pair->second;
         }
@@ -1535,9 +1537,30 @@ bool TextureCache<P>::ScaleDown(Image& image) {
     return true;
 }
 
+// Size of the base level of every layer, computed in 64 bits: the guest size helpers wrap
+// around for the images these limits are meant to catch
+[[nodiscard]] inline u64 ApproximateImageBytes(const ImageInfo& info) {
+    return u64{info.size.width} * info.size.height * info.size.depth * info.resources.layers *
+           VideoCore::Surface::BytesPerBlock(info.format) /
+           (VideoCore::Surface::DefaultBlockWidth(info.format) *
+            VideoCore::Surface::DefaultBlockHeight(info.format));
+}
+
 template <class P>
 ImageId TextureCache<P>::InsertImage(const ImageInfo& info, GPUVAddr gpu_addr,
                                      RelaxedOptions options) {
+    if (ApproximateImageBytes(info) > MaxImageBytes) [[unlikely]] {
+        // Sparse (partially resident) textures can describe more memory than the console has,
+        // such as Mario Kart World's 8192x8192 array of 68 layers with 12 levels. A host image
+        // of that size cannot be allocated; the texture reads as the null image instead.
+        static bool warned{};
+        if (!std::exchange(warned, true)) {
+            LOG_WARNING(HW_GPU, "Image {}x{}x{} with {} layers and {} levels is too large",
+                        info.size.width, info.size.height, info.size.depth,
+                        info.resources.layers, info.resources.levels);
+        }
+        return ImageId{};
+    }
     std::optional<DAddr> cpu_addr = gpu_memory->GpuToCpuAddress(gpu_addr);
     if (!cpu_addr) {
         const auto size = CalculateGuestSizeInBytes(info);
@@ -1599,6 +1622,15 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
         const std::optional<OverlapResult> solution = ResolveOverlap(
             new_info, gpu_addr, cpu_addr, overlap, strict_size, broken_views, native_bgr);
         if (solution) {
+            // Switch 2 applications suballocate unrelated textures from large memory pools, and
+            // treating them as layers or levels of one image can produce images larger than the
+            // console's memory (an 8192x8192 RGBA8 array of 68 layers in Mario Kart World).
+            ImageInfo joined_info = new_info;
+            joined_info.resources = solution->resources;
+            if (ApproximateImageBytes(joined_info) > MaxJoinedImageBytes) {
+                join_bad_overlap_ids.push_back(overlap_id);
+                return;
+            }
             gpu_addr = solution->gpu_addr;
             cpu_addr = solution->cpu_addr;
             new_info.resources = solution->resources;

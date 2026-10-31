@@ -912,11 +912,16 @@ boost::container::small_vector<BufferImageCopy, 16> UnswizzleImage(Tegra::Memory
         size_t guest_layer_offset = 0;
 
         for (s32 layer = 0; layer < info.resources.layers; ++layer) {
-            const std::span<u8> dst = output.subspan(host_offset);
-            const std::span<const u8> src = input.subspan(guest_offset + guest_layer_offset);
-            UnswizzleTexture(dst, src, 1U << bpp_log2, num_tiles.width, num_tiles.height,
-                             num_tiles.depth, block.height, block.depth, stride_alignment,
-                             gpu_memory.UsesNativeTiling());
+            const size_t src_offset = guest_offset + guest_layer_offset;
+            if (src_offset < input.size() && host_offset < output.size()) [[likely]] {
+                // Layers or levels past the guest size (seen with Switch 2 array images whose
+                // layer stride exceeds the computed size) are left unwritten
+                const std::span<u8> dst = output.subspan(host_offset);
+                const std::span<const u8> src = input.subspan(src_offset);
+                UnswizzleTexture(dst, src, 1U << bpp_log2, num_tiles.width, num_tiles.height,
+                                 num_tiles.depth, block.height, block.depth, stride_alignment,
+                                 gpu_memory.UsesNativeTiling());
+            }
             guest_layer_offset += layer_stride;
             host_offset += host_bytes_per_layer;
         }
