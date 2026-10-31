@@ -88,6 +88,9 @@ struct TranslatorVisitor {
     // Attributes
     void ALD(Instruction insn);
     void AST(Instruction insn);
+    void ISBERD(Instruction insn);
+    void OUT(Instruction insn);
+    void LEPC(Instruction insn);
     void IPA(Instruction insn);
 
     // Textures, bound through a constant buffer or bindless

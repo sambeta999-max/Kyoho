@@ -58,6 +58,13 @@ void TranslatorVisitor::CSMTEST(Instruction insn) {
     SetP(insn.Bits(84, 3), Maxwell::PredicateCombine(ir, ir.LogicalNot(test), accumulator, bop));
 }
 
+// LEPC Rd: the 64-bit address of the instruction, only used to compute an ATEXIT_PC (see
+// BMOV.64), which has no effect here.
+void TranslatorVisitor::LEPC(Instruction insn) {
+    X(Reg(insn.Dest()), ir.Imm32(0));
+    X(Reg(insn.Dest()) + 1, ir.Imm32(0));
+}
+
 void TranslatorVisitor::MEMBAR(Instruction insn) {
     switch (insn.Bits(76, 3)) {
     case 0:

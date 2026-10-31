@@ -65,6 +65,33 @@ void TranslatorVisitor::AST(Instruction insn) {
     }
 }
 
+// ISBERD Rd, [Ra + imm]: reads the internal stage buffer entry that maps a geometry program's
+// input index (from SR_INVOCATION_INFO) to the vertex handle ALD takes. The host takes vertex
+// indices directly, so the entry is the index itself, as on Maxwell. Sizes and the patch,
+// primitive, skew and output modes are at [74..80).
+void TranslatorVisitor::ISBERD(Instruction insn) {
+    if (insn.Bits(74, 6) != 0) {
+        throw NotImplementedException("ISBERD mode {:#x}", insn.Bits(74, 6));
+    }
+    const u32 offset{static_cast<u32>(insn.Bits(40, 16))};
+    const IR::U32 index{X(Reg(insn.SrcA()))};
+    X(Reg(insn.Dest()), offset == 0 ? index : IR::U32{ir.IAdd(index, ir.Imm32(offset))});
+}
+
+// OUT.{FINAL,EMIT,CUT,EMIT_THEN_CUT} Rd, Ra, Rb: [78..80) selects the operation, Ra is the
+// output handle and Rb the stream. The host has no handle; Rd is written with zero.
+void TranslatorVisitor::OUT(Instruction insn) {
+    const IR::U32 stream{ir.BitwiseAnd(SrcB(insn), ir.Imm32(3))};
+    const u64 operation{insn.Bits(78, 2)};
+    if ((operation & 1) != 0) {
+        ir.EmitVertex(stream);
+    }
+    if ((operation & 2) != 0) {
+        ir.EndPrimitive(stream);
+    }
+    X(Reg(insn.Dest()), ir.Imm32(0));
+}
+
 // Perspective-interpolated inputs are returned premultiplied by W; the shader divides by W
 // itself, as on earlier generations
 void TranslatorVisitor::IPA(Instruction insn) {

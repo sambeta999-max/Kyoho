@@ -107,6 +107,16 @@ void Dispatch(TranslatorVisitor& v, Opcode opcode, Instruction insn) {
         return v.STL(insn);
     case Opcode::ALD:
         return v.ALD(insn);
+    case Opcode::ISBERD:
+        return v.ISBERD(insn);
+    case Opcode::OUT:
+        return v.OUT(insn);
+    case Opcode::LEPC:
+        return v.LEPC(insn);
+    case Opcode::BMOV_64:
+        // Only writes ATEXIT_PC, the handler EXIT jumps to. Geometry programs point it at
+        // OUT.FINAL; ending the invocation already ends the primitive on the host.
+        return;
     case Opcode::AST:
         return v.AST(insn);
     case Opcode::IPA:
@@ -253,7 +263,7 @@ void Translate(Environment& env, IR::Block* block, Maxwell::Location begin,
             continue;
         }
         const Opcode opcode{Decode(insn)};
-        if (opcode == Opcode::ISBERD || opcode == Opcode::ISBEWR) {
+        if (opcode == Opcode::ISBEWR) {
             throw NotImplementedException("Task/Mesh shader instruction {}", opcode);
         }
         if (opcode == Opcode::HMMA || opcode == Opcode::IMMA || opcode == Opcode::DMMA ||
