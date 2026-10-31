@@ -391,6 +391,7 @@ IGpuSession::IGpuSession(Core::System& system, std::shared_ptr<Nvidia::Module> m
         {33, &IGpuSession::CreateAddressSpace, "CreateAddressSpace"},
         {41, &IGpuSession::CreateGraphicsDevice, "CreateGraphicsDevice"},
         {42, &IGpuSession::DestroyGraphicsDevice, "DestroyGraphicsDevice"},
+        {201, &IGpuSession::GetAddressSpacePartition, "GetUserPartitionSingle"},
         {202, &IGpuSession::GetAddressSpacePartition, "GetGsvPartition"},
         {203, &IGpuSession::GetAddressSpacePartition, "GetUserPartition"},
     };
@@ -430,11 +431,13 @@ void IGpuSession::GetAddressSpacePartition(HLERequestContext& ctx) {
     const auto* packet = ctx.CommandBuffer();
     Result result = Kernel::ResultInvalidCombination;
     std::array<u64, 9> values{};
-    const bool user = ctx.GetCommand() == 203;
+    const u32 command = ctx.GetCommand();
+    const bool user = command == 201 || command == 203;
+    const bool multi_range = command == 203;
     if (!user) {
         values[0] = ~u64{0}; // No supervisor-owned partition is reserved by this adapter.
     }
-    if (packet[0] == 16 + ctx.GetCommand() && packet[1] == 1) {
+    if (packet[0] == 16 + command && packet[1] == 1) {
         const u32 id = packet[2];
         const bool exists = std::any_of(m_devices->address_spaces.begin(), m_devices->address_spaces.end(),
                                        [id](const auto& fd) { return fd && static_cast<u32>(*fd) == id; });
@@ -444,9 +447,9 @@ void IGpuSession::GetAddressSpacePartition(HLERequestContext& ctx) {
             std::array<u8, 64> output{};
             const u32_le buffer_size{48};
             std::memcpy(input.data() + 8, &buffer_size, sizeof(buffer_size));
-            Nvidia::Ioctl command{};
-            command.raw = 0xc0404108;
-            if (m_module->Ioctl1(static_cast<s32>(id), command, input, output) ==
+            Nvidia::Ioctl ioctl{};
+            ioctl.raw = 0xc0404108;
+            if (m_module->Ioctl1(static_cast<s32>(id), ioctl, input, output) ==
                 Nvidia::NvResult::Success) {
                 std::array<Nvidia::Devices::nvhost_as_gpu::VaRegion, 2> regions;
                 std::memcpy(regions.data(), output.data() + 16, sizeof(regions));
@@ -458,13 +461,23 @@ void IGpuSession::GetAddressSpacePartition(HLERequestContext& ctx) {
             }
         }
         LOG_DEBUG(Service_AM, "GPU partition command={}, id={}, begin={:#x}, end={:#x}, result={:#x}",
-                  ctx.GetCommand(), id, user ? values[1] : values[0],
+                  command, id, user ? values[1] : values[0],
                   user ? values[2] : values[1], result.raw);
     }
-    IPC::ResponseBuilder rb{ctx, user ? 20U : 6U};
+    // Command 201 (MyUserVersion 3) returns the single user [begin, end] pair (values[1..2]),
+    // whereas command 203 (MyUserVersion 4) prefixes a range count and pads to four ranges.
+    IPC::ResponseBuilder rb{ctx, multi_range ? 20U : 6U};
     rb.Push(result.raw);
-    for (size_t i = 0; i < (user ? values.size() : size_t{2}); ++i) {
-        rb.Push(values[i]);
+    if (multi_range) {
+        for (const u64 value : values) {
+            rb.Push(value);
+        }
+    } else if (user) {
+        rb.Push(values[1]);
+        rb.Push(values[2]);
+    } else {
+        rb.Push(values[0]);
+        rb.Push(values[1]);
     }
 }
 

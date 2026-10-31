@@ -233,6 +233,7 @@ public:
         : ServiceFramework{system, "ISyncpointSupervisor"}, m_module{std::move(module)},
           m_context{system, "SyncpointSupervisor"} {
         static const FunctionInfo functions[] = {
+            {0, &ISyncpointSupervisor::BindProcess, "BindProcess"},
             {1, &ISyncpointSupervisor::GetMaximumEventCount, "GetMaximumEventCount"},
             {21, &ISyncpointSupervisor::SetEventCount, "SetEventCount"},
             {22, &ISyncpointSupervisor::GetEvent, "GetEvent"},
@@ -269,6 +270,18 @@ public:
 
 private:
     static constexpr u32 MaximumEventCount = 63;
+
+    // Older nn::syncpt::sdk::Initialize (before InitializeEx) sends GetSystemTick() to command 0
+    // and verifies that the same u64 token is echoed back, matching IGpuTimeSession::BindProcess.
+    void BindProcess(HLERequestContext& ctx) {
+        const auto* packet = ctx.CommandBuffer();
+        const Result result = packet[0] == 0x10 && packet[1] == 2 ? ResultSuccess
+                                                                  : Kernel::ResultInvalidCombination;
+        const u64 token = u64{packet[2]} | (u64{packet[3]} << 32);
+        IPC::ResponseBuilder rb{ctx, 4};
+        rb.Push(result.raw);
+        rb.Push<u64>(token);
+    }
 
     void GetMaximumEventCount(HLERequestContext& ctx) {
         const auto* packet = ctx.CommandBuffer();
@@ -427,6 +440,10 @@ public:
             {13, &IVi2Session::ReleaseNotificationEvent, "ReleaseNotificationEvent"},
             {21, &IVi2Session::GetNotifications, "GetNotifications"},
             {31, &IVi2Session::GetRequestGroupEvent, "GetRequestGroupEvent"},
+            {32, &IVi2Session::DuplicateRequestGroupEvent, "DuplicateRequestGroupEvent"},
+            {53, &IVi2Session::GetRecordedTimestamps, "GetRecordedTimestamps"},
+            {261, &IVi2Session::BindDisplayEvent, "BindDisplayEvent"},
+            {262, &IVi2Session::UnbindDisplayEvent, "UnbindDisplayEvent"},
             {263, &IVi2Session::BindDisplayEvent, "BindDisplayEvent"},
             {264, &IVi2Session::UnbindDisplayEvent, "UnbindDisplayEvent"},
             {265, &IVi2Session::BindDisplayEvent, "BindDisplayEvent"},
@@ -734,7 +751,7 @@ private:
         const u64 bpp = NativeImageBytesPerPixel(image->preference[6]);
         if (!(packet[6] == 0 && present_width <= image_width && present_height <= image_height &&
               packet[8] == 3 && image->preference[4] == 7 && bpp != 0 &&
-              (state.output_encoding == 0x14 || state.output_encoding == 0x24 ||
+              (state.output_encoding <= 0x1f || state.output_encoding == 0x24 ||
                state.output_encoding == 0x38))) {
             LOG_WARNING(Service_AM, "unsupported presentation words={:08x} preference={:08x} encoding={:#x}",
                         fmt::join(std::span<const u32>(packet + 6, 16), ","),
@@ -836,8 +853,9 @@ private:
             result = Kernel::ResultNotFound;
             if (token && state != m_client_states.end()) {
                 result = Kernel::ResultNotImplemented;
-                // 0x14 = sRGB, 0x24 = PQ (HDR10), 0x38 = scRGB linear.
-                if (encoding == 0x14 || encoding == 0x24 || encoding == 0x38) {
+                // Command 351 sets the 5-bit nn::vi2::BufferCheckpointBits mask (0x00..0x1f)
+                // from nn::vi2::SetLayerNextTimestampRecorder; retain 0x24/0x38 compatibility.
+                if (encoding <= 0x1f || encoding == 0x24 || encoding == 0x38) {
                     state->output_encoding = encoding;
                     result = ResultSuccess;
                 }
@@ -1003,24 +1021,67 @@ private:
         rb.Push(result.raw);
         ctx.AddMoveObject(readable);
     }
-    // Commands 263 to 272 take a display name and the index of a request group event (command
-    // 31), and reply with a result only. They come in pairs; the odd command binds the event to
-    // one kind of display notification and the even one unbinds it. This is inferred from the
-    // requests made at boot and the proxies in the SDK; the kinds are not identified. The first
-    // kind (263) is taken to be vsync and signalled at 60 Hz.
+    void DuplicateRequestGroupEvent(HLERequestContext& ctx) {
+        const auto* packet = ctx.CommandBuffer();
+        Result result = Kernel::ResultInvalidCombination;
+        Kernel::KReadableEvent* readable{};
+        const u32 index = packet[4];
+        if (packet[0] == 0x30 && packet[1] == 0x80000001U && index < m_request_group_events.size()) {
+            auto& event = m_request_group_events[index];
+            result = event ? ResultSuccess : Kernel::ResultNotFound;
+            if (event) {
+                readable = &event->GetReadableEvent();
+                readable->Open(kernel);
+            }
+        }
+        LOG_DEBUG(Service_AM, "VI2 duplicate request group event index={}, result={:#x}", index, result.raw);
+        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+        rb.Push(result.raw);
+        ctx.AddMoveObject(readable);
+    }
+    void GetRecordedTimestamps(HLERequestContext& ctx) {
+        const auto* packet = ctx.CommandBuffer();
+        Result result = Kernel::ResultInvalidCombination;
+        u64 bytes_written{};
+        if (packet[0] == 0x45 && (packet[1] & 0xffffU) == 5) {
+            const u64 mask = u64{packet[6]} | (u64{packet[7]} << 32);
+            const u64 count = std::min<u64>(std::popcount(mask & 0x1fULL), 8);
+            const u64 tick = system.CoreTiming().GetClockTicks();
+            std::array<u64, 8> timestamps{};
+            for (u64 i = 0; i < count; ++i) {
+                timestamps[i] = tick;
+            }
+            bytes_written = count * sizeof(u64);
+            if (ctx.GetWriteBufferSize() >= sizeof(timestamps)) {
+                ctx.WriteBuffer(timestamps);
+                result = ResultSuccess;
+            } else {
+                result = Kernel::ResultInvalidSize;
+            }
+        }
+        IPC::ResponseBuilder rb{ctx, 5};
+        rb.Push(result.raw);
+        rb.Push<u32>(static_cast<u32>(bytes_written));
+        rb.Push<u32>(static_cast<u32>(bytes_written >> 32));
+        rb.Push<u32>(0);
+    }
+    // Commands 261 to 272 take a display name and the index of a request group event (command
+    // 31), and reply with a result only. They come in pairs: 261/262 (VsyncEvent), 263/264
+    // (RefreshRateEvent), 265/266 (HdrStatusEvent), 267/268 (HdrPaperWhiteEvent), 269/270
+    // (BufferMaxResolutionEvent), and 271/272 (ModeCapabilityEvent).
     void BindDisplayEvent(HLERequestContext& ctx) {
         const auto* packet = ctx.CommandBuffer();
         const u32 command = ctx.GetCommand();
         const u64 name = u64{packet[2]} | (u64{packet[3]} << 32);
         const u32 index = packet[4];
-        const u32 kind = (command - 263) / 2;
+        const u32 kind = (command - 261) / 2;
         Result result = Kernel::ResultInvalidCombination;
         if (packet[0] == 16 + command && packet[1] == 3) {
             result = index < m_request_group_events.size() && m_request_group_events[index]
                          ? ResultSuccess
                          : Kernel::ResultNotFound;
         }
-        if (result.IsSuccess() && kind == 0) {
+        if (result.IsSuccess() && kind <= 1) {
             m_vsync_events |= 1U << index;
             if (!m_vsync_poll) {
                 m_vsync_poll = Core::Timing::CreateEvent(
@@ -1045,11 +1106,11 @@ private:
         const auto* packet = ctx.CommandBuffer();
         const u32 command = ctx.GetCommand();
         const u32 index = packet[4];
-        const u32 kind = (command - 264) / 2;
+        const u32 kind = (command - 262) / 2;
         Result result = Kernel::ResultInvalidCombination;
         if (packet[0] == 16 + command && packet[1] == 3) {
             result = ResultSuccess;
-            if (kind == 0 && index < 32) {
+            if (kind <= 1 && index < 32) {
                 m_vsync_events &= ~(1U << index);
             }
         }
@@ -1216,10 +1277,18 @@ void IGraphicsSupervisor::Initialize(HLERequestContext& ctx) {
             result = Kernel::ResultInvalidState;
         } else if (request->applet_resource_user_id != m_aruid) {
             result = Kernel::ResultInvalidArgument;
-        } else if (request->flags != 0x8000000000000005ULL || !empty_remote_memory) {
+        } else if ((request->flags != 0x8000000000000001ULL &&
+                    request->flags != 0x8000000000000005ULL) ||
+                   !empty_remote_memory) {
             result = Kernel::ResultNotImplemented;
         } else {
             m_phase = Phase::Initialized;
+            // Bit 2 (0x4) selects explicit inter-module image context initialization (commands
+            // 1501/1502). Older SDKs (nn::gsv::BootWithRemoteMemory without MemoryRegion) omit
+            // bit 2 and do not send commands 1501/1502 before GetNvidiaDriver/CreateNativeMemory.
+            const bool explicit_image_context = (request->flags & 4ULL) != 0;
+            m_image_context_initialized = !explicit_image_context;
+            m_image_formats_initialized = !explicit_image_context;
             result = ResultSuccess;
         }
         LOG_DEBUG(Service_AM, "graphics bootstrap aruid={:#x}, flags={:#x}, result={:#x}",
@@ -1291,7 +1360,8 @@ void IGraphicsSupervisor::OpenGpuSession(HLERequestContext& ctx) {
     Result result = Kernel::ResultInvalidCombination;
     Kernel::KClientSession* client{};
     const u64 flags = u64{packet[2]} | (u64{packet[3]} << 32);
-    if (packet[0] == 0x201 && packet[1] == 2 && flags == 4) {
+    // Flags carry nn::gpu::impl::user::UserBootFunction::MyUserVersion (3 or 4 across SDKs).
+    if (packet[0] == 0x201 && packet[1] == 2 && (flags == 3 || flags == 4)) {
         if (m_phase != Phase::Ready || !m_nv_module) {
             result = Kernel::ResultInvalidState;
         } else {
@@ -1350,7 +1420,9 @@ void IGraphicsSupervisor::OpenDisplaySession(HLERequestContext& ctx) {
     Kernel::KClientSession* client{};
     const u64 flags = u64{packet[2]} | (u64{packet[3]} << 32);
     Result result = Kernel::ResultInvalidCombination;
-    if (packet[0] == 0x141 && packet[1] == 2 && flags == 0x300020000ULL) {
+    // Flags carry the nn::vi2 library version (3.1.0 = 0x300010000 or 3.2.0 = 0x300020000).
+    if (packet[0] == 0x141 && packet[1] == 2 &&
+        (flags == 0x300010000ULL || flags == 0x300020000ULL)) {
         result = m_display_context_initialized ? ResultSuccess : Kernel::ResultInvalidState;
         if (result.IsSuccess()) {
             result = CreateGraphicsSession(system, ctx, std::make_shared<IVi2Session>(system, m_aruid, m_image_registry),
