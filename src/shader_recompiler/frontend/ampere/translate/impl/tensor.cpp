@@ -128,38 +128,58 @@ void TranslatorVisitor::HMMA(Instruction insn) {
     const u32 c_index{static_cast<u32>(insn.Bits(64, 8))};
     const bool negate_a{insn.Bit(72)};
     const bool negate_b{insn.Bit(63)};
-    const Lanes lanes{MakeLanes(ir)};
+    if (!hmma_lanes) {
+        const Lanes made{MakeLanes(ir)};
+        hmma_lanes = {made.lane, made.group, made.thread_in_group};
+    }
+    const Lanes lanes{(*hmma_lanes)[0], (*hmma_lanes)[1], (*hmma_lanes)[2]};
+    const auto writes{[&](IR::Reg reg) { return register_writes[static_cast<u32>(reg)]; }};
 
-    // Rows g and g + 8 of A, k = 0..15, from lanes 4g..4g+3
-    std::array<std::array<IR::F32, 16>, 2> rows;
-    const std::array<IR::U32, 4> a_regs{X(a), X(a + 1), X(a + 2), X(a + 3)};
-    for (u32 q = 0; q < 4; ++q) {
-        const IR::U32 source{FragmentLane(ir, lanes.group, ir.Imm32(q))};
-        for (u32 half_row = 0; half_row < 2; ++half_row) {
-            const auto low_k{Unpack(ir, ShuffleFrom(ir, a_regs[half_row], source), negate_a)};
-            const auto high_k{Unpack(ir, ShuffleFrom(ir, a_regs[half_row + 2], source), negate_a)};
-            rows[half_row][2 * q] = low_k[0];
-            rows[half_row][2 * q + 1] = low_k[1];
-            rows[half_row][2 * q + 8] = high_k[0];
-            rows[half_row][2 * q + 9] = high_k[1];
-        }
-    }
-    // Columns 2q and 2q + 1 of B, k = 0..15, from lanes 4c..4c+3
-    std::array<std::array<IR::F32, 16>, 2> columns;
-    const std::array<IR::U32, 2> b_regs{X(b), X(b + 1)};
-    for (u32 column = 0; column < 2; ++column) {
-        const IR::U32 n{ir.IAdd(ir.ShiftLeftLogical(lanes.thread_in_group, ir.Imm32(1)),
-                                ir.Imm32(column))};
+    // Rows g and g + 8 of A, k = 0..15, from lanes 4g..4g+3: rows[r][k] is element 16r + k
+    const std::array<u32, 7> a_key{0, static_cast<u32>(a), writes(a), writes(a + 1),
+                                   writes(a + 2), writes(a + 3), negate_a};
+    auto a_it{hmma_fragments.find(a_key)};
+    if (a_it == hmma_fragments.end()) {
+        std::array<IR::F32, 32> rows;
+        const std::array<IR::U32, 4> a_regs{X(a), X(a + 1), X(a + 2), X(a + 3)};
         for (u32 q = 0; q < 4; ++q) {
-            const IR::U32 source{FragmentLane(ir, n, ir.Imm32(q))};
-            const auto low_k{Unpack(ir, ShuffleFrom(ir, b_regs[0], source), negate_b)};
-            const auto high_k{Unpack(ir, ShuffleFrom(ir, b_regs[1], source), negate_b)};
-            columns[column][2 * q] = low_k[0];
-            columns[column][2 * q + 1] = low_k[1];
-            columns[column][2 * q + 8] = high_k[0];
-            columns[column][2 * q + 9] = high_k[1];
+            const IR::U32 source{FragmentLane(ir, lanes.group, ir.Imm32(q))};
+            for (u32 half_row = 0; half_row < 2; ++half_row) {
+                const auto low_k{Unpack(ir, ShuffleFrom(ir, a_regs[half_row], source), negate_a)};
+                const auto high_k{
+                    Unpack(ir, ShuffleFrom(ir, a_regs[half_row + 2], source), negate_a)};
+                rows[16 * half_row + 2 * q] = low_k[0];
+                rows[16 * half_row + 2 * q + 1] = low_k[1];
+                rows[16 * half_row + 2 * q + 8] = high_k[0];
+                rows[16 * half_row + 2 * q + 9] = high_k[1];
+            }
         }
+        a_it = hmma_fragments.emplace(a_key, rows).first;
     }
+    // Columns 2q and 2q + 1 of B, k = 0..15, from lanes 4c..4c+3: element 16c + k
+    const std::array<u32, 7> b_key{1, static_cast<u32>(b), writes(b), writes(b + 1), 0, 0,
+                                   negate_b};
+    auto b_it{hmma_fragments.find(b_key)};
+    if (b_it == hmma_fragments.end()) {
+        std::array<IR::F32, 32> columns;
+        const std::array<IR::U32, 2> b_regs{X(b), X(b + 1)};
+        for (u32 column = 0; column < 2; ++column) {
+            const IR::U32 n{ir.IAdd(ir.ShiftLeftLogical(lanes.thread_in_group, ir.Imm32(1)),
+                                    ir.Imm32(column))};
+            for (u32 q = 0; q < 4; ++q) {
+                const IR::U32 source{FragmentLane(ir, n, ir.Imm32(q))};
+                const auto low_k{Unpack(ir, ShuffleFrom(ir, b_regs[0], source), negate_b)};
+                const auto high_k{Unpack(ir, ShuffleFrom(ir, b_regs[1], source), negate_b)};
+                columns[16 * column + 2 * q] = low_k[0];
+                columns[16 * column + 2 * q + 1] = low_k[1];
+                columns[16 * column + 2 * q + 8] = high_k[0];
+                columns[16 * column + 2 * q + 9] = high_k[1];
+            }
+        }
+        b_it = hmma_fragments.emplace(b_key, columns).first;
+    }
+    const std::array<IR::F32, 32>& rows{a_it->second};
+    const std::array<IR::F32, 32>& columns{b_it->second};
     std::array<IR::U32, 2> results;
     for (u32 half_row = 0; half_row < 2; ++half_row) {
         std::array<IR::F32, 2> sums;
@@ -170,7 +190,8 @@ void TranslatorVisitor::HMMA(Instruction insn) {
         }
         for (u32 column = 0; column < 2; ++column) {
             for (u32 k = 0; k < 16; ++k) {
-                sums[column] = IR::F32{ir.FPFma(rows[half_row][k], columns[column][k], sums[column])};
+                sums[column] = IR::F32{
+                    ir.FPFma(rows[16 * half_row + k], columns[16 * column + k], sums[column])};
             }
         }
         results[half_row] = ir.PackHalf2x16(ir.CompositeConstruct(sums[0], sums[1]));
