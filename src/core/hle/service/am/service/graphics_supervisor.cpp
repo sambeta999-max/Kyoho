@@ -1243,7 +1243,7 @@ IGraphicsSupervisor::IGraphicsSupervisor(Core::System& system, Kernel::KProcess*
         {901, &IGraphicsSupervisor::InitializeVideoDecoderContext, "InitializeVideoDecoderContext"},
         {991, &IGraphicsSupervisor::CalculateDecoderImagePoolBuffer, "CalculateDecoderImagePoolBuffer"},
         {911, &IGraphicsSupervisor::CreateDecoderImagePool, "CreateDecoderImagePool"},
-        {921, &IGraphicsSupervisor::DestroyDecoderImagePool, "DestroyDecoderImagePool"},
+        {912, &IGraphicsSupervisor::DestroyDecoderImagePool, "FinalizeDecoderImagePool"},
         {961, &IGraphicsSupervisor::GetDecoderImageDescriptor, "GetDecoderImageDescriptor"},
         {902, &IGraphicsSupervisor::OpenVideoDecoderSession, "OpenVideoDecoderSession"},
         {903, &IGraphicsSupervisor::FinalizeVideoDecoderContext, "FinalizeVideoDecoderContext"},
@@ -1689,12 +1689,17 @@ void IGraphicsSupervisor::CreateDecoderImagePool(HLERequestContext& ctx) {
     rb.Push(handle);
 }
 
+// nn::codec::FinalizeDecoderImagePool for a pool created by 911: the handle 911 returned.
+// Pools that alias a native image (InitializeDecoderAliasImagePool, 921 with the image handle
+// and a count) are finalized with 922; neither is implemented.
 void IGraphicsSupervisor::DestroyDecoderImagePool(HLERequestContext& ctx) {
     const auto* packet = ctx.CommandBuffer();
     Result result = Kernel::ResultInvalidCombination;
-    if (packet[0] == 0x3a9 && packet[1] == 2) {
+    if (packet[0] == 0x3a0 && packet[1] == 1) {
         result = m_video_image_pools->Remove(packet[2]) ? ResultSuccess : Kernel::ResultNotFound;
     }
+    LOG_DEBUG(Service_AM, "decoder image pool finalize handle={:#x}, result={:#x}", packet[2],
+              result.raw);
     IPC::ResponseBuilder rb{ctx, 2};
     rb.Push(result.raw);
 }

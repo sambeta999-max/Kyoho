@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
+#include <optional>
 #include <chrono>
 #include <thread>
 #include <cstring>
@@ -164,8 +165,10 @@ public:
             {101, &IVideoDecService::Configure, "Configure"},
             {109, &IVideoDecService::SubmitInputBuffer, "SubmitInputBuffer"},
             {115, &IVideoDecService::Finalize, "Finalize"},
-            {201, &IVideoDecService::Initialize, "Initialize"},
+            {200, &IVideoDecService::Initialize, "Initialize"},
+            {201, &IVideoDecService::Initialize, "InitializeH264"},
             {207, &IVideoDecService::Stop, "Stop"},
+            {210, &IVideoDecService::Initialize, "InitializeWithoutWorkMemory"},
             {212, &IVideoDecService::UnregisterBuffer, "UnregisterBuffer"},
             {213, &IVideoDecService::PopOutputProperties, "PopOutputProperties"},
             {311, &IVideoDecService::RegisterBuffer, "RegisterBuffer"},
@@ -189,22 +192,47 @@ private:
         rb.Push(result.raw);
     }
 
-    // Copy handle of the work memory, its u64 size, a reserved word, the input and output formats
-    // and the codec type (1 for H.264)
+    // nn::codec::Initialize{H264,Vp8,Vp9,Av1}Decoder. All forms carry a copy handle (the work
+    // memory, or the process for 210) followed by:
+    //   200: u64 work size, codec, input format, output format
+    //   201: u64 work size, codec (0), input format, output format, output mode (H.264 only)
+    //   210: codec, input format, output format
+    // The service's codec numbers are 0 H.264, 1 VP9, 3 AV1 and 4 VP8.
     void Initialize(HLERequestContext& ctx) {
         const auto* packet = ctx.CommandBuffer();
+        const u32 command = ctx.GetCommand();
+        const u32 words = command == 200 ? 5 : command == 201 ? 6 : 3;
+        const u32 first = command == 210 ? 4 : 6;
         Result result = Kernel::ResultInvalidCombination;
-        if (packet[0] == 0xd9 && (packet[1] & 0x3ff) == 6) {
-            input_format = packet[7];
-            output_format = packet[8];
-            codec = static_cast<VideoCommon::NativeVideoCodec>(packet[9]);
+        std::optional<VideoCommon::NativeVideoCodec> native;
+        if (packet[0] == command + 16 && packet[1] == (0x8000'0000U | words) && packet[2] == 2) {
+            switch (packet[first]) {
+            case 0:
+                native = VideoCommon::NativeVideoCodec::H264;
+                break;
+            case 1:
+                native = VideoCommon::NativeVideoCodec::Vp9;
+                break;
+            case 3:
+                native = VideoCommon::NativeVideoCodec::Av1;
+                break;
+            case 4:
+                native = VideoCommon::NativeVideoCodec::Vp8;
+                break;
+            }
+            result = Kernel::ResultNotImplemented;
+        }
+        if (native) {
+            codec = *native;
+            input_format = packet[first + 1];
+            output_format = packet[first + 2];
             auto& syncpoints = nv_module->GetContainer().GetSyncpointManager();
             syncpoint = syncpoints.AllocateSyncpoint(true);
             next_target = syncpoints.ReadSyncpointMinValue(*syncpoint);
             result = ResultSuccess;
         }
-        LOG_INFO(Service_AM, "video decoder codec={}, input format={}, output format={}, result={:#x}",
-                 static_cast<u32>(codec), input_format, output_format, result.raw);
+        LOG_INFO(Service_AM, "video decoder command={}, codec={}, input format={}, output format={}, result={:#x}",
+                 command, packet[first], packet[first + 1], packet[first + 2], result.raw);
         ReplyResult(ctx, result);
     }
 
