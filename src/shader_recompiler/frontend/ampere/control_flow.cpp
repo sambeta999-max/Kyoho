@@ -132,7 +132,19 @@ bool IsSubroutineCall(Environment& env, u32 call_offset, u32 begin_offset, u32 t
         if (opcode != Opcode::RET) {
             continue;
         }
-        const auto link{LastWriter(env, insn.SrcA(), call_offset, begin_offset)};
+        // Library functions may copy the link to another register before returning
+        // (MOV R0, R15; MOV R1, 0x0; RET.REL.NODEC R0)
+        u32 link_reg{insn.SrcA()};
+        for (u32 copy_offset = offset, depth = 0; depth < 4; ++depth) {
+            const auto copy{LastWriter(env, link_reg, copy_offset, target)};
+            if (!copy || Ampere::Decode(copy->second) != Opcode::MOV ||
+                copy->second.Form() != Ampere::AluForm::RegReg) {
+                break;
+            }
+            link_reg = copy->second.SrcBReg();
+            copy_offset = copy->first;
+        }
+        const auto link{LastWriter(env, link_reg, call_offset, begin_offset)};
         return link && Ampere::Decode(link->second) == Opcode::MOV &&
                link->second.Form() == Ampere::AluForm::ImmReg &&
                link->second.Imm32() + RelativeTarget(offset, insn) == call_offset + 16;

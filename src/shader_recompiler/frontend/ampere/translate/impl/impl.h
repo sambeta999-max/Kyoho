@@ -31,6 +31,8 @@ struct TranslatorVisitor {
     void IMAD(Instruction insn);
     void UIMAD(Instruction insn);
     void IMAD_WIDE(Instruction insn);
+    void UIMAD_WIDE(Instruction insn);
+    void IMAD_HI(Instruction insn);
     void IMNMX(Instruction insn);
     void ISETP(Instruction insn);
     void UISETP(Instruction insn);
@@ -103,6 +105,7 @@ struct TranslatorVisitor {
 
     // Floating point
     void FADD(Instruction insn);
+    void FSWZADD(Instruction insn);
     void FMUL(Instruction insn);
     void FFMA(Instruction insn);
     void FMNMX(Instruction insn);

@@ -25,6 +25,10 @@ void Dispatch(TranslatorVisitor& v, Opcode opcode, Instruction insn) {
         return v.UIMAD(insn);
     case Opcode::IMAD_WIDE:
         return v.IMAD_WIDE(insn);
+    case Opcode::UIMAD_WIDE:
+        return v.UIMAD_WIDE(insn);
+    case Opcode::IMAD_HI:
+        return v.IMAD_HI(insn);
     case Opcode::IMNMX:
         return v.IMNMX(insn);
     case Opcode::ISETP:
@@ -153,6 +157,8 @@ void Dispatch(TranslatorVisitor& v, Opcode opcode, Instruction insn) {
         return v.SUST(insn);
     case Opcode::FADD:
         return v.FADD(insn);
+    case Opcode::FSWZADD:
+        return v.FSWZADD(insn);
     case Opcode::FMUL:
         return v.FMUL(insn);
     case Opcode::FFMA:
@@ -252,6 +258,9 @@ void Translate(Environment& env, IR::Block* block, Maxwell::Location begin,
         } catch (const NotImplementedException& exception) {
             // Keep translating the rest of the program; the instruction's results are not written
             LOG_ERROR(Shader, "SM86 {:#06x}: {}", offset, exception.what());
+            if (unimplemented_observer) {
+                unimplemented_observer(exception.what());
+            }
         }
     }
 }

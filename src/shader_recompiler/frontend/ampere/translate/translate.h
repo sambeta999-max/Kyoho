@@ -9,6 +9,10 @@
 
 namespace Shader::Ampere {
 
+/// Called with the message of each instruction the translator skips as not implemented, when
+/// set (offline coverage tools); the instruction is logged and skipped either way
+inline void (*unimplemented_observer)(const char* message){};
+
 /// Translate the SM86 instructions in [begin, end) of the shared location grid
 void Translate(Environment& env, IR::Block* block, Maxwell::Location begin,
                Maxwell::Location end);

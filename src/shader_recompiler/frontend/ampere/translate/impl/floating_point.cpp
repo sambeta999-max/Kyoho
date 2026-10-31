@@ -41,6 +41,15 @@ void TranslatorVisitor::FADD(Instruction insn) {
     F(Reg(insn.Dest()), Saturate(ir, insn, result));
 }
 
+// FSWZADD Rd, Ra, Rb, swizzle: each lane of a quad adds Ra and Rb with the signs that its two
+// bits of the swizzle byte at [32..40) select. The byte means the same as on Maxwell (nvdisasm
+// prints lane 0 first there and lane 3 first here); Rb is at [64..72).
+void TranslatorVisitor::FSWZADD(Instruction insn) {
+    const IR::F32 src_b{F(Reg(insn.Bits(64, 8)))};
+    const IR::U32 swizzle{ir.Imm32(static_cast<u32>(insn.Bits(32, 8)))};
+    F(Reg(insn.Dest()), ir.FSwizzleAdd(F(Reg(insn.SrcA())), src_b, swizzle, Control(insn, false)));
+}
+
 void TranslatorVisitor::FMUL(Instruction insn) {
     const u64 scale{insn.Bits(84, 3)};
     if (scale == 0) {
