@@ -78,7 +78,11 @@ Result MapPhysicalMemory(Core::System& system, u64 addr, u64 size) {
         R_THROW(ResultInvalidMemoryRegion);
     }
 
-    R_RETURN(page_table.MapPhysicalMemory(addr, size));
+    const Result result = page_table.MapPhysicalMemory(addr, size);
+    if (result.IsError()) {
+        LOG_DEBUG(Kernel_SVC, "MapPhysicalMemory failed: addr={:#x}, size={:#x}, result={:#x}", addr, size, result.raw);
+    }
+    R_RETURN(result);
 }
 
 /// Unmaps memory previously mapped via MapPhysicalMemory
@@ -127,7 +131,11 @@ Result UnmapPhysicalMemory(Core::System& system, u64 addr, u64 size) {
         R_THROW(ResultInvalidMemoryRegion);
     }
 
-    R_RETURN(page_table.UnmapPhysicalMemory(addr, size));
+    const Result result = page_table.UnmapPhysicalMemory(addr, size);
+    if (result.IsError()) {
+        LOG_DEBUG(Kernel_SVC, "UnmapPhysicalMemory failed: addr={:#x}, size={:#x}, result={:#x}", addr, size, result.raw);
+    }
+    R_RETURN(result);
 }
 
 Result MapPhysicalMemoryUnsafe(Core::System& system, uint64_t address, uint64_t size) {

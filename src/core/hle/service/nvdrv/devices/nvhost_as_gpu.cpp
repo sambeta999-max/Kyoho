@@ -276,12 +276,13 @@ NvResult nvhost_as_gpu::AllocAsEx(IoctlAllocAsEx& params) {
 
     std::shared_ptr<nvhost_as_gpu> shared_parent;
     if (m_extended_abi && params.as_fd != 0) {
-        // A view of the parent's small-page region. Flags 5 leave the split at zero; flags 0
-        // (seen in Welcome Tour) put it at the end of the range. Both have no big-page region.
-        const bool small_pages_only =
-            params.va_range_split == 0 || params.va_range_split == params.va_range_end;
+        // A view of the parent's small-page region. Flags 5 leave the split at zero; flags 0 put
+        // it at the end of the range (Welcome Tour) or inside it (Minecraft, 0x400000000 of
+        // 0x2000000000). With a 4 KiB "big" page size both sides of the split hold 4 KiB pages,
+        // so the view is treated as one small-page region whatever the split.
+        const bool split_in_range = params.va_range_split <= params.va_range_end;
         if (params.as_fd == m_fd || (params.flags != 0 && params.flags != 5) ||
-            params.big_page_size != 0x1000 || params.reserved != 0 || !small_pages_only) {
+            params.big_page_size != 0x1000 || params.reserved != 0 || !split_in_range) {
             LOG_WARNING(Service_NVDRV, "Unsupported shared address space flags={:#x}, as_fd={}, split={:#x}",
                         params.flags, params.as_fd, params.va_range_split);
             return NvResult::BadParameter;
