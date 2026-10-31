@@ -28,6 +28,7 @@ add_executable(tests
     shader_recompiler/ampere_kernel_converge.inc
     shader_recompiler/ampere_kernel_texk.inc
     shader_recompiler/ampere_kernel_warp.inc
+    shader_recompiler/ampere_corpus.cpp
     shader_recompiler/ampere_translate.cpp
     video_core/macro_turing.cpp
     video_core/memory_tracker.cpp

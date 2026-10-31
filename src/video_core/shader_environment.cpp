@@ -106,6 +106,13 @@ static void DumpImpl(u64 /*pipeline_hash*/, u64 shader_hash, std::span<const u64
                                 Settings::GetCurrentProgramID(), shader_hash, prefix)};
     std::fstream shader_file(name, std::ios::out | std::ios::binary);
     ASSERT(initial_offset % sizeof(u64) == 0);
+    if (initial_offset != 0) {
+        // The program header goes to its own file, so the dump stays plain code for nvdisasm
+        auto header_name{name};
+        header_name.replace_extension(".sph");
+        std::fstream header_file(header_name, std::ios::out | std::ios::binary);
+        header_file.write(reinterpret_cast<const char*>(code.data()), initial_offset);
+    }
     const size_t jump_index = initial_offset / sizeof(u64);
     const size_t code_size = code.size_bytes() - initial_offset;
     shader_file.write(reinterpret_cast<const char*>(&code[jump_index]), code_size);
