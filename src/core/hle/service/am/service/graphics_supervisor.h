@@ -66,6 +66,7 @@ private:
     void OpenGpuSession(HLERequestContext& ctx);
     void OpenDisplaySession(HLERequestContext& ctx);
     void InitializeDisplayContext(HLERequestContext& ctx);
+    void FinalizeDisplayContext(HLERequestContext& ctx);
     void InitializeGpuContext(HLERequestContext& ctx);
     void InitializeSyncpointContext(HLERequestContext& ctx);
     void GetSyncpointSession(HLERequestContext& ctx);

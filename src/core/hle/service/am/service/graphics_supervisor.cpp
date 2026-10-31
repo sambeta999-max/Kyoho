@@ -480,6 +480,8 @@ public:
             {101, &IVi2Session::OpenDisplay, "OpenDisplay"},
             {102, &IVi2Session::CloseDisplay, "CloseDisplay"},
             {103, &IVi2Session::QueryDisplayRefreshRate, "QueryDisplayRefreshRate"},
+            {354, &IVi2Session::QueryDisplayRefreshRate, "QueryDisplayRefreshRate"},
+            {301, &IVi2Session::SetDisplayParameter, "SetDisplayParameter"},
             {111, &IVi2Session::OpenEndpoint, "OpenEndpoint"},
             {112, &IVi2Session::CloseEndpoint, "CloseEndpoint"},
             {201, &IVi2Session::RegisterClientState, "RegisterClientState"},
@@ -571,11 +573,30 @@ private:
     }
     // nn::vi::QueryDisplayRefreshRate. The SDK maps 1 to 60 Hz, 2 to 120 Hz and
     // 0x8000000000000000 to an unknown rate; the emulated display runs at 60 Hz.
+    // A display name and two u64 values (INT64_MIN when unset). In nn::vi2's command table the
+    // older protocol's entry for this call sends nothing, so the setting is optional and is
+    // accepted without effect.
+    void SetDisplayParameter(HLERequestContext& ctx) {
+        const auto* packet = ctx.CommandBuffer();
+        const u64 name = u64{packet[2]} | (u64{packet[3]} << 32);
+        Result result = Kernel::ResultInvalidCombination;
+        if (packet[0] == 0x13d && packet[1] == 6) {
+            result = name == 0x00746c7561666564ULL || GetPlayerDisplayIndex(name)
+                         ? ResultSuccess : Kernel::ResultNotFound;
+        }
+        LOG_DEBUG(Service_AM, "VI2 display parameter {:016x} {:016x}, result={:#x}",
+                  u64{packet[4]} | (u64{packet[5]} << 32), u64{packet[6]} | (u64{packet[7]} << 32),
+                  result.raw);
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(result.raw);
+    }
     void QueryDisplayRefreshRate(HLERequestContext& ctx) {
         const auto* packet = ctx.CommandBuffer();
         const u64 name = u64{packet[2]} | (u64{packet[3]} << 32);
         Result result = Kernel::ResultInvalidCombination;
-        if (packet[0] == 0x77 && packet[1] == 2) {
+        // vi2 3.3 sends this as 354; nn::vi2's command table pairs it with 103 and the request and
+        // reply are the same.
+        if ((packet[0] == 0x77 || packet[0] == 0x172) && packet[1] == 2) {
             result = name == 0x00746c7561666564ULL || GetPlayerDisplayIndex(name)
                          ? ResultSuccess : Kernel::ResultNotFound;
         }
@@ -1220,6 +1241,7 @@ IGraphicsSupervisor::IGraphicsSupervisor(Core::System& system, Kernel::KProcess*
         {202, &IGraphicsSupervisor::GetSyncpointSession, "GetSyncpointSession"},
         {204, &IGraphicsSupervisor::BindSyncpointMemory, "BindSyncpointMemory"},
         {301, &IGraphicsSupervisor::InitializeDisplayContext, "InitializeDisplayContext"},
+        {303, &IGraphicsSupervisor::FinalizeDisplayContext, "FinalizeDisplayContext"},
         {305, &IGraphicsSupervisor::OpenDisplaySession, "OpenDisplaySession"},
         {314, &IGraphicsSupervisor::ConfigureNativeWindowImagePool, "DestroyNativeWindowAliasImagePool"},
         {315, &IGraphicsSupervisor::ConfigureNativeWindowImagePool, "CreateNativeWindowAliasImagePool"},
@@ -1462,9 +1484,10 @@ void IGraphicsSupervisor::OpenDisplaySession(HLERequestContext& ctx) {
     Kernel::KClientSession* client{};
     const u64 flags = u64{packet[2]} | (u64{packet[3]} << 32);
     Result result = Kernel::ResultInvalidCombination;
-    // Flags carry the nn::vi2 library version (3.1.0 = 0x300010000 or 3.2.0 = 0x300020000).
-    if (packet[0] == 0x141 && packet[1] == 2 &&
-        (flags == 0x300010000ULL || flags == 0x300020000ULL)) {
+    // Flags carry the nn::vi2 library version: 3.1.0 = 0x300010000, 3.2.0 = 0x300020000 and
+    // 3.3.0 = 0x300030000 (Welcome Tour's update) were seen. The session protocol is taken to be
+    // the same across 3.x.
+    if (packet[0] == 0x141 && packet[1] == 2 && (flags >> 32) == 3 && (flags & 0xffff) == 0) {
         result = m_display_context_initialized ? ResultSuccess : Kernel::ResultInvalidState;
         if (result.IsSuccess()) {
             result = CreateGraphicsSession(system, ctx, std::make_shared<IVi2Session>(system, m_aruid, m_image_registry),
@@ -1857,6 +1880,10 @@ void IGraphicsSupervisor::OpenVideoDecoderSession(HLERequestContext& ctx) {
                          ctx.GetCommand() == 905 ? 1 : 0,
                          MakeVideoCodecRootSession(system, VideoCodecKind::Decoder, m_process,
                                                    m_nv_module, m_video_image_pools));
+}
+
+void IGraphicsSupervisor::FinalizeDisplayContext(HLERequestContext& ctx) {
+    FinalizeSubsystemContext(ctx, m_display_context_initialized);
 }
 
 void IGraphicsSupervisor::FinalizeVideoDecoderContext(HLERequestContext& ctx) {
