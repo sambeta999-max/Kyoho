@@ -1256,11 +1256,19 @@ Result KProcess::LoadFromMetadata(KernelCore& kernel, const FileSys::ProgramMeta
     std::memcpy(params.name.data(), name.data(), sizeof(params.name));
 
     // Initialize for application process.
+    m_page_table.SetLargeHeapRegion(metadata.UsesExtendedAcid());
     R_TRY(this->Initialize(kernel, params, metadata.GetKernelCapabilities(), res_limit, pool, aslr_space_start));
 
     // Assign remaining properties.
     m_ideal_core_id = metadata.GetMainThreadCore();
     m_uses_pauth_returns = metadata.UsesExtendedAcid();
+
+    // Switch 2 applications are given more memory than a 64-bit heap region holds (9.58 GiB on
+    // the 12 GB layout) and place part of it in the alias region, so count that region as well;
+    // the resource limit still bounds it to the application pool.
+    if (metadata.UsesExtendedAcid()) {
+        m_max_process_memory = m_page_table.GetHeapRegionSize() + m_page_table.GetAliasRegionSize();
+    }
 
     // Set up emulation context.
     this->InitializeInterfaces(kernel);

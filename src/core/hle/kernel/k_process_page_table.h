@@ -33,6 +33,10 @@ public:
         m_page_table.Finalize();
     }
 
+    void SetLargeHeapRegion(bool enable) {
+        m_page_table.SetLargeHeapRegion(enable);
+    }
+
     void AllowDeviceMappingOfExecPages() {
         m_page_table.AllowDeviceMappingOfExecPages();
     }

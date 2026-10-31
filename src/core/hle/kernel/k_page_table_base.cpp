@@ -240,6 +240,12 @@ Result KPageTableBase::InitializeForProcess(Svc::CreateProcessFlag as_type, bool
     if (m_address_space_width == 39) {
         alias_region_size = GetSpaceSize(KAddressSpaceInfo::Type::Alias);
         heap_region_size = GetSpaceSize(KAddressSpaceInfo::Type::Heap);
+        if (m_large_heap_region) {
+            // Switch 2 applications set their heap to almost all of their memory (9.58 GiB on
+            // the 12 GB layout, e.g. Donkey Kong Bananza's nninitStartup). The console's size is
+            // not known; 16 GiB holds that and fits the 39-bit space easily.
+            heap_region_size = 16ULL << 30;
+        }
         stack_region_size = GetSpaceSize(KAddressSpaceInfo::Type::Stack);
         kernel_map_region_size = GetSpaceSize(KAddressSpaceInfo::Type::MapSmall);
         m_code_region_start = m_address_space_start + aslr_space_start +

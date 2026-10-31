@@ -218,6 +218,7 @@ private:
     KMemoryBlockManager m_memory_block_manager{};
     u32 m_allocate_option{};
     u32 m_address_space_width{};
+    bool m_large_heap_region{};
     bool m_is_kernel{};
     bool m_enable_aslr{};
     bool m_enable_device_address_space_merge{};
@@ -245,6 +246,12 @@ public:
                                 KProcessAddress aslr_space_start);
 
     Result FinalizeProcess();
+
+    /// Switch 2 processes get a heap region larger than the Switch 1 layout's 8 GiB; set before
+    /// InitializeForProcess
+    void SetLargeHeapRegion(bool enable) {
+        m_large_heap_region = enable;
+    }
     void Finalize();
 
     bool IsKernel() const {

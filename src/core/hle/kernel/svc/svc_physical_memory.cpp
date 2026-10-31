@@ -16,7 +16,10 @@ Result SetHeapSize(Core::System& system, u64* out_address, u64 size) {
 
     // Validate size.
     R_UNLESS(Common::IsAligned(size, HeapSizeAlignment), ResultInvalidSize);
-    R_UNLESS(size < MainMemorySizeMax, ResultInvalidSize);
+    const size_t max_size = GetCurrentProcess(system.Kernel()).UsesPAuthReturns()
+                                ? MainMemorySizeMaxSwitch2
+                                : MainMemorySizeMax;
+    R_UNLESS(size < max_size, ResultInvalidSize);
 
     // Set the heap size.
     KProcessAddress address{};
