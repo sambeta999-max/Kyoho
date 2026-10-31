@@ -90,6 +90,8 @@ NvResult nvhost_gpu::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> inpu
             return WrapFixedVariable(this, &nvhost_gpu::SubmitGPFIFOBase1, input, output, fd, true);
         case 0x1d:
             return WrapFixed(this, &nvhost_gpu::ChannelSetTimeslice, input, output);
+        case 0x1f:
+            return WrapFixed(this, &nvhost_gpu::ChannelSetPreemptionMode, input, output);
         default:
             break;
         }
@@ -493,6 +495,15 @@ NvResult nvhost_gpu::GetWaitbase(IoctlGetWaitbase& params) {
 NvResult nvhost_gpu::ChannelSetTimeout(IoctlChannelSetTimeout& params) {
     LOG_INFO(Service_NVDRV, "called, timeout={:#x}", params.timeout);
 
+    return NvResult::Success;
+}
+
+// Graphics (WFI, GFXP) and compute (WFI, CTA, CILP) preemption modes. The emulated GPU runs a
+// channel's work to completion, so the modes have no effect; NVN2 fails queue creation when the
+// ioctl is unavailable.
+NvResult nvhost_gpu::ChannelSetPreemptionMode(IoctlSetPreemptionMode& params) {
+    LOG_DEBUG(Service_NVDRV, "called, graphics={:#x}, compute={:#x}", params.graphics_preempt_mode,
+              params.compute_preempt_mode);
     return NvResult::Success;
 }
 

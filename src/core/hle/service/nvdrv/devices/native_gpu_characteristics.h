@@ -52,7 +52,7 @@ inline std::array<u8, NativeGpuCharacteristicsSize> MakeNativeGpuCharacteristics
         0x1c, // GPU control: GetGpuTime
         0xd,  // TSG: bind/unbind channel, subcontexts, timeslice/interleave/L2 controls
         -1,   // GPU debugger device is unavailable
-        0x1d, // Channel: SetTimeslice
+        0x1f, // Channel: SetPreemptionMode (0x1e, GetUserSyncpoint, is gated by a flag not set)
         0x14, // Address space: Remap
         0, 0, 0, 0, // Additional interfaces have not been implemented.
     };

@@ -130,6 +130,13 @@ private:
     };
     static_assert(sizeof(IoctlSetTimeslice) == 4, "IoctlSetTimeslice is incorrect size");
 
+    // NVGPU_IOCTL_CHANNEL_SET_PREEMPTION_MODE
+    struct IoctlSetPreemptionMode {
+        u32_le graphics_preempt_mode{};
+        u32_le compute_preempt_mode{};
+    };
+    static_assert(sizeof(IoctlSetPreemptionMode) == 8, "IoctlSetPreemptionMode is incorrect size");
+
     struct IoctlEventIdControl {
         u32_le cmd{}; // 0=disable, 1=enable, 2=clear
         u32_le id{};
@@ -218,6 +225,7 @@ private:
     NvResult GetWaitbase(IoctlGetWaitbase& params);
     NvResult ChannelSetTimeout(IoctlChannelSetTimeout& params);
     NvResult ChannelSetTimeslice(IoctlSetTimeslice& params);
+    NvResult ChannelSetPreemptionMode(IoctlSetPreemptionMode& params);
 
     EventInterface& events_interface;
     NvCore::Container& core;
