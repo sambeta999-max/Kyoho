@@ -112,6 +112,8 @@ private:
     std::shared_ptr<Core::Timing::EventType> m_cache_poll;
     std::array<GraphicsSyncpointCache::CounterValue, GraphicsSyncpointCache::CounterCount>
         m_counter_values{};
+    /// Counters published as unallocated, refreshed once they are allocated again
+    std::array<bool, GraphicsSyncpointCache::CounterCount> m_unallocated_published{};
     Kernel::KTransferMemory* m_syncpoint_rw{};
     Kernel::KTransferMemory* m_syncpoint_ro{};
     Kernel::KEvent* m_syncpoint_request_event{};

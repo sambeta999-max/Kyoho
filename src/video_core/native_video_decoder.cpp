@@ -71,6 +71,10 @@ public:
             context->extradata_size = static_cast<int>(extradata.size());
         }
         context->thread_count = 0;
+        // Frame threading holds back one picture per thread (up to 16), while the console's
+        // decoder returns each picture once it is decoded; clients that wait for the first
+        // pictures before submitting more would stall.
+        context->thread_type = FF_THREAD_SLICE;
         const int result = avcodec_open2(context, decoder, nullptr);
         if (result < 0) {
             LOG_ERROR(HW_GPU, "avcodec_open2 failed for native video codec {}: {}",

@@ -229,7 +229,9 @@ private:
             output_format = packet[first + 2];
             auto& syncpoints = nv_module->GetContainer().GetSyncpointManager();
             syncpoint = syncpoints.AllocateSyncpoint(true);
-            next_target = syncpoints.ReadSyncpointMinValue(*syncpoint);
+            // A syncpoint freed by an earlier decoder keeps its count; fences continue from it,
+            // or the client would see its first images as already written.
+            next_target = system.Host1x().GetSyncpointManager().GetGuestSyncpointValue(*syncpoint);
             result = ResultSuccess;
         }
         LOG_INFO(Service_AM, "video decoder command={}, codec={}, input format={}, output format={}, result={:#x}",

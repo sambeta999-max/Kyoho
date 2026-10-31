@@ -387,8 +387,8 @@ private:
                     m_requests[index].emplace(id, handle);
                 }
             }
-            LOG_DEBUG(Service_AM, "syncpoint event index={} id={} value={}, result={:#x}", index,
-                      id, value, result.raw);
+            LOG_DEBUG(Service_AM, "syncpoint event index={} id={} value={}, current={}, result={:#x}", index,
+                      id, value, system.Host1x().GetSyncpointManager().GetGuestSyncpointValue(id), result.raw);
         }
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(result.raw);
@@ -2030,6 +2030,7 @@ void IGraphicsSupervisor::BindSyncpointMemory(HLERequestContext& ctx) {
     for (u32 id = 0; id < CounterCount; ++id) {
         memory.Write64(ro_base + ValuesOffset + id * sizeof(u64), Unallocated);
     }
+    m_unallocated_published.fill(true);
     m_cache_poll = Core::Timing::CreateEvent("GraphicsSyncpointCache",
         [this](s64, std::chrono::nanoseconds) -> std::optional<std::chrono::nanoseconds> {
             const auto guard = LockService();
@@ -2057,13 +2058,31 @@ void IGraphicsSupervisor::RefreshSyncpointCache() {
     auto& memory = m_process->GetMemory();
     const auto rw = m_syncpoint_rw->GetSourceAddress();
     const auto ro = m_syncpoint_ro->GetSourceAddress();
+    auto& syncpoints = m_nv_module->GetContainer().GetSyncpointManager();
+    // A counter published as unallocated reads as reached by every value; once a new owner
+    // allocates it (a video decoder reusing a freed syncpoint) its value is published again,
+    // as the client does not request counters it already holds.
+    bool republished = false;
+    for (u32 id = 0; id < CounterCount; ++id) {
+        if (!m_unallocated_published[id]) {
+            continue;
+        }
+        if (const auto value = syncpoints.ReadAllocatedSyncpoint(id)) {
+            m_unallocated_published[id] = false;
+            memory.Write64(ro + ValuesOffset + id * sizeof(u64), m_counter_values[id].Observe(value));
+            republished = true;
+        }
+    }
+    if (republished) {
+        std::atomic_thread_fence(std::memory_order_release);
+        m_syncpoint_cache_event.Signal(kernel);
+    }
     const u64 requests = memory.Read64(rw + GroupRequestOffset);
     const u64 acknowledgements = memory.Read64(ro + GroupAckOffset);
     u64 groups = (requests ^ acknowledgements) & ((1ULL << GroupCount) - 1);
     if (groups == 0) {
         return;
     }
-    auto& syncpoints = m_nv_module->GetContainer().GetSyncpointManager();
     while (groups) {
         const u32 group = static_cast<u32>(std::countr_zero(groups));
         groups &= groups - 1;
@@ -2076,6 +2095,7 @@ void IGraphicsSupervisor::RefreshSyncpointCache() {
             const auto address = ro + ValuesOffset + id * sizeof(u64);
             const auto value = syncpoints.ReadAllocatedSyncpoint(id);
             const u64 updated = m_counter_values[id].Observe(value);
+            m_unallocated_published[id] = !value;
             memory.Write64(address, updated);
         }
         std::atomic_thread_fence(std::memory_order_release);
