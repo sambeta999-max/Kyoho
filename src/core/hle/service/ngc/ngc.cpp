@@ -211,7 +211,7 @@ public:
 
     Result GetRequiredMemorySize(Out<u32> out_size, u8 type, u8 mode, s32 guest_count) {
         LOG_INFO(Service_NGC, "GameShare work memory query type={}, mode={}, guests={}", type, mode, guest_count);
-        R_UNLESS(type <= 1 && mode == 1 && guest_count >= 0 && guest_count <= 3,
+        R_UNLESS(type <= 1 && mode <= 1 && guest_count >= 0 && guest_count <= 3,
                  IPC::ResultNotSupported);
         // The disconnected implementation reserves one page for its session
         // control state. Streaming/encoding work is not implemented.
@@ -333,11 +333,11 @@ void LoopProcess(Core::System& system) {
     server_manager->RegisterNamedService("ngct:s", std::make_shared<IServiceWithManagementApi>(system), 4);
     server_manager->RegisterNamedService("ngc:u", std::make_shared<NgcServiceImpl>(system), 4);
 
-    // +23.0.0
-    if (FirmwareManager::GetFirmwareVersion(system).first.major >= 23) {
-        server_manager->RegisterNamedService("stpl:u", std::make_shared<IUserService>(system), 4);
-        server_manager->RegisterNamedService("stpl:sys", std::make_shared<ISystemService>(system), 4);
-    }
+    // +23.0.0. Registered regardless of the installed firmware: Switch 2 applications such as
+    // Donkey Kong Bananza 1.3 (nn::streamplay, GameShare) wait for stpl:u, and a system without
+    // that firmware has no system module to provide it.
+    server_manager->RegisterNamedService("stpl:u", std::make_shared<IUserService>(system), 4);
+    server_manager->RegisterNamedService("stpl:sys", std::make_shared<ISystemService>(system), 4);
 
     ServerManager::RunServer(std::move(server_manager));
 }
