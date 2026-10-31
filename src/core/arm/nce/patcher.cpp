@@ -627,7 +627,7 @@ void Patcher::WriteMsrHandler(ModuleDestLabel module_dest, oaknut::XReg src_reg,
 }
 
 void Patcher::WriteCntfrqHandler(ModuleDestLabel module_dest, oaknut::XReg dest_reg, oaknut::VectorCodeGenerator& cg) {
-    cg.MOV(dest_reg, Common::WallClock::CNTFRQ);
+    cg.MOV(dest_reg, Common::WallClock::GuestCNTFRQ());
 
     // Jump back to the instruction after the emulated MRS.
     if (&cg == &c_pre)

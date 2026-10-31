@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <random>
+#include "common/cpu_features.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "core/arm/dynarmic/arm_dynarmic.h"
@@ -1268,6 +1269,13 @@ Result KProcess::LoadFromMetadata(KernelCore& kernel, const FileSys::ProgramMeta
     // the resource limit still bounds it to the application pool.
     if (metadata.UsesExtendedAcid()) {
         m_max_process_memory = m_page_table.GetHeapRegionSize() + m_page_table.GetAliasRegionSize();
+    }
+
+    // The Switch 2 counter runs at 31.25 MHz; its SDK converts ticks with that constant
+    // (nn::os::GetSystemTickFrequency, TickManager), so CNTPCT_EL0 and CNTFRQ_EL0 follow it.
+    if (this->IsApplication()) {
+        Common::g_wall_clock.SetGuestCNTFRQ(metadata.UsesExtendedAcid() ? Common::WallClock::CNTFRQ_NX2
+                                                                        : Common::WallClock::CNTFRQ);
     }
 
     // Set up emulation context.

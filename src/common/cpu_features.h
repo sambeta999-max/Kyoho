@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <optional>
 #include <string_view>
 #include <chrono>
@@ -20,6 +21,7 @@ namespace Common {
 class WallClock {
 public:
     static constexpr u64 CNTFRQ = 19'200'000;         // CNTPCT_EL0 Frequency = 19.2 MHz
+    static constexpr u64 CNTFRQ_NX2 = 31'250'000;     // Switch 2 CNTPCT_EL0 Frequency = 31.25 MHz
     static constexpr u64 GPUTickFreq = 614'400'000;   // GM20B GPU Tick Frequency = 614.4 MHz
     static constexpr u64 CPUTickFreq = 1'020'000'000; // T210/4 A57 CPU Tick Frequency = 1020.0 MHz
 
@@ -37,6 +39,14 @@ public:
     /// @returns The guest CNTPCT ticks since the construction of this clock.
     s64 GetCNTPCT() const;
 
+    /// @returns The frequency of the guest counter (CNTFRQ_EL0) of the running program.
+    static u64 GuestCNTFRQ() {
+        return guest_cntfrq.load(std::memory_order_relaxed);
+    }
+
+    /// Sets the guest counter frequency, which follows the console the program was built for.
+    void SetGuestCNTFRQ(u64 frequency) const;
+
     /// @returns The guest GPU ticks since the construction of this clock.
     s64 GetGPUTick() const;
 
@@ -49,9 +59,7 @@ public:
     // @returns Nanoseconds to native ticks
     u64 NsToTicks(std::chrono::nanoseconds ns) const;
 
-    static inline u64 NSToCNTPCT(u64 ns) {
-        return ns * NsToCNTPCTRatio::num / NsToCNTPCTRatio::den;
-    }
+    static u64 NSToCNTPCT(u64 ns);
 
     static inline u64 NSToGPUTick(u64 ns) {
         return ns * NsToGPUTickRatio::num / NsToGPUTickRatio::den;
@@ -67,9 +75,7 @@ public:
         return cpu_tick * CPUTickToUsRatio::num / CPUTickToUsRatio::den;
     }
 
-    static inline u64 CPUTickToCNTPCT(u64 cpu_tick) {
-        return cpu_tick * CPUTickToCNTPCTRatio::num / CPUTickToCNTPCTRatio::den;
-    }
+    static u64 CPUTickToCNTPCT(u64 cpu_tick);
 
     static inline u64 CPUTickToGPUTick(u64 cpu_tick) {
         return cpu_tick * CPUTickToGPUTickRatio::num / CPUTickToGPUTickRatio::den;
@@ -81,15 +87,15 @@ public:
 
     using NsToUsRatio = std::ratio_divide<std::nano, std::micro>;
     using NsToMsRatio = std::ratio_divide<std::nano, std::milli>;
-    using NsToCNTPCTRatio = std::ratio<CNTFRQ, std::nano::den>;
     using NsToGPUTickRatio = std::ratio<GPUTickFreq, std::nano::den>;
 
     // Cycle Timing
 
     using CPUTickToNsRatio = std::ratio<std::nano::den, CPUTickFreq>;
     using CPUTickToUsRatio = std::ratio<std::micro::den, CPUTickFreq>;
-    using CPUTickToCNTPCTRatio = std::ratio<CNTFRQ, CPUTickFreq>;
     using CPUTickToGPUTickRatio = std::ratio<GPUTickFreq, CPUTickFreq>;
+
+    static inline std::atomic<u64> guest_cntfrq{CNTFRQ};
 
 #if defined(ARCHITECTURE_x86_64)
     u64 rdtsc_frequency;
@@ -98,7 +104,7 @@ public:
     u64 ms_rdtsc_factor;
     u64 rdtsc_ns_integer;
     u64 rdtsc_ns_factor;
-    u64 cntpct_rdtsc_factor;
+    mutable std::atomic<u64> cntpct_rdtsc_factor;
     u64 gputick_rdtsc_factor;
     bool invariant;
 #elif defined(HAS_NCE)
@@ -110,7 +116,8 @@ public:
     FactorType us_cntfrq_factor;
     FactorType ms_cntfrq_factor;
     FactorType cntfrq_ns_factor;
-    FactorType guest_cntfrq_factor;
+    mutable FactorType guest_cntfrq_factor;
+    u64 host_cntfrq;
     FactorType gputick_cntfrq_factor;
 #endif
 };

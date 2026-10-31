@@ -271,8 +271,15 @@ std::chrono::milliseconds WallClock::GetTimeMS() const {
 
 s64 WallClock::GetCNTPCT() const {
     if (!invariant)
-        return GetUptime() * NsToCNTPCTRatio::num / NsToCNTPCTRatio::den;
-    return MultiplyHigh(GetUptime(), cntpct_rdtsc_factor);
+        return NSToCNTPCT(GetUptime());
+    return MultiplyHigh(GetUptime(), cntpct_rdtsc_factor.load(std::memory_order_relaxed));
+}
+
+void WallClock::SetGuestCNTFRQ(u64 frequency) const {
+    guest_cntfrq.store(frequency, std::memory_order_relaxed);
+    if (invariant) {
+        cntpct_rdtsc_factor.store(GetFixedPoint64Factor(frequency, rdtsc_frequency), std::memory_order_relaxed);
+    }
 }
 
 s64 WallClock::GetGPUTick() const {
@@ -329,7 +336,7 @@ namespace {
 } // namespace
 
 WallClock::WallClock(bool invariant_, u64 rdtsc_frequency_) noexcept {
-    const u64 host_cntfrq = std::max<u64>(GetHostCNTFRQ(), 1);
+    host_cntfrq = std::max<u64>(GetHostCNTFRQ(), 1);
     ns_cntfrq_factor = GetFixedPointFactor(NsRatio::den, host_cntfrq);
     us_cntfrq_factor = GetFixedPointFactor(UsRatio::den, host_cntfrq);
     ms_cntfrq_factor = GetFixedPointFactor(MsRatio::den, host_cntfrq);
@@ -352,6 +359,11 @@ std::chrono::milliseconds WallClock::GetTimeMS() const {
 
 s64 WallClock::GetCNTPCT() const {
     return MultiplyHigh(GetUptime(), guest_cntfrq_factor);
+}
+
+void WallClock::SetGuestCNTFRQ(u64 frequency) const {
+    guest_cntfrq.store(frequency, std::memory_order_relaxed);
+    guest_cntfrq_factor = GetFixedPointFactor(frequency, host_cntfrq);
 }
 
 s64 WallClock::GetGPUTick() const {
@@ -392,7 +404,11 @@ std::chrono::milliseconds WallClock::GetTimeMS() const {
 }
 
 s64 WallClock::GetCNTPCT() const {
-    return GetUptime() * NsToCNTPCTRatio::num / NsToCNTPCTRatio::den;
+    return NSToCNTPCT(GetUptime());
+}
+
+void WallClock::SetGuestCNTFRQ(u64 frequency) const {
+    guest_cntfrq.store(frequency, std::memory_order_relaxed);
 }
 
 s64 WallClock::GetGPUTick() const {
@@ -411,6 +427,14 @@ u64 WallClock::NsToTicks(std::chrono::nanoseconds ns) const {
     return ns.count();
 }
 #endif
+
+u64 WallClock::NSToCNTPCT(u64 ns) {
+    return MultiplyAndDivide64(ns, GuestCNTFRQ(), NsRatio::den);
+}
+
+u64 WallClock::CPUTickToCNTPCT(u64 cpu_tick) {
+    return MultiplyAndDivide64(cpu_tick, GuestCNTFRQ(), CPUTickFreq);
+}
 
 // Wall clock MUST be initialized AFTER g_cpu_caps
 // C++ only guarantees ctor init in the order they appear in TU
