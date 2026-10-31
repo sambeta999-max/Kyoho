@@ -2289,8 +2289,9 @@ void IGraphicsSupervisor::CreateNativeImage(HLERequestContext& ctx) {
             }
         }
     }
-    LOG_DEBUG(Service_AM, "native image create memory={}, count={}, id={}, result={:#x}",
-              packet[19], packet[18], id, result.raw);
+    LOG_DEBUG(Service_AM, "native image create memory={}, count={}, id={}, preference={:08x}, result={:#x}",
+              packet[19], packet[18], id, fmt::join(std::span<const u32>(packet + 2, 16), ","),
+              result.raw);
     IPC::ResponseBuilder rb{ctx, 3};
     rb.Push(result.raw);
     rb.Push(id);
