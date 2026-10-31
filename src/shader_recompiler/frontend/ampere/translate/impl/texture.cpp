@@ -85,7 +85,13 @@ bool IsBindless(Instruction insn) {
     return insn.Bit(59);
 }
 
+// The handle comes from c[index][offset], or from UR[40..46] plus imm[46..54] in the uniform form
 IR::U32 CbufHandle(TranslatorVisitor& v, Instruction insn) {
+    if (insn.Form() == AluForm::RegUReg) {
+        const IR::U32 handle{v.X(UReg(insn.Bits(40, 6)))};
+        const u32 offset{static_cast<u32>(insn.Bits(46, 8))};
+        return offset == 0 ? handle : IR::U32{v.ir.IAdd(handle, v.ir.Imm32(offset))};
+    }
     if (insn.Form() != AluForm::CbufReg) {
         throw NotImplementedException("Texture handle form {}", static_cast<u32>(insn.Form()));
     }

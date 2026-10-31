@@ -155,6 +155,8 @@ void Dispatch(TranslatorVisitor& v, Opcode opcode, Instruction insn) {
     case Opcode::SUST_D:
     case Opcode::SUST_D_BINDLESS:
         return v.SUST(insn);
+    case Opcode::SUATOM:
+        return v.SUATOM(insn);
     case Opcode::FADD:
         return v.FADD(insn);
     case Opcode::FSWZADD:
@@ -208,6 +210,8 @@ void Dispatch(TranslatorVisitor& v, Opcode opcode, Instruction insn) {
         return v.EXIT(insn);
     case Opcode::BAR:
         return v.BAR(insn);
+    case Opcode::CSMTEST:
+        return v.CSMTEST(insn);
     case Opcode::MEMBAR:
         return v.MEMBAR(insn);
     case Opcode::BRA:

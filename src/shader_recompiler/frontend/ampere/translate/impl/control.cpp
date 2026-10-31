@@ -5,6 +5,7 @@
 
 #include "shader_recompiler/exception.h"
 #include "shader_recompiler/frontend/ampere/translate/impl/impl.h"
+#include "shader_recompiler/frontend/maxwell/translate/impl/common_funcs.h"
 #include "shader_recompiler/program_header.h"
 
 namespace Shader::Ampere {
@@ -44,6 +45,17 @@ void TranslatorVisitor::BAR(Instruction insn) {
         throw NotImplementedException("BAR mode");
     }
     ir.Barrier();
+}
+
+// CSMTEST queries the hardware clip state machine that culls primitives. Vertex shaders use
+// "CSMTEST.A.FCSM_TR P0" then "@P0 EXIT" to skip work for trivially rejected vertices. No
+// state machine is emulated, so the test is false and every vertex runs to completion.
+void TranslatorVisitor::CSMTEST(Instruction insn) {
+    const auto bop{static_cast<Maxwell::BooleanOp>(insn.Bits(74, 2))};
+    const IR::U1 test{ir.Imm1(false)};
+    const IR::U1 accumulator{P(insn.Bits(87, 3), insn.Bit(90))};
+    SetP(insn.Bits(81, 3), Maxwell::PredicateCombine(ir, test, accumulator, bop));
+    SetP(insn.Bits(84, 3), Maxwell::PredicateCombine(ir, ir.LogicalNot(test), accumulator, bop));
 }
 
 void TranslatorVisitor::MEMBAR(Instruction insn) {

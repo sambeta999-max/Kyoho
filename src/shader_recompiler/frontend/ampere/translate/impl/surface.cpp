@@ -98,7 +98,8 @@ struct Access {
 
 // Coordinates start at [24..32); array layers are 16-bit integers after the coordinates.
 // Bindless forms hold the handle at [64..72), constant buffer forms reference it like textures.
-Access MakeAccess(TranslatorVisitor& v, Instruction insn, bool is_raw) {
+Access MakeAccess(TranslatorVisitor& v, Instruction insn, bool is_raw,
+                  AluForm cbuf_form = AluForm::CbufReg) {
     const auto dim{static_cast<Dim>(insn.Bits(61, 3))};
     const IR::Reg reg{Reg(insn.SrcA())};
     std::optional<Size> raw_size;
@@ -135,7 +136,7 @@ Access MakeAccess(TranslatorVisitor& v, Instruction insn, bool is_raw) {
         throw NotImplementedException("Surface dimension {}", insn.Bits(61, 3));
     }
     IR::U32 handle;
-    if (insn.Form() == AluForm::CbufReg) {
+    if (insn.Form() == cbuf_form) {
         const u32 index{static_cast<u32>(insn.Bits(54, 5))};
         const u32 offset{static_cast<u32>(insn.Bits(40, 14)) * 4};
         handle = v.ir.GetCbuf(v.ir.Imm32(index), v.ir.Imm32(offset));
@@ -193,6 +194,58 @@ void TranslatorVisitor::SUST(Instruction insn) {
     }
     ir.ImageWrite(access.handle, access.coords,
                   ir.CompositeConstruct(color[0], color[1], color[2], color[3]), access.info);
+}
+
+// SUATOM.D Rd, [Ra], Rb, cbuf: raw 32-bit image atomics. The operation is at [87..91) and the
+// type at [73..76) as in ATOMG. The constant buffer form is 2 here, not 5 as for SULD and SUST.
+void TranslatorVisitor::SUATOM(Instruction insn) {
+    if (insn.Form() != AluForm::RegImm || insn.Bit(72) || insn.Bits(81, 3) != 7) {
+        throw NotImplementedException("SUATOM form {} with .BA {} or predicate output",
+                                      static_cast<u32>(insn.Form()), insn.Bit(72));
+    }
+    const u64 type{insn.Bits(73, 3)};
+    if (type > 1) {
+        throw NotImplementedException("SUATOM type {}", type);
+    }
+    const bool is_signed{type == 1};
+    Access access{MakeAccess(*this, insn, false, AluForm::RegImm)};
+    access.info.image_format.Assign(ImageFormat::R32_UINT);
+    const IR::U32 value{X(Reg(insn.SrcBReg()))};
+    const IR::Value& handle{access.handle};
+    const IR::Value& coords{access.coords};
+    IR::Value result;
+    switch (insn.Bits(87, 4)) {
+    case 0:
+        result = ir.ImageAtomicIAdd(handle, coords, value, access.info);
+        break;
+    case 1:
+        result = ir.ImageAtomicIMin(handle, coords, value, is_signed, access.info);
+        break;
+    case 2:
+        result = ir.ImageAtomicIMax(handle, coords, value, is_signed, access.info);
+        break;
+    case 3:
+        result = ir.ImageAtomicInc(handle, coords, value, access.info);
+        break;
+    case 4:
+        result = ir.ImageAtomicDec(handle, coords, value, access.info);
+        break;
+    case 5:
+        result = ir.ImageAtomicAnd(handle, coords, value, access.info);
+        break;
+    case 6:
+        result = ir.ImageAtomicOr(handle, coords, value, access.info);
+        break;
+    case 7:
+        result = ir.ImageAtomicXor(handle, coords, value, access.info);
+        break;
+    case 8:
+        result = ir.ImageAtomicExchange(handle, coords, value, access.info);
+        break;
+    default:
+        throw NotImplementedException("SUATOM operation {}", insn.Bits(87, 4));
+    }
+    X(Reg(insn.Dest()), IR::U32{result});
 }
 
 } // namespace Shader::Ampere

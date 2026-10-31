@@ -82,6 +82,7 @@ struct TranslatorVisitor {
     // Surfaces
     void SULD(Instruction insn);
     void SUST(Instruction insn);
+    void SUATOM(Instruction insn);
 
     // Attributes
     void ALD(Instruction insn);
@@ -136,6 +137,7 @@ struct TranslatorVisitor {
     // Control and synchronization
     void EXIT(Instruction insn);
     void BAR(Instruction insn);
+    void CSMTEST(Instruction insn);
     void MEMBAR(Instruction insn);
 
     [[nodiscard]] IR::U32 X(IR::Reg reg);

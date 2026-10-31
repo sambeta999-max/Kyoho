@@ -17,6 +17,7 @@ enum class AtomOp : u64 {
     Or,
     Xor,
     Exch,
+    PopcInc = 10, // ATOMS only, without a data register
 };
 
 enum class AtomType : u64 {
@@ -75,6 +76,8 @@ IR::Value GlobalAtomic(TranslatorVisitor& v, AtomOp op, AtomType type, const IR:
         return ir.GlobalAtomicXor(address, value);
     case AtomOp::Exch:
         return ir.GlobalAtomicExchange(address, value);
+    case AtomOp::PopcInc:
+        break;
     }
     throw NotImplementedException("Atomic operation {}", static_cast<u64>(op));
 }
@@ -120,7 +123,7 @@ void TranslatorVisitor::ATOMS(Instruction insn) {
         throw NotImplementedException("Shared atomic type {}", insn.Bits(73, 3));
     }
     const IR::U32 offset{WindowAddress(*this, insn, 64, true)};
-    const IR::U32 value{X(Reg(insn.SrcBReg()))};
+    const IR::U32 value{op == AtomOp::PopcInc ? ir.Imm32(0) : X(Reg(insn.SrcBReg()))};
     const bool is_signed{IsSigned(type)};
     IR::U32 result;
     switch (op) {
@@ -150,6 +153,11 @@ void TranslatorVisitor::ATOMS(Instruction insn) {
         break;
     case AtomOp::Exch:
         result = IR::U32{ir.SharedAtomicExchange(offset, value)};
+        break;
+    case AtomOp::PopcInc:
+        // Adds the number of active threads; adding one per thread has the same total and gives
+        // each thread its own slot.
+        result = ir.SharedAtomicIAdd(offset, ir.Imm32(1));
         break;
     default:
         throw NotImplementedException("Shared atomic operation {}", insn.Bits(87, 4));

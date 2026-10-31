@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <algorithm>
 #include <optional>
 
 #include "common/logging.h"
@@ -154,9 +155,14 @@ IR::U32 LoadLocalWord(TranslatorVisitor& v, const IR::U32& offset) {
 } // Anonymous namespace
 
 void TranslatorVisitor::LDG(Instruction insn) {
-    if (insn.Bits(64, 3) != 0 || insn.Bit(67) || insn.Bits(81, 3) != PT) {
-        throw NotImplementedException("LDG with predicates");
+    if (insn.Bits(81, 3) != PT) {
+        throw NotImplementedException("LDG with a predicate destination");
     }
+    // The source predicate at [64..67] is stored XOR 7, so 0 is PT. Compilers guard robust
+    // buffer reads with it ("LDG R, [UR], !P0" after "P0 = size <= 0"); when it is false the
+    // destination is zero.
+    const u64 pred_index{insn.Bits(64, 3) ^ PT};
+    const bool pred_negated{insn.Bit(67)};
     const IR::U64 address{GlobalAddress(*this, insn, 32, 90)};
     const IR::Reg dest{Reg(insn.Dest())};
     const auto [bit_size, is_signed]{BitSize(insn)};
@@ -176,6 +182,12 @@ void TranslatorVisitor::LDG(Instruction insn) {
     case 128:
         WriteVector(*this, dest, ir.LoadGlobal128(address), 128);
         break;
+    }
+    if (pred_index != PT || pred_negated) {
+        const IR::U1 condition{P(pred_index, pred_negated)};
+        for (int i = 0; i < std::max(bit_size / 32, 1); ++i) {
+            X(dest + i, IR::U32{ir.Select(condition, X(dest + i), ir.Imm32(0))});
+        }
     }
 }
 
