@@ -56,7 +56,15 @@ s32 ImmediateOffset(Instruction insn) {
 IR::U64 GlobalAddress(TranslatorVisitor& v, Instruction insn, u32 ureg_offset, u32 reg_64_bit) {
     const bool uniform_form{HasUniformAddress(insn)};
     const bool reg_is_64{uniform_form ? insn.Bit(reg_64_bit) : insn.Bit(72)};
-    const bool ureg_is_64{uniform_form && insn.Bit(72)};
+    // With a 64-bit register address, a 64-bit uniform register is a memory descriptor
+    // (desc[URx]) and does not take part in the address; checked on GA102 with nvcc's
+    // STG.E [R2.64] (desc[UR4]). With Ra = RZ the uniform register is the address ([URx], the
+    // only uniform form in the NS2 titles' programs besides [Rx.U32+URy]). nvdisasm prints some
+    // 64-bit forms as [Rx.64+URy] (ATOMG; STG with bit 76); none was seen in titles yet.
+    const bool is_descriptor{uniform_form && reg_is_64 && insn.Bit(72) &&
+                             !IR::IsZero(Reg(insn.SrcA()))};
+    const bool has_ureg{uniform_form && !is_descriptor};
+    const bool ureg_is_64{has_ureg && insn.Bit(72)};
     // Built as IAdd64(PackUint2x32(CompositeConstruct(lo, hi)), immediate), the form storage
     // buffer tracking in GlobalMemoryToStorageBufferPass expects
     std::optional<std::pair<IR::U32, IR::U32>> parts;
@@ -80,7 +88,7 @@ IR::U64 GlobalAddress(TranslatorVisitor& v, Instruction insn, u32 ureg_offset, u
         parts = {sum_lo, sum_hi};
     }};
     add_register(Reg(insn.SrcA()), reg_is_64);
-    if (uniform_form) {
+    if (has_ureg) {
         add_register(UReg(insn.Bits(ureg_offset, 6)), ureg_is_64);
     }
     const s64 offset{ImmediateOffset(insn)};
