@@ -79,6 +79,7 @@ add_library(shader_recompiler STATIC
     frontend/ampere/translate/impl/move.cpp
     frontend/ampere/translate/impl/surface.cpp
     frontend/ampere/translate/impl/texture.cpp
+    frontend/ampere/translate/impl/tensor.cpp
     frontend/ampere/translate/impl/warp.cpp
     frontend/ampere/translate/translate.cpp
     frontend/ampere/translate/translate.h

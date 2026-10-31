@@ -109,6 +109,12 @@ void Dispatch(TranslatorVisitor& v, Opcode opcode, Instruction insn) {
         return v.ALD(insn);
     case Opcode::ISBERD:
         return v.ISBERD(insn);
+    case Opcode::HMMA:
+        return v.HMMA(insn);
+    case Opcode::LDSM:
+        return v.LDSM(insn);
+    case Opcode::MOVM:
+        return v.MOVM(insn);
     case Opcode::OUT:
         return v.OUT(insn);
     case Opcode::LEPC:
@@ -266,8 +272,7 @@ void Translate(Environment& env, IR::Block* block, Maxwell::Location begin,
         if (opcode == Opcode::ISBEWR) {
             throw NotImplementedException("Task/Mesh shader instruction {}", opcode);
         }
-        if (opcode == Opcode::HMMA || opcode == Opcode::IMMA || opcode == Opcode::DMMA ||
-            opcode == Opcode::BMMA || opcode == Opcode::LDSM || opcode == Opcode::MOVM) {
+        if (opcode == Opcode::IMMA || opcode == Opcode::DMMA || opcode == Opcode::BMMA) {
             throw NotImplementedException("Tensor matrix multiply instruction {}", opcode);
         }
         try {

@@ -103,6 +103,9 @@ struct TranslatorVisitor {
 
     // Warp
     void SHFL(Instruction insn);
+    void HMMA(Instruction insn);
+    void LDSM(Instruction insn);
+    void MOVM(Instruction insn);
     void VOTE(Instruction insn);
     void VOTEU(Instruction insn);
     void REDUX(Instruction insn);
