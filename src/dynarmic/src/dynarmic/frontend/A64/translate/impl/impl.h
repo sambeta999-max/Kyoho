@@ -355,6 +355,7 @@ struct TranslatorVisitor final {
 
     // Data Processing - Register - 2 source
     bool UDIV(bool sf, Reg Rm, Reg Rn, Reg Rd);
+    bool PAC_AUT_int(bool Z, Imm<3> op, Reg Rn, Reg Rd);
     bool SDIV(bool sf, Reg Rm, Reg Rn, Reg Rd);
     bool LSLV(bool sf, Reg Rm, Reg Rn, Reg Rd);
     bool LSRV(bool sf, Reg Rm, Reg Rn, Reg Rd);

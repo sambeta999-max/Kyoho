@@ -112,6 +112,39 @@ bool TranslatorVisitor::REV16_int(bool sf, Reg Rn, Reg Rd) {
     return true;
 }
 
+// Pointer authentication codes are not modeled: pointers stay canonical (see XPAC_1), so adding
+// a code to a pointer or authenticating it leaves the pointer unchanged.
+bool TranslatorVisitor::PAC_AUT_int(bool Z, Imm<3>, Reg Rn, Reg) {
+    if (!options.enable_pauth_returns) {
+        return UnallocatedEncoding();
+    }
+    if (Z && Rn != Reg::R31) {
+        return UnallocatedEncoding();
+    }
+    return true;
+}
+
+// PACGA Xd, Xn, Xm|SP: a 32-bit code in bits [63:32] made from Xn with Xm as the modifier and the
+// generic key. Software only compares codes made with the same key, so a deterministic mix of the
+// operands serves as well as QARMA with a secret key; leaving Xd unchanged would fail every check.
+bool TranslatorVisitor::PACGA(Reg Rm, Reg Rn, Reg Rd) {
+    if (!options.enable_pauth_returns) {
+        return UnallocatedEncoding();
+    }
+    const IR::U64 n = X(64, Rn);
+    IR::U64 m;
+    if (Rm == Reg::SP) {
+        m = SP(64);
+    } else {
+        m = X(64, Rm);
+    }
+    IR::U64 h = ir.Eor(n, ir.Mul(m, ir.Imm64(0x9E3779B97F4A7C15)));
+    h = ir.Mul(ir.Eor(h, ir.LogicalShiftRight(h, ir.Imm8(31))), ir.Imm64(0xBF58476D1CE4E5B9));
+    h = ir.Eor(h, ir.LogicalShiftRight(h, ir.Imm8(29)));
+    X(64, Rd, ir.And(h, ir.Imm64(0xFFFFFFFF00000000)));
+    return true;
+}
+
 bool TranslatorVisitor::UDIV(bool sf, Reg Rm, Reg Rn, Reg Rd) {
     const size_t datasize = sf ? 64 : 32;
 
