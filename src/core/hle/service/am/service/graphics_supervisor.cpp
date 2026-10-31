@@ -77,6 +77,26 @@ struct NativeImageRegistry {
     std::shared_ptr<Nvidia::Module> module;
     std::optional<Nvidia::NvCore::SessionId> memory_session;
     std::vector<Image> images;
+    // A layer the compositor shows native images on. Its producer and composer hold nvmap
+    // references to every attached image, so withdrawing an image from its window pool takes
+    // the layer down; the session reconnects it on the next presentation.
+    struct Presentation {
+        u64 layer;
+        std::shared_ptr<VI::Container> container;
+        std::shared_ptr<android::BufferQueueProducer> producer;
+        std::vector<u32> memory_ids;
+    };
+    std::vector<Presentation> presentations;
+    void WithdrawMemory(u32 memory_id) {
+        std::erase_if(presentations, [&](Presentation& presentation) {
+            if (std::ranges::find(presentation.memory_ids, memory_id) == presentation.memory_ids.end()) {
+                return false;
+            }
+            presentation.container->CloseLayer(presentation.layer);
+            presentation.producer->Disconnect(android::NativeWindowApi::Egl);
+            return true;
+        });
+    }
 };
 using NativeImage = NativeImageRegistry::Image;
 
@@ -762,6 +782,18 @@ private:
         R_UNLESS(packet[23] == 0 && packet[25] == 0 &&
                  (fence_id == ~u32{0} || m_images->module->GetContainer().GetSyncpointManager().IsSyncpointAllocated(fence_id)),
                  Kernel::ResultInvalidCombination);
+        auto presentation = std::ranges::find(m_images->presentations, *state.layer,
+                                              &NativeImageRegistry::Presentation::layer);
+        if (presentation == m_images->presentations.end() && state.producer) {
+            // The layer was withdrawn and its disconnected queue freed every buffer.
+            for (size_t i = 0; i < state.queued.size(); ++i) {
+                if (state.queued[i]) {
+                    state.queued[i].reset();
+                    state.available |= u64{1} << i;
+                }
+            }
+            state.producer.reset();
+        }
         if (!state.producer) {
             R_TRY(m_display_service->GetContainer()->GetLayerProducerHandle(&state.producer, *state.layer));
             android::QueueBufferOutput output{};
@@ -771,6 +803,12 @@ private:
             s32 binder{};
             R_TRY(m_display_service->GetContainer()->OpenLayer(&binder, *state.layer, m_aruid));
             R_TRY(m_display_service->GetContainer()->SetLayerVisibility(*state.layer, true));
+            presentation = m_images->presentations.insert(
+                m_images->presentations.end(),
+                {*state.layer, m_display_service->GetContainer(), state.producer, {}});
+        }
+        if (std::ranges::find(presentation->memory_ids, image->memory_id) == presentation->memory_ids.end()) {
+            presentation->memory_ids.push_back(image->memory_id);
         }
         auto native = std::make_shared<android::NvGraphicBuffer>();
         native->width = static_cast<s32>((image->preference[2] & 0xffffU) + 1);
@@ -2129,8 +2167,11 @@ Result IGraphicsSupervisor::ReleaseNativeMemory(u32 id) {
     R_UNLESS(handle, Kernel::ResultNotFound);
     {
         const std::scoped_lock lock{handle->mutex};
-        R_UNLESS(handle->pins == 0 && handle->internal_dupes == 0 && handle->dupes == 1,
-                 Kernel::ResultBusy);
+        if (handle->pins != 0 || handle->internal_dupes != 0 || handle->dupes != 1) {
+            LOG_DEBUG(Service_AM, "native memory {} busy: pins={}, internal={}, dupes={}", id,
+                      handle->pins, handle->internal_dupes, handle->dupes);
+            R_THROW(Kernel::ResultBusy);
+        }
     }
     const bool allocated = handle->allocated;
     handle.reset();
@@ -2258,6 +2299,9 @@ void IGraphicsSupervisor::ConfigureNativeWindowImagePool(HLERequestContext& ctx)
                 result = Kernel::ResultInvalidState;
                 if (image->window_pool != create) {
                     image->window_pool = create;
+                    if (!create) {
+                        m_image_registry->WithdrawMemory(image->memory_id);
+                    }
                     result = ResultSuccess;
                 }
             }
