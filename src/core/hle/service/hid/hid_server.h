@@ -174,6 +174,7 @@ private:
     Result CreateActiveVibrationDeviceList(OutInterface<IActiveVibrationDeviceList> out_interface);
     Result PermitVibration(bool can_vibrate);
     Result IsVibrationPermitted(Out<bool> out_is_permitted);
+    Result EnableVibrationNxCompatibleMode(ClientAppletResourceUserId aruid);
     Result SendVibrationValues(
         ClientAppletResourceUserId aruid,
         InArray<Core::HID::VibrationDeviceHandle, BufferAttr_HipcPointer> vibration_handles,

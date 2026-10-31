@@ -43,6 +43,8 @@ public:
             {23, &IUser::AttachAvailabilityChangeEvent, "AttachAvailabilityChangeEvent"},
             {24, &IUser::RecreateApplicationArea, "RecreateApplicationArea"},
             {25, &IUser::StartDetection, "StartDetectionWithFilter"},
+            // nn::nfp::InitializeWithExtendedApplicationArea (Switch 2 SDK): Initialize's request
+            {300, &IUser::Initialize, "InitializeWithExtendedApplicationArea"},
         };
         // clang-format on
 

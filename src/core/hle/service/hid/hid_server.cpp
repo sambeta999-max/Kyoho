@@ -136,6 +136,7 @@ IHidServer::IHidServer(Core::System& system_, std::shared_ptr<ResourceManager> r
         // The Switch 2 SDK's nn::hid::SendVibrationValue sends 213 with the 201 layout.
         {213, C<&IHidServer::SendVibrationValue>, "SendVibrationValue2"},
         {214, C<&IHidServer::SendNativeVibrationValues>, "SendNativeVibrationValues"},
+        {220, C<&IHidServer::EnableVibrationNxCompatibleMode>, "EnableVibrationNxCompatibleMode"},
         {300, C<&IHidServer::ActivateConsoleSixAxisSensor>, "ActivateConsoleSixAxisSensor"},
         {301, C<&IHidServer::StartConsoleSixAxisSensor>, "StartConsoleSixAxisSensor"},
         {302, C<&IHidServer::StopConsoleSixAxisSensor>, "StopConsoleSixAxisSensor"},
@@ -972,6 +973,13 @@ Result IHidServer::PermitVibration(bool can_vibrate) {
 
     R_RETURN(GetResourceManager()->GetNpad()->GetVibrationHandler()->SetVibrationMasterVolume(
         can_vibrate ? 1.0f : 0.0f));
+}
+
+// nn::hid::EnableVibrationNxCompatibleMode (Switch 2 SDK): Switch 1 style vibration values for
+// the calling applet. Eden's vibration path takes both kinds of values the same way.
+Result IHidServer::EnableVibrationNxCompatibleMode(ClientAppletResourceUserId aruid) {
+    LOG_DEBUG(Service_HID, "called, aruid={}", aruid.pid);
+    R_SUCCEED();
 }
 
 Result IHidServer::IsVibrationPermitted(Out<bool> out_is_permitted) {

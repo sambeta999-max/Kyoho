@@ -1278,14 +1278,18 @@ void IGraphicsSupervisor::Initialize(HLERequestContext& ctx) {
         } else if (request->applet_resource_user_id != m_aruid) {
             result = Kernel::ResultInvalidArgument;
         } else if ((request->flags != 0x8000000000000001ULL &&
-                    request->flags != 0x8000000000000005ULL) ||
+                    request->flags != 0x8000000000000005ULL &&
+                    request->flags != 0x8000000000000006ULL) ||
                    !empty_remote_memory) {
             result = Kernel::ResultNotImplemented;
         } else {
             m_phase = Phase::Initialized;
-            // Bit 2 (0x4) selects explicit inter-module image context initialization (commands
+            // The SDK sends a constant per version: 1 (Donkey Kong Bananza), 5 (Welcome Tour,
+            // Drag x Drive) or 6 (Raiders, nn::gsv::BootWithRemoteMemory at sdk+0x489760). Bit 2
+            // (0x4) selects explicit inter-module image context initialization (commands
             // 1501/1502). Older SDKs (nn::gsv::BootWithRemoteMemory without MemoryRegion) omit
             // bit 2 and do not send commands 1501/1502 before GetNvidiaDriver/CreateNativeMemory.
+            // Bits 0 and 1 change nothing seen on the client side yet.
             const bool explicit_image_context = (request->flags & 4ULL) != 0;
             m_image_context_initialized = !explicit_image_context;
             m_image_formats_initialized = !explicit_image_context;
