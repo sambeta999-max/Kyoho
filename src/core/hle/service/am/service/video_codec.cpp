@@ -120,6 +120,7 @@ public:
 
     Result HandleSyncRequest(Kernel::KServerSession& session, HLERequestContext& ctx) override {
         if (!ctx.IsTipc() || this->handlers_tipc.contains(ctx.GetCommand())) {
+            LOG_DEBUG(Service_AM, "{} command={}", this->GetServiceName(), ctx.GetCommand());
             return ServiceFrameworkBase::HandleSyncRequest(session, ctx);
         }
         const auto guard = this->LockService();
@@ -263,6 +264,9 @@ private:
 
     void Start(HLERequestContext& ctx) {
         started = true;
+        // The decoder accepts input once started; a client that cleared the event when it
+        // attached it waits for this signal before its first submission.
+        SignalSubmissionReady();
         ReplyResult(ctx, ResultSuccess);
     }
 
@@ -276,6 +280,7 @@ private:
             decoder->Flush();
         }
         pending.clear();
+        SignalSubmissionReady();
         ReplyResult(ctx, ResultSuccess);
     }
 
@@ -336,6 +341,10 @@ private:
                 fence = Enqueue(packet[2], release);
             }
         }
+        if (result.IsError() && release_failures++ < 4) {
+            LOG_WARNING(Service_AM, "video decoder release failed: words={:08x}, result={:#x}",
+                        fmt::join(std::span<const u32>(packet, 10), ","), result.raw);
+        }
         PushFence(ctx, result, fence);
     }
 
@@ -359,8 +368,24 @@ private:
                 for (auto& frame : frames) {
                     pending.push_back(std::move(frame));
                 }
+                decoded += frames.size();
                 WritePending();
+                // A client that submits without waiting for the event and never hands images
+                // back (Kirby Air Riders' background video) would grow this without bound; the
+                // oldest pictures are dropped instead.
+                while (pending.size() > MaxBufferedPictures) {
+                    if (dropped++ == 0) {
+                        LOG_WARNING(Service_AM, "video decoder output is not consumed, dropping pictures");
+                    }
+                    pending.pop_front();
+                }
                 ++submitted;
+                SignalSubmissionReady();
+                if (submitted % 500 == 1) {
+                    LOG_DEBUG(Service_AM, "video decoder submit #{}: {} bytes, pts={}, decoded={}, pending={}, free={}, ready={}",
+                              submitted, data.size(), pts, decoded, pending.size(), free_images.size(),
+                              properties.size());
+                }
                 result = ResultSuccess;
             }
         }
@@ -389,6 +414,18 @@ private:
     }
 
     /// Writes decoded pictures into queued images and signals their fences
+    // Pictures decoded ahead of the images the client has handed back. Clients submit whenever
+    // the submission-ready event is signaled, so it is only signaled while this backlog is
+    // short; otherwise a whole stream would be decoded into host memory at once.
+    static constexpr size_t MaxPendingPictures = 2;
+    static constexpr size_t MaxBufferedPictures = 16;
+
+    void SignalSubmissionReady() {
+        if (pending.size() < MaxPendingPictures) {
+            submission_ready->Signal(kernel);
+        }
+    }
+
     void WritePending() {
         auto& memory = process->GetMemory();
         auto& host_syncpoints = system.Host1x().GetSyncpointManager();
@@ -447,6 +484,7 @@ private:
             // The picture is complete when it is written, for the GPU and for the guest
             host_syncpoints.IncrementHost(*syncpoint);
             host_syncpoints.IncrementGuest(*syncpoint);
+            SignalSubmissionReady();
         }
     }
 
@@ -489,6 +527,9 @@ private:
     std::optional<u32> syncpoint;
     u64 next_target{};
     u64 submitted{};
+    u32 release_failures{};
+    u64 decoded{};
+    u64 dropped{};
     std::deque<std::pair<u32, std::optional<Fence>>> free_images;
     std::deque<VideoCommon::DecodedVideoFrame> pending;
     std::deque<Properties> properties;

@@ -159,6 +159,12 @@ PixelFormat PixelFormatFromTextureInfo(TextureFormat format, ComponentType red, 
         return PixelFormat::S8_UINT_D24_UNORM;
     case Hash(TextureFormat::S8Z24, UNORM, UINT, UINT, UINT, LINEAR):
         return PixelFormat::D24_UNORM_S8_UINT;
+    // The unused blue and alpha components of these views are UNORM in NS2 descriptors; G8R24
+    // is the S8Z24 layout under its color name, as G24R8 is for Z24S8.
+    case Hash(TextureFormat::S8Z24, UNORM, UINT, UNORM, UNORM, LINEAR):
+        return PixelFormat::D24_UNORM_S8_UINT;
+    case Hash(TextureFormat::G8R24, UNORM, UINT, UNORM, UNORM, LINEAR):
+        return PixelFormat::D24_UNORM_S8_UINT;
     case Hash(TextureFormat::Z32_X24S8, FLOAT, UINT, UNORM, UNORM, LINEAR):
         return PixelFormat::D32_FLOAT_S8_UINT;
     case Hash(TextureFormat::R32B24G8, FLOAT, UINT, UNORM, UNORM, LINEAR):
