@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <optional>
+#include <string_view>
 #include <vector>
 
 #include "shader_recompiler/exception.h"
@@ -189,6 +190,91 @@ std::optional<BranchTable> TrackBranchTable(Environment& env, u32 brx_offset, u3
     };
 }
 
+bool IsUnconditionalJump(Opcode opcode, Instruction insn) {
+    switch (opcode) {
+    case Opcode::BRA:
+    case Opcode::BRX:
+    case Opcode::BRXU:
+    case Opcode::EXIT:
+    case Opcode::RET:
+    case Opcode::CALL_REL:
+    case Opcode::CALL_ABS:
+        return insn.Pred() == PT && !insn.PredNegated();
+    default:
+        return false;
+    }
+}
+
+// Last unconditional writer of uniform register ur before offset. Uniform datapath instructions
+// (U* and R2UR) keep their destination at [16..22); predicate writers (UISETP, UPLOP3, ...) are
+// skipped. The walk may cross block boundaries: predicated vector instructions split blocks but
+// cannot write uniform registers, so it goes back to the function entry or the previous
+// unconditional jump.
+std::optional<std::pair<u32, Instruction>> LastUniformWriter(Environment& env, u32 ur, u32 offset,
+                                                             u32 begin_offset) {
+    while (offset > begin_offset) {
+        offset -= 16;
+        const Instruction insn{ReadInsn(env, offset)};
+        const Opcode opcode{Ampere::Decode(insn)};
+        if (opcode == Opcode::Invalid) {
+            continue;
+        }
+        if (IsUnconditionalJump(opcode, insn)) {
+            return std::nullopt;
+        }
+        const std::string_view name{Ampere::NameOf(opcode)};
+        const bool uniform{name.starts_with('U') || name.starts_with("R2UR")};
+        if (!uniform || name.find("SETP") != std::string_view::npos ||
+            name.find("PLOP") != std::string_view::npos || insn.Bits(16, 6) != ur) {
+            continue;
+        }
+        if (insn.Pred() != PT || insn.PredNegated()) {
+            return std::nullopt;
+        }
+        return std::pair{offset, insn};
+    }
+    return std::nullopt;
+}
+
+// BRXU URa takes its target from a uniform register. The compiler emits
+//   UISETP.LT.U32 UP, URx, max ; USEL URi, URx, max, UP ; USHF.L.U32 URj, URi, 2 ;
+//   ULDC URa, c[bank][URj + offset] ; BRXU URa
+// so the table has max + 1 entries.
+std::optional<BranchTable> TrackUniformBranchTable(Environment& env, u32 brx_offset,
+                                                   u32 begin_offset) {
+    const auto writer{[&](u32 ur, u32 offset) {
+        return LastUniformWriter(env, ur, offset, begin_offset);
+    }};
+    const Instruction brx{ReadInsn(env, brx_offset)};
+    const auto load{writer(static_cast<u32>(brx.Bits(24, 6)), brx_offset)};
+    if (!load || Ampere::Decode(load->second) != Opcode::ULDC_INDEXED ||
+        load->second.Bits(73, 3) != 4) {
+        return std::nullopt;
+    }
+    const Instruction uldc{load->second};
+    const auto scale{writer(static_cast<u32>(uldc.Bits(24, 6)), load->first)};
+    if (!scale || Ampere::Decode(scale->second) != Opcode::USHF ||
+        scale->second.Form() != Ampere::AluForm::ImmReg || scale->second.Bit(76) ||
+        scale->second.Bits(32, 32) != 2 || scale->second.Bits(64, 6) != 63) {
+        return std::nullopt;
+    }
+    const auto clamp{writer(static_cast<u32>(scale->second.Bits(24, 6)), scale->first)};
+    if (!clamp || Ampere::Decode(clamp->second) != Opcode::USEL ||
+        clamp->second.Form() != Ampere::AluForm::ImmReg) {
+        return std::nullopt;
+    }
+    // The selected value is URx while the predicate (URx < max) holds and max otherwise
+    const u32 max_index{static_cast<u32>(clamp->second.Bits(32, 32))};
+    if (max_index >= 256) {
+        return std::nullopt;
+    }
+    return BranchTable{
+        .cbuf_index = static_cast<u32>(uldc.Bits(54, 5)),
+        .cbuf_offset = static_cast<u32>(static_cast<s32>(static_cast<s16>(uldc.Bits(38, 16)))),
+        .num_entries = max_index + 1,
+    };
+}
+
 } // Anonymous namespace
 
 CFG::AnalysisState CFG::AnalyzeInstAmpere(Block* block, FunctionId function_id, Location pc) {
@@ -285,12 +371,17 @@ CFG::AnalysisState CFG::AnalyzeInstAmpere(Block* block, FunctionId function_id, 
         block->end_class = EndClass::Kill;
         return AnalysisState::Branch;
     }
-    case Opcode::BRX: {
-        // Target: the next instruction plus Ra plus the signed immediate, as BRA
+    case Opcode::BRX:
+    case Opcode::BRXU: {
+        // Target: the next instruction plus Ra (URa for BRXU) plus the signed immediate, as BRA
         if (insn.Pred() != PT || insn.PredNegated()) {
             throw NotImplementedException("Conditional indirect branch");
         }
-        const std::optional table{TrackBranchTable(env, offset, Ampere::ToOffset(block->begin))};
+        const bool uniform{opcode == Opcode::BRXU};
+        const std::optional table{
+            uniform ? TrackUniformBranchTable(env, offset,
+                                              Ampere::ToOffset(functions[function_id].entrypoint))
+                    : TrackBranchTable(env, offset, Ampere::ToOffset(block->begin))};
         if (!table) {
             throw NotImplementedException("Untracked indirect branch at {:#x}", offset);
         }
@@ -312,12 +403,11 @@ CFG::AnalysisState CFG::AnalyzeInstAmpere(Block* block, FunctionId function_id, 
         block->cond = IR::Condition{true};
         block->end = pc + 1;
         block->end_class = EndClass::IndirectBranch;
-        block->branch_reg = static_cast<IR::Reg>(insn.SrcA());
+        block->branch_reg = uniform ? IR::UniformReg(static_cast<u32>(insn.Bits(24, 6)))
+                                    : static_cast<IR::Reg>(insn.SrcA());
         block->branch_offset = static_cast<s32>(base);
         return AnalysisState::Branch;
     }
-    case Opcode::BRXU:
-        throw NotImplementedException("Indirect branch {}", opcode);
     case Opcode::CALL_ABS:
         throw NotImplementedException("Function call {}", opcode);
     case Opcode::Invalid:

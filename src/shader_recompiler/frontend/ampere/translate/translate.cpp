@@ -218,6 +218,7 @@ void Dispatch(TranslatorVisitor& v, Opcode opcode, Instruction insn) {
         return v.MEMBAR(insn);
     case Opcode::BRA:
     case Opcode::BRX:
+    case Opcode::BRXU:
     case Opcode::CALL_REL:
     case Opcode::RET:
     case Opcode::KILL:
