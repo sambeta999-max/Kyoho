@@ -109,6 +109,12 @@ std::optional<OutAttr> OutputAttrPointer(EmitContext& ctx, IR::Attribute attr) {
         return OutAttr{ctx.OpAccessChain(ctx.output_u32, ctx.viewport_mask, ctx.u32_zero_value),
                        ctx.U32[1]};
     default:
+        // Offset 0x5C, below PrimitiveId, is written as zero by Switch 2 vertex programs (Mario
+        // Kart World, Kirby Air Riders) and read by no later stage; it is taken to be the
+        // per-primitive shading rate, whose zero is the default rate. The store is dropped.
+        if (static_cast<u32>(attr) == 23) {
+            return std::nullopt;
+        }
         throw NotImplementedException("Read attribute {}", attr);
     }
 }
