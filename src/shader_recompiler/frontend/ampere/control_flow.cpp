@@ -96,28 +96,58 @@ struct BranchTable {
     u32 num_entries{};
 };
 
+Instruction ReadInsn(Environment& env, u32 offset) {
+    return Instruction{env.ReadInstruction(offset), env.ReadInstruction(offset + 8)};
+}
+
+// Last unconditional writer of reg before offset, or nullopt when it isn't in the block
+std::optional<std::pair<u32, Instruction>> LastWriter(Environment& env, u32 reg, u32 offset,
+                                                      u32 begin_offset) {
+    while (offset > begin_offset) {
+        offset -= 16;
+        const Instruction insn{ReadInsn(env, offset)};
+        if (insn.Dest() == reg && Ampere::Decode(insn) != Opcode::Invalid) {
+            if (insn.Pred() != PT || insn.PredNegated()) {
+                return std::nullopt;
+            }
+            return std::pair{offset, insn};
+        }
+    }
+    return std::nullopt;
+}
+
+// A subroutine call loads a link register before CALL.REL.NOINC, and the callee returns with
+// RET.REL.NODEC Rlink, which jumps to Rlink plus its own relative target. Graphics programs count
+// addresses from the start of the program header, so the link value is not the return offset.
+// The callee is the code from the target up to its first RET.
+bool IsSubroutineCall(Environment& env, u32 call_offset, u32 begin_offset, u32 target) {
+    constexpr u32 max_callee_size{0x10000};
+    for (u32 offset = target; offset < target + max_callee_size; offset += 16) {
+        const Instruction insn{ReadInsn(env, offset)};
+        const Opcode opcode{Ampere::Decode(insn)};
+        if (opcode == Opcode::Invalid ||
+            (opcode == Opcode::BRA && RelativeTarget(offset, insn) == offset)) {
+            return false;
+        }
+        if (opcode != Opcode::RET) {
+            continue;
+        }
+        const auto link{LastWriter(env, insn.SrcA(), call_offset, begin_offset)};
+        return link && Ampere::Decode(link->second) == Opcode::MOV &&
+               link->second.Form() == Ampere::AluForm::ImmReg &&
+               link->second.Imm32() + RelativeTarget(offset, insn) == call_offset + 16;
+    }
+    return false;
+}
+
 // Finds the jump table of BRX Ra by walking back to the start of its block. The compiler emits
 //   IMNMX.U32 Ri, Rx, max ; SHF.L.U32 Rj, Ri, 2 ; LDC Ra, c[bank][Rj + offset] ; BRX Ra
 // where the clamp bounds the table to max + 1 entries.
 std::optional<BranchTable> TrackBranchTable(Environment& env, u32 brx_offset, u32 begin_offset) {
-    const auto read{[&](u32 offset) {
-        return Instruction{env.ReadInstruction(offset), env.ReadInstruction(offset + 8)};
+    const auto writer{[&](u32 reg, u32 offset) {
+        return LastWriter(env, reg, offset, begin_offset);
     }};
-    // Last unconditional writer of reg before offset, or nullopt when it isn't in the block
-    const auto writer{[&](u32 reg, u32 offset) -> std::optional<std::pair<u32, Instruction>> {
-        while (offset > begin_offset) {
-            offset -= 16;
-            const Instruction insn{read(offset)};
-            if (insn.Dest() == reg && Ampere::Decode(insn) != Opcode::Invalid) {
-                if (insn.Pred() != PT || insn.PredNegated()) {
-                    return std::nullopt;
-                }
-                return std::pair{offset, insn};
-            }
-        }
-        return std::nullopt;
-    }};
-    const Instruction brx{read(brx_offset)};
+    const Instruction brx{ReadInsn(env, brx_offset)};
     const auto load{writer(brx.SrcA(), brx_offset)};
     if (!load || Ampere::Decode(load->second) != Opcode::LDC || load->second.Bits(78, 2) != 0 ||
         load->second.Bit(91) || load->second.SrcA() == RZ) {
@@ -165,13 +195,11 @@ CFG::AnalysisState CFG::AnalyzeInstAmpere(Block* block, FunctionId function_id, 
     case Opcode::BRA:
     case Opcode::CALL_REL: {
         // CALL.REL.NOINC (bit 82) without a link setup is used as a forward branch (e.g. loop
-        // exits and LUT shaders). When preceded by a link-register setup, treat it as a call.
-        if (opcode == Opcode::CALL_REL && offset >= 16) {
-            const Instruction prev{env.ReadInstruction(offset - 16),
-                                   env.ReadInstruction(offset - 8)};
-            if (Ampere::Decode(prev) == Opcode::MOV && prev.Form() == Ampere::AluForm::ImmReg &&
-                prev.Imm32() == offset + 16 && insn.Pred() == PT && !insn.PredNegated()) {
-                const Location cal_pc{Ampere::ToLocation(RelativeTarget(offset, insn))};
+        // exits and LUT shaders). When its callee returns through the link, treat it as a call.
+        if (opcode == Opcode::CALL_REL && insn.Pred() == PT && !insn.PredNegated()) {
+            const u32 target{RelativeTarget(offset, insn)};
+            if (IsSubroutineCall(env, offset, Ampere::ToOffset(block->begin), target)) {
+                const Location cal_pc{Ampere::ToLocation(target)};
                 const auto it{std::ranges::find(functions, cal_pc, &Function::entrypoint)};
                 const bool exists{it != functions.end()};
                 const FunctionId call_id{
@@ -204,6 +232,9 @@ CFG::AnalysisState CFG::AnalyzeInstAmpere(Block* block, FunctionId function_id, 
         const std::optional cond{CombinedCondition(insn)};
         if (!cond) {
             return AnalysisState::Continue;
+        }
+        if (function_id == 0) {
+            throw NotImplementedException("Return without a tracked call at {:#x}", offset);
         }
         if (!IsTrue(*cond)) {
             AnalyzeCondInst(block, function_id, pc, EndClass::Return, *cond);
