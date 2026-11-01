@@ -481,6 +481,8 @@ public:
             {102, &IVi2Session::CloseDisplay, "CloseDisplay"},
             {103, &IVi2Session::QueryDisplayRefreshRate, "QueryDisplayRefreshRate"},
             {354, &IVi2Session::QueryDisplayRefreshRate, "QueryDisplayRefreshRate"},
+            {106, &IVi2Session::QueryDisplayHdrStatus, "QueryDisplayHdrStatus"},
+            {104, &IVi2Session::QueryDisplayHdrOutput, "QueryDisplayHdrOutput"},
             {301, &IVi2Session::SetDisplayParameter, "SetDisplayParameter"},
             {111, &IVi2Session::OpenEndpoint, "OpenEndpoint"},
             {112, &IVi2Session::CloseEndpoint, "CloseEndpoint"},
@@ -603,6 +605,38 @@ private:
         IPC::ResponseBuilder rb{ctx, 4};
         rb.Push(result.raw);
         rb.Push<u64>(result.IsSuccess() ? 1 : 0);
+    }
+    // Command 106 takes a display name and returns the HDR output state as a u64, which
+    // nn::vi2::QueryDisplayHdrStatus maps 1 to SDR and 2 to HDR. The emulated display is SDR.
+    void QueryDisplayHdrStatus(HLERequestContext& ctx) {
+        const auto* packet = ctx.CommandBuffer();
+        const u64 name = u64{packet[2]} | (u64{packet[3]} << 32);
+        Result result = Kernel::ResultInvalidCombination;
+        if (packet[0] == 0x7a && packet[1] == 2) {
+            result = name == 0x00746c7561666564ULL || GetPlayerDisplayIndex(name)
+                         ? ResultSuccess : Kernel::ResultNotFound;
+        }
+        LOG_DEBUG(Service_AM, "VI2 HDR status display={:#x}, result={:#x}", name, result.raw);
+        IPC::ResponseBuilder rb{ctx, 4};
+        rb.Push(result.raw);
+        rb.Push<u64>(result.IsSuccess() ? 1 : 0);
+    }
+    // Command 104 takes a display name and returns a u64 and a u16 (nn::vi2's client reads words
+    // 3-4 and the low half of word 5). nn::vi2::QueryDisplayHdrStatus takes the u64 as the output
+    // format (1 SDR, 2 HDR) and passes the u16 on with it. An SDR display has no HDR luminance.
+    void QueryDisplayHdrOutput(HLERequestContext& ctx) {
+        const auto* packet = ctx.CommandBuffer();
+        const u64 name = u64{packet[2]} | (u64{packet[3]} << 32);
+        Result result = Kernel::ResultInvalidCombination;
+        if (packet[0] == 0x78 && packet[1] == 2) {
+            result = name == 0x00746c7561666564ULL || GetPlayerDisplayIndex(name)
+                         ? ResultSuccess : Kernel::ResultNotFound;
+        }
+        LOG_DEBUG(Service_AM, "VI2 HDR output display={:#x}, result={:#x}", name, result.raw);
+        IPC::ResponseBuilder rb{ctx, 5};
+        rb.Push(result.raw);
+        rb.Push<u64>(result.IsSuccess() ? 1 : 0);
+        rb.Push<u32>(0);
     }
     void CloseDisplay(HLERequestContext& ctx) {
         const auto* packet = ctx.CommandBuffer();
@@ -1155,6 +1189,11 @@ private:
                 constexpr auto period = std::chrono::nanoseconds{1'000'000'000 / 60};
                 system.CoreTiming().ScheduleLoopingEvent(period, period, m_vsync_poll);
             }
+        }
+        if (result.IsSuccess() && kind > 1) {
+            // State events start signaled, so a client reads the current state once before
+            // waiting for changes (nn::vi2 caches HDR status until its event fires).
+            m_request_group_events[index]->Signal(kernel);
         }
         LOG_WARNING(Service_AM, "VI2 bind display event command={}, kind={}, display={:#x}, index={}, result={:#x}",
                     command, kind, name, index, result.raw);
