@@ -443,7 +443,11 @@ ComputeEnvironment::ComputeEnvironment(Tegra::Engines::KeplerCompute& kepler_com
     const auto& qmd{kepler_compute->launch_description};
     is_ampere = kepler_compute->IsAmpere();
     stage = Shader::Stage::Compute;
-    local_memory_size = qmd.local_pos_alloc + qmd.local_crs_alloc;
+    // QMD v3 (Ampere) splits the per-thread local memory into a low and a high size
+    // (SHADER_LOCAL_MEMORY_LOW/HIGH_SIZE, read into the old pos/neg fields); the compiler puts
+    // the stack in the high part, so programs with a stack have a low size of 0.
+    local_memory_size = qmd.local_pos_alloc + qmd.local_crs_alloc +
+                        (is_ampere ? qmd.local_neg_alloc.Value() : 0);
     texture_bound = kepler_compute->regs.tex_cb_index;
     is_proprietary_driver = texture_bound == 2;
     shared_memory_size = qmd.shared_alloc;
