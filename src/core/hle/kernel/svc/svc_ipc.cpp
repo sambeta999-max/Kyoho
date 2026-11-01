@@ -143,6 +143,22 @@ Result ReplyAndReceiveImpl(KernelCore& kernel, int32_t* out_index, uintptr_t mes
 
 /// Makes a blocking IPC call to a service.
 Result SendSyncRequest(Core::System& system, Handle session_handle) {
+    // A request to another process blocks the caller for at least the server's turnaround, and
+    // a thread just started on the caller's core gets the core meanwhile. HLE services answer at
+    // once, while such a thread still has to be set up and translated before it gets anywhere,
+    // so it may not get far before the caller moves on. Mario Tennis Fever relies on it: its main
+    // thread starts a worker on its own core with arguments in its stack frame, makes a few
+    // service requests and then reuses that frame. After a lower priority thread was started on
+    // this core, the next few requests (within a short while) give up the core for a moment.
+    SCOPE_EXIT {
+        auto& kernel = system.Kernel();
+        constexpr s64 Window = 50'000'000; // 50 ms of guest time
+        if (GetCurrentProcess(kernel).TakeThreadStartYield(
+                GetCurrentCoreId(kernel), GetCurrentThread(kernel).GetPriority(),
+                kernel.HardwareTimer().GetTick(), Window)) {
+            SleepThread(system, 500'000);
+        }
+    };
     auto& process = GetCurrentProcess(system.Kernel());
     if (!process.UsesPAuthReturns()) {
         R_RETURN(SendSyncRequestImpl(system.Kernel(), 0, 0, session_handle));

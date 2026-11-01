@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include <atomic>
+
 #include <map>
 
 #include "core/arm/arm_interface.h"
@@ -115,6 +117,12 @@ private:
     size_t m_max_process_memory{};
     size_t m_memory_release_hint{};
     s64 m_schedule_count{};
+    struct ThreadStart {
+        std::atomic<s64> tick{};
+        std::atomic<s32> priority{};
+        std::atomic<s32> yields{};
+    };
+    std::array<ThreadStart, Core::Hardware::NUM_CPU_CORES> m_thread_starts{};
     u64 m_program_id{};
     u64 m_process_id{};
 
@@ -379,6 +387,30 @@ public:
     }
     void IncrementScheduledCount() {
         ++m_schedule_count;
+    }
+
+    /// Records that a thread of a priority was started on a core, at a guest tick: the next few
+    /// service requests of higher priority threads on that core yield to it (svcSendSyncRequest)
+    void SetThreadStarted(s32 core, s32 priority, s64 tick) {
+        if (core >= 0 && static_cast<size_t>(core) < m_thread_starts.size()) {
+            auto& start = m_thread_starts[core];
+            start.tick.store(tick, std::memory_order_relaxed);
+            start.priority.store(priority, std::memory_order_relaxed);
+            start.yields.store(8, std::memory_order_relaxed);
+        }
+    }
+    /// Takes one yield to a recently started thread on a core, for a caller of a priority
+    bool TakeThreadStartYield(s32 core, s32 caller_priority, s64 now, s64 window) {
+        if (core < 0 || static_cast<size_t>(core) >= m_thread_starts.size()) {
+            return false;
+        }
+        auto& start = m_thread_starts[core];
+        if (start.yields.load(std::memory_order_relaxed) <= 0 ||
+            start.priority.load(std::memory_order_relaxed) <= caller_priority ||
+            now - start.tick.load(std::memory_order_relaxed) >= window) {
+            return false;
+        }
+        return start.yields.fetch_sub(1, std::memory_order_relaxed) > 0;
     }
 
     void IncrementRunningThreadCount(KernelCore& kernel);

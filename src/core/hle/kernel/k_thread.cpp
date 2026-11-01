@@ -1172,6 +1172,8 @@ namespace Kernel {
                     this->UpdateState(kernel);
                 }
                 owner->IncrementRunningThreadCount(kernel);
+                owner->SetThreadStarted(this->GetActiveCore(), this->GetPriority(),
+                                        kernel.HardwareTimer().GetTick());
             }
 
             // Open a reference, now that we're running.

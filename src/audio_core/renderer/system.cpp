@@ -107,6 +107,8 @@ Result System::Initialize(const AudioRendererParameterInternal& params,
                           Kernel::KTransferMemory* transfer_memory, u64 transfer_memory_size,
                           Kernel::KProcess* process_handle_, u64 applet_resource_user_id_,
                           s32 session_id_) {
+    LOG_INFO(Service_Audio, "audio renderer revision={:08X} sinks={} effects={} voices={} mixes={} submixes={} splitters={} memory_pools={}",
+             params.revision, params.sinks, params.effects, params.voices, params.mixes, params.sub_mixes, params.splitter_infos, params.voices + params.effects * 4);
     if (!CheckValidRevision(params.revision)) {
         return Service::Audio::ResultInvalidRevision;
     }
