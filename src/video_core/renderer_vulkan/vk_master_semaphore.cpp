@@ -104,7 +104,14 @@ void MasterSemaphore::Wait(u64 tick) {
     }
 
     // If none of the above is hit, fallback to a regular wait
-    while (!semaphore.Wait(tick)) {
+    try {
+        while (!semaphore.Wait(tick)) {
+        }
+    } catch (const vk::Exception& exception) {
+        if (exception.GetResult() == VK_ERROR_DEVICE_LOST) {
+            device.ReportLoss();
+        }
+        throw;
     }
 
     Refresh();

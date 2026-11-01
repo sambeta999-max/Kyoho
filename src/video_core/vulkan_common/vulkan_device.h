@@ -51,6 +51,12 @@ VK_DEFINE_HANDLE(VmaAllocator)
 
 #define FOR_EACH_VK_FEATURE_1_4(FEATURE)
 
+// VK_EXT_device_fault names its feature struct VkPhysicalDeviceFaultFeaturesEXT; the alias lets it
+// follow the FEATURE pattern below.
+#ifndef VK_EXT_FAULT_EXTENSION_NAME
+#define VK_EXT_FAULT_EXTENSION_NAME VK_EXT_DEVICE_FAULT_EXTENSION_NAME
+#endif
+
 // Define all features which may be used by the implementation and require an extension here.
 #define FOR_EACH_VK_FEATURE_EXT(FEATURE)                                                           \
     FEATURE(EXT, BorderColorSwizzle, BORDER_COLOR_SWIZZLE, border_color_swizzle)                   \
@@ -59,6 +65,7 @@ VK_DEFINE_HANDLE(VmaAllocator)
     FEATURE(EXT, DepthBiasControl, DEPTH_BIAS_CONTROL, depth_bias_control)                         \
     FEATURE(EXT, DepthClipControl, DEPTH_CLIP_CONTROL, depth_clip_control)                         \
     FEATURE(EXT, DescriptorBuffer, DESCRIPTOR_BUFFER, descriptor_buffer)                           \
+    FEATURE(EXT, Fault, FAULT, device_fault)                                                       \
     FEATURE(EXT, ExtendedDynamicState, EXTENDED_DYNAMIC_STATE, extended_dynamic_state)             \
     FEATURE(EXT, ExtendedDynamicState2, EXTENDED_DYNAMIC_STATE_2, extended_dynamic_state2)         \
     FEATURE(EXT, ExtendedDynamicState3, EXTENDED_DYNAMIC_STATE_3, extended_dynamic_state3)         \
@@ -246,6 +253,9 @@ public:
 
     /// Reports a device loss.
     void ReportLoss() const;
+
+    /// Logs what VK_EXT_device_fault reports about a device loss.
+    void ReportFault() const;
 
     /// Reports a shader to Nsight Aftermath.
     void SaveShader(std::span<const u32> spirv) const;

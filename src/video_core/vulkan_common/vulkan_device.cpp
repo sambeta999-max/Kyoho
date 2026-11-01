@@ -896,9 +896,43 @@ VkFormat Device::GetSupportedFormat(VkFormat wanted_format, VkFormatFeatureFlags
 
 void Device::ReportLoss() const {
     LOG_CRITICAL(Render_Vulkan, "Device loss occurred!");
+    ReportFault();
 
     // Wait for the log to flush and for Nsight Aftermath to dump the results
     std::this_thread::sleep_for(std::chrono::seconds{15});
+}
+
+void Device::ReportFault() const {
+    // VK_EXT_device_fault tells which GPU address faulted and why
+    if (!extensions.device_fault || !features.device_fault.deviceFault) {
+        return;
+    }
+    const auto get_fault = reinterpret_cast<PFN_vkGetDeviceFaultInfoEXT>(
+        dld.vkGetDeviceProcAddr(*logical, "vkGetDeviceFaultInfoEXT"));
+    if (!get_fault) {
+        return;
+    }
+    VkDeviceFaultCountsEXT counts{.sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT};
+    get_fault(*logical, &counts, nullptr);
+    std::vector<VkDeviceFaultAddressInfoEXT> addresses(counts.addressInfoCount);
+    std::vector<VkDeviceFaultVendorInfoEXT> vendor(counts.vendorInfoCount);
+    counts.vendorBinarySize = 0;
+    VkDeviceFaultInfoEXT info{
+        .sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT,
+        .pAddressInfos = addresses.data(),
+        .pVendorInfos = vendor.data(),
+    };
+    get_fault(*logical, &counts, &info);
+    LOG_CRITICAL(Render_Vulkan, "Device fault: {}", info.description);
+    for (const auto& address : addresses) {
+        LOG_CRITICAL(Render_Vulkan, "  address type {} {:#x} precision {:#x}",
+                     static_cast<u32>(address.addressType), address.reportedAddress,
+                     address.addressPrecision);
+    }
+    for (const auto& entry : vendor) {
+        LOG_CRITICAL(Render_Vulkan, "  vendor {} code {:#x} data {:#x}", entry.description,
+                     entry.vendorFaultCode, entry.vendorFaultData);
+    }
 }
 
 void Device::SaveShader(std::span<const u32> spirv) const {
