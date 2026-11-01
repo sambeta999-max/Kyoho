@@ -17,12 +17,12 @@ CircularBufferSinkInfo::CircularBufferSinkInfo() {
 }
 
 void CircularBufferSinkInfo::CleanUp() {
-    auto state_{reinterpret_cast<DeviceState*>(state.data())};
-
-    if (state_->upsampler_info) {
-        state_->upsampler_info->manager->Free(state_->upsampler_info);
-        state_->upsampler_info = nullptr;
-    }
+    // A circular buffer sink has no upsampler: its state is a CircularBufferState, whose
+    // positions were read here as a DeviceState's upsampler pointer (and freed) when the sink
+    // changed type. Mario Tennis Fever turns a circular buffer sink back into another type.
+    state.fill(0);
+    auto state_{reinterpret_cast<CircularBufferState*>(state.data())};
+    state_->address_info.Setup(0, 0);
 
     parameter.fill(0);
     type = Type::Invalid;
