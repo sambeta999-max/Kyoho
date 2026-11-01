@@ -256,9 +256,10 @@ T MemoryManager::Read(GPUVAddr addr) const {
         return value;
     }
 
-    ASSERT(false);
-
-    return {};
+    // A page of a GPU-only region that has no memory yet
+    T value{};
+    ReadBlockUnsafe(addr, &value, sizeof(T));
+    return value;
 }
 
 template <typename T>
@@ -269,7 +270,8 @@ void MemoryManager::Write(GPUVAddr addr, T data) {
         return;
     }
 
-    ASSERT(false);
+    // A page of a GPU-only region that has no memory yet
+    WriteBlockUnsafe(addr, &data, sizeof(T));
 }
 
 template u8 MemoryManager::Read<u8>(GPUVAddr addr) const;
@@ -379,8 +381,12 @@ void MemoryManager::ReadBlockImpl(GPUVAddr gpu_src_addr, void* dest_buffer, std:
         if (!unsafe) {
             rasterizer->FlushRegion(dev_addr_base, copy_amount, which);
         }
-        u8* physical = memory.GetPointer<u8>(dev_addr_base);
-        std::memcpy(dest_buffer, physical, copy_amount);
+        // Device pages without memory read as zero
+        if (const u8* physical = memory.GetPointer<u8>(dev_addr_base)) [[likely]] {
+            std::memcpy(dest_buffer, physical, copy_amount);
+        } else {
+            memory.ReadBlockUnsafe(dev_addr_base, dest_buffer, copy_amount);
+        }
         dest_buffer = static_cast<u8*>(dest_buffer) + copy_amount;
     };
     auto mapped_big = [&](std::size_t page_index, std::size_t offset, std::size_t copy_amount) {
@@ -388,10 +394,10 @@ void MemoryManager::ReadBlockImpl(GPUVAddr gpu_src_addr, void* dest_buffer, std:
         if (!unsafe) {
             rasterizer->FlushRegion(dev_addr_base, copy_amount, which);
         }
-        if (!IsBigPageContinuous(page_index)) [[unlikely]] {
+        const u8* physical = IsBigPageContinuous(page_index) ? memory.GetPointer<u8>(dev_addr_base) : nullptr;
+        if (physical == nullptr) [[unlikely]] {
             memory.ReadBlockUnsafe(dev_addr_base, dest_buffer, copy_amount);
         } else {
-            u8* physical = memory.GetPointer<u8>(dev_addr_base);
             std::memcpy(dest_buffer, physical, copy_amount);
         }
         dest_buffer = static_cast<u8*>(dest_buffer) + copy_amount;
@@ -420,8 +426,13 @@ void MemoryManager::WriteBlockImpl(GPUVAddr gpu_dest_addr, const void* src_buffe
         if (!unsafe) {
             rasterizer->InvalidateRegion(dev_addr_base, copy_amount, which);
         }
-        u8* physical = memory.GetPointer<u8>(dev_addr_base);
-        std::memcpy(physical, src_buffer, copy_amount);
+        // Device pages without memory yet (GPU-only regions) take the write through the device
+        // memory manager, which gives them memory
+        if (u8* physical = memory.GetPointer<u8>(dev_addr_base)) [[likely]] {
+            std::memcpy(physical, src_buffer, copy_amount);
+        } else {
+            memory.WriteBlockUnsafe(dev_addr_base, src_buffer, copy_amount);
+        }
         src_buffer = static_cast<const u8*>(src_buffer) + copy_amount;
     };
     auto mapped_big = [&](std::size_t page_index, std::size_t offset, std::size_t copy_amount) {
@@ -429,10 +440,10 @@ void MemoryManager::WriteBlockImpl(GPUVAddr gpu_dest_addr, const void* src_buffe
         if (!unsafe) {
             rasterizer->InvalidateRegion(dev_addr_base, copy_amount, which);
         }
-        if (!IsBigPageContinuous(page_index)) [[unlikely]] {
+        u8* physical = IsBigPageContinuous(page_index) ? memory.GetPointer<u8>(dev_addr_base) : nullptr;
+        if (physical == nullptr) [[unlikely]] {
             memory.WriteBlockUnsafe(dev_addr_base, src_buffer, copy_amount);
         } else {
-            u8* physical = memory.GetPointer<u8>(dev_addr_base);
             std::memcpy(physical, src_buffer, copy_amount);
         }
         src_buffer = static_cast<const u8*>(src_buffer) + copy_amount;

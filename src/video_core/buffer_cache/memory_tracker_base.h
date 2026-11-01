@@ -16,13 +16,14 @@
 
 #include "common/alignment.h"
 #include "common/common_types.h"
+#include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/buffer_cache/word_manager.h"
 
 namespace VideoCommon {
 
 template <typename DeviceTracker>
 class MemoryTrackerBase {
-    static constexpr size_t MAX_CPU_PAGE_BITS = 34;
+    static constexpr size_t MAX_CPU_PAGE_BITS = Tegra::MaxwellDeviceMemoryManager::AS_BITS;
     static constexpr size_t HIGHER_PAGE_BITS = 22;
     static constexpr size_t HIGHER_PAGE_SIZE = 1ULL << HIGHER_PAGE_BITS;
     static constexpr size_t HIGHER_PAGE_MASK = HIGHER_PAGE_SIZE - 1ULL;

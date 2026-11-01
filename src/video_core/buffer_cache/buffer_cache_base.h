@@ -28,6 +28,7 @@
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "common/slot_vector.h"
+#include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/buffer_cache/buffer_base.h"
 #include "video_core/buffer_cache/virtual_range_cache.h"
 #include "video_core/control/channel_state_cache.h"
@@ -544,7 +545,7 @@ private:
     bool immediately_free = false;
 #endif
 
-    std::array<BufferId, ((1ULL << 34) >> CACHING_PAGEBITS)> page_table;
+    std::array<BufferId, ((1ULL << Tegra::MaxwellDeviceMemoryManager::AS_BITS) >> CACHING_PAGEBITS)> page_table;
     Common::ScratchBuffer<u8> tmp_buffer;
 };
 

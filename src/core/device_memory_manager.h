@@ -10,6 +10,7 @@
 #include <atomic>
 #include <bit>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -60,6 +61,16 @@ public:
     void Map(DAddr address, VAddr virtual_address, size_t size, Asid asid, bool track = false);
 
     void Unmap(DAddr address, size_t size);
+
+    /// Maps device pages straight to emulated DRAM at [dram_offset, +size), for memory no process
+    /// maps (GPU-only memory). The pages have no CPU backing to track.
+    void MapPhysical(DAddr address, PAddr dram_offset, size_t size);
+
+    /// Called when a write reaches unmapped device pages; returns true once it gave the pages
+    /// memory (the write is then retried). Device ranges whose memory is given as it is written
+    /// (GPU-only regions) use it.
+    using UnmappedWriteHandler = std::function<bool(DAddr address, size_t size)>;
+    void SetUnmappedWriteHandler(UnmappedWriteHandler handler);
 
     void TrackContinuityImpl(DAddr address, VAddr virtual_address, size_t size, Asid asid);
     void TrackContinuity(DAddr address, VAddr virtual_address, size_t size, Asid asid) {
@@ -174,6 +185,10 @@ private:
     const size_t physical_size;
     DeviceInterface* device_inter;
 
+    bool BackUnmapped(DAddr address, size_t size);
+    std::mutex unmapped_handler_mutex;
+    UnmappedWriteHandler unmapped_write_handler;
+
     struct TrackedEntry {
         VAddr cpu_backing_address;
         u32 continuity_tracker;
@@ -205,8 +220,27 @@ private:
         tracked_entries.GetUnchecked(page_index).cpu_backing_address = address | (asid.id << asid_start_bit);
     }
 
-    std::array<TranslationEntry, 4> t_slot{};
-    u32 cache_cursor = 0;
+    // Recent page translations of the reading thread. Each thread keeps its own; mapping changes
+    // bump the generation, which drops every thread's entries (the GPU thread maps device pages
+    // while other threads read).
+    struct TranslationCache {
+        const void* owner{};
+        u64 generation{};
+        std::array<TranslationEntry, 4> slots{};
+        u32 cursor{};
+    };
+    std::atomic<u64> translation_generation{1};
+    TranslationCache& LocalTranslationCache() {
+        thread_local TranslationCache cache;
+        const u64 generation = translation_generation.load(std::memory_order_acquire);
+        if (cache.owner != this || cache.generation != generation) {
+            cache = TranslationCache{.owner = this, .generation = generation};
+        }
+        return cache;
+    }
+    void InvalidateTranslations() {
+        translation_generation.fetch_add(1, std::memory_order_acq_rel);
+    }
     using CounterType = u8;
     using CounterAtomicType = std::atomic_uint8_t;
     static constexpr size_t subentries = 8 / sizeof(CounterType);

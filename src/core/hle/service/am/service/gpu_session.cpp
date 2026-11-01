@@ -5,6 +5,8 @@
 #include <cstring>
 #include <mutex>
 #include <vector>
+#include <span>
+#include <fmt/ranges.h>
 #include "common/swap.h"
 #include "common/alignment.h"
 #include "core/hle/service/nvdrv/core/nvmap.h"
@@ -246,9 +248,8 @@ private:
             }
             m_devices->events[packet[11]]->Signal(kernel);
         }
-        LOG_DEBUG(Service_AM, "GPU sparse create as={}, VA={:#x}..{:#x}, page_bits={}, alloc_mode={}, as_flags={:#x}, sync={}, notification={}, result={:#x}",
-                  packet[2], begin, end, page_bits, packet[8] & 0xff, packet[9] & 0xff,
-                  packet[10] & 0xff, packet[11], result.raw);
+        LOG_DEBUG(Service_AM, "GPU sparse create as={}, VA={:#x}..{:#x}, words={:08x}, result={:#x}",
+                  packet[2], begin, end, fmt::join(std::span<const u32>(packet + 7, 5), ","), result.raw);
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(result.raw);
     }

@@ -14,7 +14,9 @@ namespace Tegra {
 struct MaxwellDeviceMethods;
 
 struct MaxwellDeviceTraits {
-    static constexpr size_t device_virtual_bits = 34;
+    // Switch 2 titles give GPU-only regions device ranges of their own (Mario Kart World's reach
+    // several GiB each), beyond the 16 GiB a Switch 1 SMMU space holds
+    static constexpr size_t device_virtual_bits = 36;
     using DeviceInterface = typename VideoCore::RasterizerInterface;
     using DeviceMethods = MaxwellDeviceMethods;
 };

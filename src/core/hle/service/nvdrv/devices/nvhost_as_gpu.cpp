@@ -15,7 +15,12 @@
 #include "common/common_types.h"
 #include "common/logging.h"
 #include "core/core.h"
+#include "common/div_ceil.h"
+#include "core/device_memory.h"
+#include "core/hle/kernel/k_memory_manager.h"
+#include "core/hle/kernel/k_page_group.h"
 #include "core/hle/kernel/k_process.h"
+#include "core/hle/kernel/kernel.h"
 #include "core/hle/service/nvdrv/devices/gpu_address_space_layout.h"
 #include "core/hle/service/nvdrv/core/container.h"
 #include "core/hle/service/nvdrv/core/nvmap.h"
@@ -26,6 +31,7 @@
 #include "core/hle/service/nvdrv/nvdrv.h"
 #include "video_core/control/channel_state.h"
 #include "video_core/gpu.h"
+#include "video_core/host1x/host1x.h"
 #include "video_core/memory_manager.h"
 #include "video_core/rasterizer_interface.h"
 
@@ -35,8 +41,133 @@ nvhost_as_gpu::nvhost_as_gpu(Core::System& system_, Module& module_, NvCore::Con
     : nvdevice{system_, Type::GpuAddressSpace}, module{module_}, container{core}, nvmap{core.GetNvMapFile()}, vm{},
       gmmu{} {}
 
+namespace {
+// The address spaces with GPU-only regions, by device range, for the device memory manager's
+// unmapped-write handler
+struct GpuOnlyRanges {
+    std::mutex mutex;
+    std::map<DAddr, std::pair<u64, nvhost_as_gpu*>> ranges; ///< Device address -> (size, owner)
+    bool handler_set{};
+};
+GpuOnlyRanges& GetGpuOnlyRanges() {
+    static GpuOnlyRanges ranges;
+    return ranges;
+}
+constexpr u64 GpuOnlyBlockSize = 4ULL << 20;
+
+bool BackGpuOnlyWrite(DAddr address, size_t size) {
+    auto& gpu_only = GetGpuOnlyRanges();
+    nvhost_as_gpu* owner{};
+    {
+        const std::scoped_lock lock{gpu_only.mutex};
+        auto it = gpu_only.ranges.upper_bound(address);
+        if (it == gpu_only.ranges.begin()) {
+            return false;
+        }
+        --it;
+        if (address >= it->first + it->second.first) {
+            return false;
+        }
+        owner = it->second.second;
+    }
+    return owner->BackGpuOnly(address, size);
+}
+} // namespace
+
 nvhost_as_gpu::~nvhost_as_gpu() {
+    if (!m_native_sparse.empty()) {
+        auto& smmu = system.Host1x().MemoryManager();
+        {
+            auto& ranges = GetGpuOnlyRanges();
+            const std::scoped_lock lock{ranges.mutex};
+            for (auto& [address, region] : m_native_sparse) {
+                ranges.ranges.erase(region.device);
+            }
+        }
+        for (auto& [address, region] : m_native_sparse) {
+            if (region.device == 0) {
+                continue;
+            }
+            smmu.Unmap(region.device, region.size);
+            smmu.Free(region.device, region.size);
+            ReleaseGpuOnly(region);
+        }
+    }
     if (m_owner_process) { m_owner_process->Close(system.Kernel()); }
+}
+
+// Gives memory to the blocks of a GPU-only region that [address, +size) reaches, cleared, from
+// the system pool (the application pool once that is exhausted). Runs before a write lands there,
+// usually on the GPU thread.
+bool nvhost_as_gpu::BackGpuOnly(DAddr address, size_t size) {
+    const std::scoped_lock lock{m_gpu_only_mutex};
+    auto& smmu = system.Host1x().MemoryManager();
+    auto& memory_manager = system.Kernel().MemoryManager();
+    bool backed = false;
+    for (auto& [gpu_address, region] : m_native_sparse) {
+        if (region.device == 0 || address + size <= region.device ||
+            address >= region.device + region.size) {
+            continue;
+        }
+        const u64 first = ((std::max)(address, region.device) - region.device) / GpuOnlyBlockSize;
+        const u64 last = ((std::min)(address + size, region.device + region.size) - 1 -
+                          region.device) / GpuOnlyBlockSize;
+        for (u64 block = first; block <= last; ++block) {
+            if (region.blocks[block]) {
+                backed = true;
+                continue;
+            }
+            const u64 offset = block * GpuOnlyBlockSize;
+            const u64 block_size = (std::min)(GpuOnlyBlockSize, region.size - offset);
+            auto pages = std::make_unique<Kernel::KPageGroup>(
+                system.Kernel(), system.Kernel().GetSystemSystemResource().GetBlockInfoManagerPointer());
+            Result result = ResultUnknown;
+            for (const auto pool : {Kernel::KMemoryManager::Pool::SystemNonSecure,
+                                    Kernel::KMemoryManager::Pool::Application}) {
+                result = memory_manager.AllocateAndOpen(
+                    pages.get(), block_size / Kernel::PageSize,
+                    Kernel::KMemoryManager::EncodeOption(pool,
+                                                         Kernel::KMemoryManager::Direction::FromBack));
+                if (result.IsSuccess()) {
+                    break;
+                }
+            }
+            if (result.IsError()) {
+                static bool warned{};
+                if (!std::exchange(warned, true)) {
+                    LOG_WARNING(Service_NVDRV,
+                                "No memory for GPU-only region {:#x}: writes to it are dropped",
+                                gpu_address);
+                }
+                return backed;
+            }
+            u64 device = region.device + offset;
+            for (const auto& run : *pages) {
+                const u64 dram_offset = GetInteger(run.GetAddress()) - Core::DramMemoryMap::Base;
+                std::memset(system.DeviceMemory().GetPointer<u8>(run.GetAddress()), 0,
+                            run.GetSize());
+                smmu.MapPhysical(device, dram_offset, run.GetSize());
+                device += run.GetSize();
+            }
+            region.blocks[block] = std::move(pages);
+            m_gpu_only_bytes += block_size;
+            backed = true;
+            LOG_DEBUG(Service_NVDRV, "GPU-only region {:#x}: block {:#x} has memory, {} MiB in use",
+                      gpu_address, gpu_address + offset, m_gpu_only_bytes >> 20);
+        }
+    }
+    return backed;
+}
+
+void nvhost_as_gpu::ReleaseGpuOnly(GpuOnlyRegion& region) {
+    const std::scoped_lock lock{m_gpu_only_mutex};
+    for (auto& block : region.blocks) {
+        if (block) {
+            m_gpu_only_bytes -= block->GetNumPages() * Kernel::PageSize;
+            block->Close(system.Kernel());
+            block.reset();
+        }
+    }
 }
 
 NvResult nvhost_as_gpu::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> input,
@@ -195,8 +326,14 @@ NvResult nvhost_as_gpu::UnmapNative4K(u64 address, u64 size) {
         const std::scoped_lock lock{mutex};
         const auto region = m_native_sparse.upper_bound(address);
         if (region != m_native_sparse.begin() &&
-            address + size - std::prev(region)->first <= std::prev(region)->second) {
-            gmmu->MapSparse(address, size, false);
+            address + size - std::prev(region)->first <= std::prev(region)->second.size) {
+            const auto& [start, gpu_only] = *std::prev(region);
+            if (gpu_only.device != 0) {
+                gmmu->Map(address, gpu_only.device + (address - start), size,
+                          Tegra::PTEKind::INVALID, false);
+            } else {
+                gmmu->MapSparse(address, size, false);
+            }
         }
     }
     return result;
@@ -215,10 +352,35 @@ NvResult nvhost_as_gpu::CreateNativeSparse(u64 address, u64 size) {
     const auto next = m_native_sparse.lower_bound(address);
     if ((next != m_native_sparse.end() && next->first < address + size) ||
         (next != m_native_sparse.begin() &&
-         std::prev(next)->first + std::prev(next)->second > address)) {
+         std::prev(next)->first + std::prev(next)->second.size > address)) {
         return NvResult::BadParameter;
     }
-    // Only the gaps between existing mappings become sparse.
+    auto& smmu = system.Host1x().MemoryManager();
+    const DAddr device = smmu.Allocate(size);
+    if (device == 0) {
+        // Without a device range the region reads as zero and drops writes
+        LOG_ERROR(Service_NVDRV, "No device address space for GPU-only region {:#x}+{:#x}", address,
+                  size);
+        gmmu->MapSparse(address, size, false);
+        m_native_sparse[address] = GpuOnlyRegion{size, 0, {}};
+        return NvResult::Success;
+    }
+    {
+        const std::scoped_lock gpu_only_lock{m_gpu_only_mutex};
+        auto& region = m_native_sparse[address];
+        region.size = size;
+        region.device = device;
+        region.blocks.resize(Common::DivCeil(size, GpuOnlyBlockSize));
+    }
+    {
+        auto& ranges = GetGpuOnlyRanges();
+        const std::scoped_lock ranges_lock{ranges.mutex};
+        ranges.ranges[device] = {size, this};
+        if (!std::exchange(ranges.handler_set, true)) {
+            smmu.SetUnmappedWriteHandler(&BackGpuOnlyWrite);
+        }
+    }
+    // Only the gaps between existing mappings reach the region's device range.
     u64 gap = address;
     if (auto it = allocation_map.lower_bound(address); it != allocation_map.begin()) {
         gap = (std::clamp)(std::prev(it)->first + std::prev(it)->second.size, address, address + size);
@@ -226,21 +388,21 @@ NvResult nvhost_as_gpu::CreateNativeSparse(u64 address, u64 size) {
     for (auto it = allocation_map.lower_bound(address);
          it != allocation_map.end() && it->first < address + size; ++it) {
         if (it->first > gap) {
-            gmmu->MapSparse(gap, it->first - gap, false);
+            gmmu->Map(gap, device + (gap - address), it->first - gap, Tegra::PTEKind::INVALID, false);
         }
         gap = (std::max)(gap, it->first + it->second.size);
     }
     if (gap < address + size) {
-        gmmu->MapSparse(gap, address + size - gap, false);
+        gmmu->Map(gap, device + (gap - address), address + size - gap, Tegra::PTEKind::INVALID,
+                  false);
     }
-    m_native_sparse.emplace(address, size);
     return NvResult::Success;
 }
 
 NvResult nvhost_as_gpu::DestroyNativeSparse(u64 address, u64 size) {
     const std::scoped_lock lock{mutex};
     const auto region = m_native_sparse.find(address);
-    if (region == m_native_sparse.end() || region->second != size) {
+    if (region == m_native_sparse.end() || region->second.size != size) {
         return NvResult::BadParameter;
     }
     u64 gap = address;
@@ -257,7 +419,21 @@ NvResult nvhost_as_gpu::DestroyNativeSparse(u64 address, u64 size) {
     if (gap < address + size) {
         gmmu->Unmap(gap, address + size - gap);
     }
-    m_native_sparse.erase(region);
+    auto& smmu = system.Host1x().MemoryManager();
+    {
+        auto& ranges = GetGpuOnlyRanges();
+        const std::scoped_lock ranges_lock{ranges.mutex};
+        ranges.ranges.erase(region->second.device);
+    }
+    if (region->second.device != 0) {
+        smmu.Unmap(region->second.device, size);
+        smmu.Free(region->second.device, size);
+        ReleaseGpuOnly(region->second);
+    }
+    {
+        const std::scoped_lock gpu_only_lock{m_gpu_only_mutex};
+        m_native_sparse.erase(region);
+    }
     return NvResult::Success;
 }
 

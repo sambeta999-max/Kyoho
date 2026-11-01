@@ -28,6 +28,10 @@ namespace Tegra {
 class MemoryManager;
 } // namespace Tegra
 
+namespace Kernel {
+class KPageGroup;
+} // namespace Kernel
+
 namespace Service::Nvidia {
 class Module;
 }
@@ -227,9 +231,25 @@ private:
 
     bool m_extended_abi{};
     bool m_syncpoint_shim_reserved{};
-    //!< Sparse regions of the native ABI, by address. They are not reservations: native 4K
-    //!< mappings are placed inside them, and their pages read as zero while unmapped.
-    std::map<u64, u64> m_native_sparse;
+    //!< Regions of the native ABI (nn::gpu::sdk::CreateSparseRegion), by address. NVN places
+    //!< GPU-only memory in them: each has a device range of its own, and a block of it gets
+    //!< memory when a write first reaches it (GPU rendering that stays in host images needs
+    //!< none); blocks without memory read as zero. Native 4K mappings placed inside a region
+    //!< replace its pages.
+    struct GpuOnlyRegion {
+        u64 size;
+        DAddr device;
+        std::vector<std::unique_ptr<Kernel::KPageGroup>> blocks;
+    };
+    std::map<u64, GpuOnlyRegion> m_native_sparse;
+    std::mutex m_gpu_only_mutex; //!< Locks the blocks of m_native_sparse
+    u64 m_gpu_only_bytes{};
+
+public:
+    bool BackGpuOnly(DAddr address, size_t size);
+
+private:
+    void ReleaseGpuOnly(GpuOnlyRegion& region);
     DeviceFD m_fd{-1};
     Kernel::KProcess* m_owner_process{};
     std::shared_ptr<nvhost_as_gpu> m_shared_parent;
