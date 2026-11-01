@@ -1140,6 +1140,11 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
     }
 
     image.flags &= ~ImageFlagBits::CpuModified;
+    // The guest memory it is uploaded from is newer than what images aliasing it rendered
+    // before (a DMA copy into memory a font atlas once used, as in Donkey Kong Bananza's
+    // tutorial video); without a new tick, alias synchronization copies their stale contents
+    // back over the upload.
+    image.modification_tick = ++modification_tick;
 
     TrackImage(image, image_id);
 
