@@ -9,6 +9,12 @@
 #include <mutex>
 #include <regex>
 #include <string>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
+#include <thread>
+#include <vector>
 #include "common/settings_enums.h"
 #include "core/launch_params.h"
 #ifdef __EMSCRIPTEN__
@@ -33,7 +39,10 @@
 #include "core/hle/service/filesystem/filesystem.h"
 #include "core/loader/loader.h"
 #include "frontend_common/config.h"
+#include "core/frontend/framebuffer_layout.h"
+#include "input_common/drivers/keyboard.h"
 #include "input_common/main.h"
+#include "video_core/renderer_base.h"
 #include "network/network.h"
 #include "sdl_config.h"
 #include "video_core/gpu.h"
@@ -161,7 +170,99 @@ struct SdlState {
     Core::System system{};
     InputCommon::InputSubsystem input_subsystem{};
     std::unique_ptr<EmuWindow_SDL3> emu_window;
+    std::jthread script;
 };
+
+namespace {
+// Writes a 32-bit BMP from rows of B, G, R, A bytes (the renderer's screenshot layout)
+void WriteBmp(const std::string& path, const std::vector<u8>& pixels, u32 width, u32 height,
+              bool invert_y) {
+    std::ofstream file(path, std::ios::binary);
+    const u32 image_size = width * height * 4;
+    const auto put32 = [&](u32 v) { file.write(reinterpret_cast<const char*>(&v), 4); };
+    const auto put16 = [&](u16 v) { file.write(reinterpret_cast<const char*>(&v), 2); };
+    file.write("BM", 2);
+    put32(54 + image_size);
+    put32(0);
+    put32(54);
+    put32(40);
+    put32(width);
+    // A negative height stores the rows top to bottom
+    put32(static_cast<u32>(invert_y ? static_cast<s32>(height) : -static_cast<s32>(height)));
+    put16(1);
+    put16(32);
+    put32(0);
+    put32(image_size);
+    put32(2835);
+    put32(2835);
+    put32(0);
+    put32(0);
+    file.write(reinterpret_cast<const char*>(pixels.data()), image_size);
+}
+
+// EDEN_SCRIPT="k48,b52,s82,...": at each time (seconds after boot) press a button or take a
+// screenshot, inside the emulator, so scripted runs neither need the window in front nor send
+// keys to other windows. The buttons are the keyboard keys of the cli-key.ini mappings:
+// k/b/x/y/p = A/B/X/Y/+, u/d/l/r = D-pad, n/v/f/h = left stick up/down/left/right (held 1.5 s).
+// Screenshots go to EDEN_SCRIPT_OUT (a path prefix) as <prefix>_<sec>s.bmp.
+void RunScript(std::stop_token stop, SdlState* state, std::string script, std::string out) {
+    const auto start = std::chrono::steady_clock::now();
+    size_t pos = 0;
+    while (pos < script.size() && !stop.stop_requested()) {
+        const size_t end = (std::min)(script.find(',', pos), script.size());
+        const std::string action = script.substr(pos, end - pos);
+        pos = end + 1;
+        if (action.size() < 2) {
+            continue;
+        }
+        const char kind = action[0];
+        const double at = std::atof(action.c_str() + 1);
+        while (!stop.stop_requested() &&
+               std::chrono::steady_clock::now() - start < std::chrono::duration<double>(at)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        if (stop.stop_requested()) {
+            return;
+        }
+        LOG_INFO(Frontend, "script: {}", action);
+        if (kind == 's') {
+            const auto layout = Layout::DefaultFrameLayout(1280, 720);
+            auto pixels = std::make_shared<std::vector<u8>>(size_t{layout.width} * layout.height * 4);
+            const std::string path = fmt::format("{}_{}s.bmp", out, action.substr(1));
+            state->system.Renderer().RequestScreenshot(
+                pixels->data(),
+                [pixels, path, layout](bool invert_y) {
+                    WriteBmp(path, *pixels, layout.width, layout.height, invert_y);
+                    LOG_INFO(Frontend, "script: screenshot {}", path);
+                },
+                layout);
+            continue;
+        }
+        int scancode = 0;
+        int hold_ms = 200;
+        switch (kind) {
+        case 'k': scancode = 4; break;   // A key
+        case 'b': scancode = 22; break;  // S
+        case 'x': scancode = 27; break;  // X
+        case 'y': scancode = 28; break;  // Y
+        case 'p': scancode = 19; break;  // P
+        case 'u': scancode = 12; break;  // I
+        case 'd': scancode = 14; break;  // K
+        case 'l': scancode = 13; break;  // J
+        case 'r': scancode = 15; break;  // L
+        case 'n': scancode = 23; hold_ms = 1500; break; // T
+        case 'v': scancode = 10; hold_ms = 1500; break; // G
+        case 'f': scancode = 9; hold_ms = 1500; break;  // F
+        case 'h': scancode = 11; hold_ms = 1500; break; // H
+        default: continue;
+        }
+        auto* keyboard = state->input_subsystem.GetKeyboard();
+        keyboard->PressKey(scancode);
+        std::this_thread::sleep_for(std::chrono::milliseconds(hold_ms));
+        keyboard->ReleaseKey(scancode);
+    }
+}
+} // namespace
 
 extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
     SdlState* state = new SdlState();
@@ -320,6 +421,11 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
     void(state->system.Run());
     if (state->system.DebuggerEnabled())
         state->system.InitializeDebugger();
+    if (const char* script = std::getenv("EDEN_SCRIPT")) {
+        const char* out = std::getenv("EDEN_SCRIPT_OUT");
+        state->script = std::jthread(RunScript, state, std::string{script},
+                                     std::string{out ? out : "shot"});
+    }
     return SDL_APP_CONTINUE;
 }
 extern "C" SDL_AppResult SDL_AppIterate(void *appstate) {
