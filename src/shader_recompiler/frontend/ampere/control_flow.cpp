@@ -235,8 +235,9 @@ bool IsSubroutineCall(Environment& env, u32 call_offset, u32 begin_offset, u32 t
 //   IMNMX.U32 Ri, Rx, max ; SHF.L.U32 Rj, Ri, 2 ; LDC Ra, c[bank][Rj + offset] ; BRX Ra
 // where the clamp bounds the table to max + 1 entries.
 std::optional<BranchTable> TrackBranchTable(Environment& env, u32 brx_offset, u32 begin_offset) {
+    // Predicated instructions in between split the block, so the walk goes on past them
     const auto writer{[&](u32 reg, u32 offset) {
-        return LastWriter(env, reg, offset, begin_offset);
+        return LastWriterInFunction(env, reg, offset, begin_offset);
     }};
     const Instruction brx{ReadInsn(env, brx_offset)};
     const auto load{writer(brx.SrcA(), brx_offset)};
@@ -445,7 +446,8 @@ CFG::AnalysisState CFG::AnalyzeInstAmpere(Block* block, FunctionId function_id, 
         const std::optional table{
             uniform ? TrackUniformBranchTable(env, offset,
                                               Ampere::ToOffset(functions[function_id].entrypoint))
-                    : TrackBranchTable(env, offset, Ampere::ToOffset(block->begin))};
+                    : TrackBranchTable(env, offset,
+                                       Ampere::ToOffset(functions[function_id].entrypoint))};
         if (!table) {
             throw NotImplementedException("Untracked indirect branch at {:#x}", offset);
         }

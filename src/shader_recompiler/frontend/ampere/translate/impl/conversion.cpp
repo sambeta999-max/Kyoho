@@ -73,12 +73,16 @@ void TranslatorVisitor::F2F(Instruction insn) {
 
 // Rounds to an integral value in the source format. The rounding mode at [78..80) and FTZ at bit
 // 80 are those of F2F, checked with nvdisasm.
+// FRND.F16 rounds the selected half and zeroes the upper half of the destination (GA102); every
+// F16 value is exact in F32, so it rounds in F32.
 void TranslatorVisitor::FRND(Instruction insn) {
-    if (DestBits(insn) != 32 || SrcBits(insn) != 32) {
+    const bool half{DestBits(insn) == 16 && SrcBits(insn) == 16};
+    if (!half && (DestBits(insn) != 32 || SrcBits(insn) != 32)) {
         throw NotImplementedException("FRND of {} to {} bits", SrcBits(insn), DestBits(insn));
     }
     const IR::FpControl control{.no_contraction = true, .fmz_mode = Ftz(insn)};
-    const IR::F32 value{FloatSrcB(insn)};
+    const IR::F32 value{half ? IR::F32{ir.FPConvert(32, FloatSource(*this, insn))}
+                             : FloatSrcB(insn)};
     IR::F32 result;
     switch (insn.Bits(78, 2)) {
     case 0:
@@ -93,6 +97,10 @@ void TranslatorVisitor::FRND(Instruction insn) {
     default:
         result = IR::F32{ir.FPTrunc(value, control)};
         break;
+    }
+    if (half) {
+        X(Reg(insn.Dest()), PackHalf(ir, IR::F16{ir.FPConvert(16, result)}));
+        return;
     }
     F(Reg(insn.Dest()), result);
 }
@@ -139,8 +147,9 @@ void TranslatorVisitor::F2I(Instruction insn) {
     X(Reg(insn.Dest()), IR::U32{ir.Select(ir.FPIsNan(value), nan_value, result)});
 }
 
+// I2F.F16 writes the half to the lower 16 bits and zeroes the upper ones (GA102).
 void TranslatorVisitor::I2F(Instruction insn) {
-    if (DestBits(insn) != 32) {
+    if (DestBits(insn) != 32 && DestBits(insn) != 16) {
         throw NotImplementedException("I2F to {} bits", DestBits(insn));
     }
     const bool is_signed{insn.Bit(74)};
@@ -154,6 +163,11 @@ void TranslatorVisitor::I2F(Instruction insn) {
         throw NotImplementedException("I2F from {} bits", src_bits);
     }
     const IR::FpControl control{.no_contraction = true, .rounding = Rounding(insn)};
+    if (DestBits(insn) == 16) {
+        X(Reg(insn.Dest()),
+          PackHalf(ir, IR::F16{ir.ConvertIToF(16, 32, is_signed, src, control)}));
+        return;
+    }
     F(Reg(insn.Dest()), IR::F32{ir.ConvertIToF(32, 32, is_signed, src, control)});
 }
 
