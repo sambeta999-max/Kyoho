@@ -67,3 +67,6 @@ vulkansdk*.exe
 
 # Build-time generated external sources
 externals/generated
+
+# Local credentials
+.env
