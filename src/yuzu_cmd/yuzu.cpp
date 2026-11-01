@@ -203,7 +203,8 @@ void WriteBmp(const std::string& path, const std::vector<u8>& pixels, u32 width,
 // EDEN_SCRIPT="k48,b52,s82,...": at each time (seconds after boot) press a button or take a
 // screenshot, inside the emulator, so scripted runs neither need the window in front nor send
 // keys to other windows. The buttons are the keyboard keys of the cli-key.ini mappings:
-// k/b/x/y/p = A/B/X/Y/+, u/d/l/r = D-pad, n/v/f/h = left stick up/down/left/right (held 1.5 s).
+// k/b/x/y/p = A/B/X/Y/+, q/e/w/m = L/R/L+R/-, u/d/l/r = D-pad, n/v/f/h = left stick
+// up/down/left/right (held 1.5 s).
 // Screenshots go to EDEN_SCRIPT_OUT (a path prefix) as <prefix>_<sec>s.bmp.
 void RunScript(std::stop_token stop, SdlState* state, std::string script, std::string out) {
     const auto start = std::chrono::steady_clock::now();
@@ -239,8 +240,13 @@ void RunScript(std::stop_token stop, SdlState* state, std::string script, std::s
             continue;
         }
         int scancode = 0;
+        int scancode2 = 0; // pressed together with the first (w = L+R)
         int hold_ms = 200;
         switch (kind) {
+        case 'q': scancode = 20; break; // L (Q)
+        case 'e': scancode = 8; break;  // R (E)
+        case 'w': scancode = 20; scancode2 = 8; break; // L+R
+        case 'm': scancode = 16; break; // - (M)
         case 'k': scancode = 4; break;   // A key
         case 'b': scancode = 22; break;  // S
         case 'x': scancode = 27; break;  // X
@@ -258,8 +264,14 @@ void RunScript(std::stop_token stop, SdlState* state, std::string script, std::s
         }
         auto* keyboard = state->input_subsystem.GetKeyboard();
         keyboard->PressKey(scancode);
+        if (scancode2) {
+            keyboard->PressKey(scancode2);
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(hold_ms));
         keyboard->ReleaseKey(scancode);
+        if (scancode2) {
+            keyboard->ReleaseKey(scancode2);
+        }
     }
 }
 } // namespace
