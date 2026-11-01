@@ -356,6 +356,32 @@ void TranslatorVisitor::IMNMX(Instruction insn) {
       IR::U32{ir.Select(pick_min, ir.IMin(a, b, is_signed), ir.IMax(a, b, is_signed))});
 }
 
+// IDP.4A Rd, Ra, Rb, Rc: Rc plus the four products of the bytes of Ra and Rb (PTX dp4a).
+// IDP.2A.{LO,HI}: the two 16-bit halves of Ra times bytes 0..1 (LO) or 2..3 (HI) of Rb (dp2a).
+// Bit 76 selects 2A, bit 77 HI, bits 73 and 74 sign Ra and Rb, bit 75 negates Rc (checked
+// against dp2a/dp4a on a GA102).
+void TranslatorVisitor::IDP(Instruction insn) {
+    const bool four{!insn.Bit(76)};
+    const bool high{insn.Bit(77)};
+    const bool a_signed{insn.Bit(73)};
+    const bool b_signed{insn.Bit(74)};
+    const IR::U32 a{SrcA(insn)};
+    const IR::U32 b{SrcB(insn)};
+    IR::U32 sum{SrcC(insn)};
+    if (insn.Bit(75)) {
+        sum = ir.INeg(sum);
+    }
+    const auto field{[&](const IR::U32& value, u32 offset, u32 bits, bool is_signed) {
+        return ir.BitFieldExtract(value, ir.Imm32(offset), ir.Imm32(bits), is_signed);
+    }};
+    for (u32 i = 0; i < (four ? 4U : 2U); ++i) {
+        const IR::U32 lhs{four ? field(a, 8 * i, 8, a_signed) : field(a, 16 * i, 16, a_signed)};
+        const IR::U32 rhs{field(b, 8 * (i + (high ? 2 : 0)), 8, b_signed)};
+        sum = ir.IAdd(sum, ir.IMul(lhs, rhs));
+    }
+    X(Reg(insn.Dest()), sum);
+}
+
 void TranslatorVisitor::ISETP(Instruction insn) {
     Isetp(*this, insn, false);
 }

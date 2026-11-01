@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <array>
 #include <algorithm>
 #include <optional>
 
@@ -234,6 +235,63 @@ void TranslatorVisitor::STS(Instruction insn) {
         ir.WriteShared(bit_size, offset, X(data));
     } else {
         ir.WriteShared(bit_size, offset, ReadVector(*this, data, bit_size));
+    }
+}
+
+// LDGSTS [Rd + imm20], [Ra.64 + imm12], P: copies global memory to shared memory (cp.async).
+// The copy is done at once, so LDGDEPBAR and DEPBAR have nothing to wait for. Shared offset at
+// [44..64), global offset at [32..44), size at [73..76) as in LDG, a uniform register at
+// [64..70) is added to the global address when bit 76 is clear (URZ otherwise), and the
+// predicate at [87..90) (negated by bit 90) selects between the copy and zeros (GA102).
+// .ZFILL (bit 82), which takes the number of bytes to zero from the address, is not
+// implemented.
+void TranslatorVisitor::LDGSTS(Instruction insn) {
+    if (insn.Bit(82)) {
+        throw NotImplementedException("LDGSTS.ZFILL");
+    }
+    const int bit_size{BitSize(insn).first};
+    const s32 shared_offset{static_cast<s32>(static_cast<u32>(insn.Bits(44, 20)) << 12) >> 12};
+    const s64 global_offset{static_cast<s32>(static_cast<u32>(insn.Bits(32, 12)) << 20) >> 20};
+    const IR::U32 shared{ir.IAdd(X(Reg(insn.Dest())), ir.Imm32(shared_offset))};
+    const IR::Reg base{Reg(insn.SrcA())};
+    IR::U32 lo{IR::IsZero(base) ? ir.Imm32(0) : X(base)};
+    IR::U32 hi{IR::IsZero(base) ? ir.Imm32(0) : X(base + 1)};
+    if (!insn.Bit(76) && !IR::IsZero(UReg(insn.Bits(64, 6)))) {
+        const IR::U32 ureg{X(UReg(insn.Bits(64, 6)))};
+        const IR::U32 sum{ir.IAdd(lo, ureg)};
+        hi = ir.IAdd(hi, IR::U32{ir.Select(ir.ILessThan(sum, ureg, false), ir.Imm32(1),
+                                           ir.Imm32(0))});
+        lo = sum;
+    }
+    IR::U64 address{ir.PackUint2x32(ir.CompositeConstruct(lo, hi))};
+    if (global_offset != 0) {
+        address = ir.IAdd(address, ir.Imm64(static_cast<u64>(global_offset)));
+    }
+    const IR::U1 condition{P(insn.Bits(87, 3), insn.Bit(90))};
+    const bool guarded{insn.Bits(87, 3) != PT || insn.Bit(90)};
+    const auto select{[&](const IR::U32& value) {
+        return guarded ? IR::U32{ir.Select(condition, value, ir.Imm32(0))} : value;
+    }};
+    switch (bit_size) {
+    case 32:
+        ir.WriteShared(32, shared, select(ir.LoadGlobal32(address)));
+        break;
+    case 64:
+    case 128: {
+        const IR::Value value{bit_size == 64 ? ir.LoadGlobal64(address)
+                                             : ir.LoadGlobal128(address)};
+        std::array<IR::U32, 4> words;
+        for (int i = 0; i < bit_size / 32; ++i) {
+            words[i] = select(IR::U32{ir.CompositeExtract(value, static_cast<size_t>(i))});
+        }
+        ir.WriteShared(bit_size, shared,
+                       bit_size == 64 ? ir.CompositeConstruct(words[0], words[1])
+                                      : ir.CompositeConstruct(words[0], words[1], words[2],
+                                                              words[3]));
+        break;
+    }
+    default:
+        throw NotImplementedException("LDGSTS size {}", bit_size);
     }
 }
 

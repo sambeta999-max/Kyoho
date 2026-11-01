@@ -184,13 +184,28 @@ void TranslatorVisitor::SUST(Instruction insn) {
     const bool is_raw{insn.Opcode() % 0x200 == 0x19d || insn.Opcode() % 0x200 == 0x19e};
     const Access access{MakeAccess(*this, insn, is_raw)};
     const IR::Reg data{Reg(insn.SrcBReg())};
-    const u32 count{access.raw_size ? RegistersOf(*access.raw_size) : 4};
-    if (!access.raw_size && insn.Bits(72, 4) != 0xf) {
-        throw NotImplementedException("SUST with channel mask {:x}", insn.Bits(72, 4));
-    }
     std::array<IR::U32, 4> color{ir.Imm32(0), ir.Imm32(0), ir.Imm32(0), ir.Imm32(0)};
-    for (u32 i = 0; i < count; ++i) {
-        color[i] = X(data + static_cast<int>(i));
+    const u32 mask{access.raw_size ? 0xfU : static_cast<u32>(insn.Bits(72, 4))};
+    if (access.raw_size) {
+        for (u32 i = 0; i < RegistersOf(*access.raw_size); ++i) {
+            color[i] = X(data + static_cast<int>(i));
+        }
+    } else {
+        // The enabled channels take consecutive registers, as for SULD. A formatted store
+        // writes every channel, so the others keep what the surface holds.
+        std::optional<IR::Value> old;
+        if (mask != 0xf) {
+            old = ir.ImageRead(access.handle, access.coords, access.info);
+        }
+        IR::Reg reg{data};
+        for (u32 component = 0; component < 4; ++component) {
+            if (((mask >> component) & 1) != 0) {
+                color[component] = X(reg);
+                ++reg;
+            } else if (old) {
+                color[component] = IR::U32{ir.CompositeExtract(*old, component)};
+            }
+        }
     }
     ir.ImageWrite(access.handle, access.coords,
                   ir.CompositeConstruct(color[0], color[1], color[2], color[3]), access.info);

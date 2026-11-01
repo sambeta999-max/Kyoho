@@ -31,6 +31,10 @@ void Dispatch(TranslatorVisitor& v, Opcode opcode, Instruction insn) {
         return v.IMAD_HI(insn);
     case Opcode::IMNMX:
         return v.IMNMX(insn);
+    case Opcode::LDGSTS:
+        return v.LDGSTS(insn);
+    case Opcode::IDP:
+        return v.IDP(insn);
     case Opcode::ISETP:
         return v.ISETP(insn);
     case Opcode::UISETP:
@@ -247,6 +251,8 @@ void Dispatch(TranslatorVisitor& v, Opcode opcode, Instruction insn) {
     case Opcode::WARPSYNC:
     case Opcode::YIELD:
     case Opcode::DEPBAR:
+    case Opcode::LDGDEPBAR:
+    case Opcode::ARRIVES_LDGSTSBAR:
     case Opcode::ERRBAR:
     case Opcode::CCTL:
         // Scheduling, convergence and cache hints have no effect on the host

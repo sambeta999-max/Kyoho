@@ -45,6 +45,7 @@ struct TranslatorVisitor {
     void UIMAD_WIDE(Instruction insn);
     void IMAD_HI(Instruction insn);
     void IMNMX(Instruction insn);
+    void IDP(Instruction insn);
     void ISETP(Instruction insn);
     void UISETP(Instruction insn);
     void LOP3(Instruction insn);
@@ -84,6 +85,7 @@ struct TranslatorVisitor {
     void STG(Instruction insn);
     void LDS(Instruction insn);
     void STS(Instruction insn);
+    void LDGSTS(Instruction insn);
     void LDL(Instruction insn);
     void STL(Instruction insn);
     void ATOMG(Instruction insn);
