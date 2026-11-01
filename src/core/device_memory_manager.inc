@@ -216,6 +216,9 @@ void DeviceMemoryManager<Traits>::Map(DAddr address, VAddr virtual_address, size
     tracked_entries.CommitRegion(start_page_d, start_page_d + num_pages);
     for (size_t i = 0; i < num_pages; i++) {
         const VAddr new_vaddress = virtual_address + i * Memory::YUZU_PAGESIZE;
+        // Untracked pages are walked one at a time; a run left by an earlier mapping of these
+        // device pages would let block accesses run past this mapping into unrelated memory.
+        tracked_entries.GetUnchecked(start_page_d + i).continuity_tracker = 0;
         auto* ptr = process_memory->GetPointerSilent(Common::ProcessAddress(new_vaddress));
         if (ptr != nullptr && GetRawPhysicalAddr(ptr) >= physical_size) [[unlikely]] {
             // Process memory that is not emulated DRAM (a host buffer mapped into the guest)
@@ -267,6 +270,7 @@ void DeviceMemoryManager<Traits>::Unmap(DAddr address, size_t size) {
         auto phys_addr = entry.compressed_physical_ptr;
         entry.compressed_physical_ptr = 0;
         entry.cpu_backing_address = 0;
+        entry.continuity_tracker = 0;
         if (phys_addr != 0) [[likely]] {
             u32& base_dev = compressed_device_addr.GetAndFault(phys_addr - 1U);
             if ((base_dev >> MULTI_FLAG_BITS) == 0) [[likely]] {
