@@ -196,6 +196,11 @@ TEST_CASE("Ampere corpus coverage", "[.][corpus]") {
             host_info.support_conditional_barrier = true;
             [[maybe_unused]] const IR::Program program{
                 Maxwell::TranslateProgram(inst_pool, block_pool, env, cfg, host_info)};
+            // EDEN_CORPUS_IR=<dir> writes each program's IR there as <program>.ir
+            if (const char* ir_dir{std::getenv("EDEN_CORPUS_IR")}) {
+                std::ofstream{std::filesystem::path{ir_dir} / (name + ".ir")}
+                    << IR::DumpProgram(program);
+            }
             const bool skipped{std::ranges::any_of(gaps, [&](const auto& item) {
                 return item.second.programs.contains(name);
             })};
