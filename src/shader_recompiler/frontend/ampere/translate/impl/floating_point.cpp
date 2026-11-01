@@ -70,16 +70,28 @@ void TranslatorVisitor::FFMA(Instruction insn) {
     F(Reg(insn.Dest()), Saturate(ir, insn, result));
 }
 
+// FMNMX.NAN returns the canonical NaN 0x7fffffff when either source is NaN. FMNMX.XORSIGN
+// (operands printed as |Ra|, |Rb|) picks between the absolute values and gives the result the
+// sign of Ra xor Rb, taken from the registers before the absolute value (GA102).
 void TranslatorVisitor::FMNMX(Instruction insn) {
-    if (insn.Bit(81) || insn.Bit(82)) {
-        throw NotImplementedException("FMNMX.NAN or .XORSIGN");
-    }
+    const bool nan{insn.Bit(81)};
+    const bool xorsign{insn.Bit(82)};
     const IR::FpControl control{.fmz_mode = insn.Bit(80) ? IR::FmzMode::FTZ : IR::FmzMode::None};
     const IR::F32 a{FloatSrcA(insn)};
     const IR::F32 b{FloatSrcB(insn)};
     const IR::U1 pick_min{P(insn.Bits(87, 3), insn.Bit(90))};
-    F(Reg(insn.Dest()),
-      IR::F32{ir.Select(pick_min, ir.FPMin(a, b, control), ir.FPMax(a, b, control))});
+    IR::F32 result{ir.Select(pick_min, ir.FPMin(a, b, control), ir.FPMax(a, b, control))};
+    if (xorsign) {
+        const IR::U32 raw_b{BIsWide(insn) ? Wide(insn) : Narrow(insn)};
+        const IR::U32 sign{
+            ir.BitwiseAnd(ir.BitwiseXor(SrcA(insn), raw_b), ir.Imm32(0x8000'0000U))};
+        result = ir.BitCast<IR::F32>(ir.BitwiseOr(ir.BitCast<IR::U32>(result), sign));
+    }
+    if (nan) {
+        const IR::U1 any_nan{ir.LogicalOr(ir.FPIsNan(a), ir.FPIsNan(b))};
+        result = IR::F32{ir.Select(any_nan, ir.BitCast<IR::F32>(ir.Imm32(0x7fff'ffffU)), result)};
+    }
+    F(Reg(insn.Dest()), result);
 }
 
 void TranslatorVisitor::FSET(Instruction insn) {
