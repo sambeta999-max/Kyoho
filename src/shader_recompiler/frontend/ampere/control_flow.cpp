@@ -101,13 +101,91 @@ Instruction ReadInsn(Environment& env, u32 offset) {
     return Instruction{env.ReadInstruction(offset), env.ReadInstruction(offset + 8)};
 }
 
+// Whether [16..24) of the instruction is a general purpose destination register. Barriers,
+// stores, control flow, predicate writers and uniform datapath instructions use those bits for
+// something else (DEPBAR.LE SB5, 0x1 reads as a write to R0).
+bool WritesGpr(Opcode opcode) {
+    switch (opcode) {
+    case Opcode::Invalid:
+    case Opcode::BAR:
+    case Opcode::BRA:
+    case Opcode::BRX:
+    case Opcode::BRXU:
+    case Opcode::BREAK:
+    case Opcode::BSSY:
+    case Opcode::BSYNC:
+    case Opcode::CALL_ABS:
+    case Opcode::CALL_REL:
+    case Opcode::CCTL:
+    case Opcode::CCTLL:
+    case Opcode::CCTLT:
+    case Opcode::DEPBAR:
+    case Opcode::ERRBAR:
+    case Opcode::EXIT:
+    case Opcode::KILL:
+    case Opcode::MEMBAR:
+    case Opcode::NOP:
+    case Opcode::RED:
+    case Opcode::RET:
+    case Opcode::ST:
+    case Opcode::STG:
+    case Opcode::STL:
+    case Opcode::STS:
+    case Opcode::WARPSYNC:
+    case Opcode::YIELD:
+        return false;
+    default:
+        break;
+    }
+    const std::string_view name{Ampere::NameOf(opcode)};
+    return !name.starts_with('U') && name.find("SETP") == std::string_view::npos &&
+           name.find("PLOP") == std::string_view::npos;
+}
+
 // Last unconditional writer of reg before offset, or nullopt when it isn't in the block
 std::optional<std::pair<u32, Instruction>> LastWriter(Environment& env, u32 reg, u32 offset,
                                                       u32 begin_offset) {
     while (offset > begin_offset) {
         offset -= 16;
         const Instruction insn{ReadInsn(env, offset)};
-        if (insn.Dest() == reg && Ampere::Decode(insn) != Opcode::Invalid) {
+        if (insn.Dest() == reg && WritesGpr(Ampere::Decode(insn))) {
+            if (insn.Pred() != PT || insn.PredNegated()) {
+                return std::nullopt;
+            }
+            return std::pair{offset, insn};
+        }
+    }
+    return std::nullopt;
+}
+
+bool IsUnconditionalJump(Opcode opcode, Instruction insn) {
+    switch (opcode) {
+    case Opcode::BRA:
+    case Opcode::BRX:
+    case Opcode::BRXU:
+    case Opcode::EXIT:
+    case Opcode::RET:
+    case Opcode::CALL_REL:
+    case Opcode::CALL_ABS:
+        return insn.Pred() == PT && !insn.PredNegated();
+    default:
+        return false;
+    }
+}
+
+// Like LastWriter, but walks across the instructions guarded by a predicate (they split blocks)
+// up to the function entry or the previous unconditional jump. A guarded writer of reg is not
+// tracked.
+std::optional<std::pair<u32, Instruction>> LastWriterInFunction(Environment& env, u32 reg,
+                                                                u32 offset, u32 begin_offset) {
+    while (offset > begin_offset) {
+        offset -= 16;
+        const Instruction insn{ReadInsn(env, offset)};
+        const Opcode opcode{Ampere::Decode(insn)};
+        if (IsUnconditionalJump(opcode, insn)) {
+            return std::nullopt;
+        }
+        if (insn.Dest() == reg && WritesGpr(opcode)) {
             if (insn.Pred() != PT || insn.PredNegated()) {
                 return std::nullopt;
             }
@@ -145,7 +223,7 @@ bool IsSubroutineCall(Environment& env, u32 call_offset, u32 begin_offset, u32 t
             link_reg = copy->second.SrcBReg();
             copy_offset = copy->first;
         }
-        const auto link{LastWriter(env, link_reg, call_offset, begin_offset)};
+        const auto link{LastWriterInFunction(env, link_reg, call_offset, begin_offset)};
         return link && Ampere::Decode(link->second) == Opcode::MOV &&
                link->second.Form() == Ampere::AluForm::ImmReg &&
                link->second.Imm32() + RelativeTarget(offset, insn) == call_offset + 16;
@@ -188,21 +266,6 @@ std::optional<BranchTable> TrackBranchTable(Environment& env, u32 brx_offset, u3
         .cbuf_offset = static_cast<u32>(static_cast<s32>(static_cast<s16>(ldc.CbufOffset()))),
         .num_entries = max_index + 1,
     };
-}
-
-bool IsUnconditionalJump(Opcode opcode, Instruction insn) {
-    switch (opcode) {
-    case Opcode::BRA:
-    case Opcode::BRX:
-    case Opcode::BRXU:
-    case Opcode::EXIT:
-    case Opcode::RET:
-    case Opcode::CALL_REL:
-    case Opcode::CALL_ABS:
-        return insn.Pred() == PT && !insn.PredNegated();
-    default:
-        return false;
-    }
 }
 
 // Last unconditional writer of uniform register ur before offset. Uniform datapath instructions
@@ -296,7 +359,8 @@ CFG::AnalysisState CFG::AnalyzeInstAmpere(Block* block, FunctionId function_id, 
         // exits and LUT shaders). When its callee returns through the link, treat it as a call.
         if (opcode == Opcode::CALL_REL && insn.Pred() == PT && !insn.PredNegated()) {
             const u32 target{RelativeTarget(offset, insn)};
-            if (IsSubroutineCall(env, offset, Ampere::ToOffset(block->begin), target)) {
+            if (IsSubroutineCall(env, offset,
+                                 Ampere::ToOffset(functions[function_id].entrypoint), target)) {
                 const Location cal_pc{Ampere::ToLocation(target)};
                 const auto it{std::ranges::find(functions, cal_pc, &Function::entrypoint)};
                 const bool exists{it != functions.end()};

@@ -992,12 +992,12 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
 
     LOG_DEBUG(Render_Vulkan, "{:#016x}", hash);
 
-    Shader::Maxwell::Flow::CFG cfg{env, pools.flow_block, env.StartAddress()};
-
-    // Dump it before error.
+    // Dump it before error (the control flow analysis can throw too).
     if (Settings::values.dump_guest_shaders) {
         env.Dump(hash, key.unique_hash);
     }
+
+    Shader::Maxwell::Flow::CFG cfg{env, pools.flow_block, env.StartAddress()};
 
     auto program{TranslateProgram(pools.inst, pools.block, env, cfg, host_info)};
     const VkDriverIdKHR driver_id = device.GetDriverID();

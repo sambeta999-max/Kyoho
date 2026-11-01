@@ -394,6 +394,11 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
         }
     }
 
+    // EDEN_DUMP_SHADERS=1 dumps guest shaders (the setting cannot be saved in the ini)
+    if (std::getenv("EDEN_DUMP_SHADERS")) {
+        Settings::values.dump_guest_shaders.SetValue(true);
+    }
+
     // Core is loaded, start the GPU (makes the GPU contexts current to this thread)
     state->system.GPU().Start();
     state->system.GetCpuManager().OnGpuReady();
