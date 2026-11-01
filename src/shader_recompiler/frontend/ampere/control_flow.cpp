@@ -20,10 +20,20 @@ using Ampere::Opcode;
 
 constexpr u32 PT{7};
 
+// Uniform datapath instructions are guarded by a uniform predicate (@UP0) in the same field.
+// VOTEU sits among their opcodes but runs on the regular datapath.
+bool GuardIsUniform(const Instruction& insn) {
+    const u64 opcode{insn.Bits(0, 9)};
+    return opcode >= 0x082 && opcode <= 0x0bf && opcode != 0x086;
+}
+
 // A predicate source that is never true yields no condition
 std::optional<IR::Condition> GuardCondition(const Instruction& insn) {
     if (insn.Pred() == PT) {
         return insn.PredNegated() ? std::nullopt : std::optional{IR::Condition{true}};
+    }
+    if (GuardIsUniform(insn)) {
+        return IR::Condition{IR::UniformPred(insn.Pred()), insn.PredNegated()};
     }
     return IR::Condition{static_cast<IR::Pred>(insn.Pred()), insn.PredNegated()};
 }

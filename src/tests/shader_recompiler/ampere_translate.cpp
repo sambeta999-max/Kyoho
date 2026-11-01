@@ -517,6 +517,23 @@ TEST_CASE("Ampere translate: wide multiply and compare", "[shader][ampere]") {
     REQUIRE(colors[3] == 3u);
 }
 
+TEST_CASE("Ampere translate: uniform predicate guard", "[shader][ampere]") {
+    const auto umov{[](u64 dest, u32 value, u64 pred, bool negated) {
+        return Encoding{0x882, pred, negated}.Set(16, 6, dest).Set(32, 32, value);
+    }};
+    TestEnvironment env{{
+        // UISETP.NE.AND UP0, UPT, UR4, 0x1, UPT
+        Encoding{0x88c}.Set(24, 6, 4).Set(32, 32, 1).Set(73, 1, 1).Set(76, 3, 5).Set(81, 3, 0)
+            .Set(84, 3, PT).Set(87, 3, PT).Set(91, 1, 1),
+        umov(5, 9, 0, false),
+        Exit(),
+    }};
+    ObjectPool<Maxwell::Flow::Block> flow_pool;
+    const Maxwell::Flow::CFG cfg{env, flow_pool, u32{0}};
+    // The guard reads UP0, not P0
+    REQUIRE(cfg.Dot().find("UP0") != std::string::npos);
+}
+
 TEST_CASE("Ampere translate: floating point", "[shader][ampere]") {
     Translation t;
     Translate(t, {
