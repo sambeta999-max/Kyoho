@@ -356,7 +356,12 @@ private:
         Result result = Kernel::ResultInvalidCombination;
         if (packet[0] == 0x0010'007d && (packet[1] & 0x3ff) == 3) {
             result = Kernel::ResultInvalidState;
-            if (decoder) {
+            if (decoder && pending.size() >= MaxPendingPictures) {
+                // The input queue is full: the console's decoder answers with this result and
+                // nn::codec clients (Donkey Kong Bananza) submit again after the submission-ready
+                // event, instead of having the server buffer the whole stream.
+                result = ResultInputQueueFull;
+            } else if (decoder) {
                 const s64 pts = static_cast<s64>(u64{packet[5]} | (u64{packet[6]} << 32));
                 const bool end_of_stream = (packet[7] & 0xff) != 0;
                 const auto data = ctx.ReadBuffer();
@@ -420,6 +425,8 @@ private:
     // the submission-ready event is signaled, so it is only signaled while this backlog is
     // short; otherwise a whole stream would be decoded into host memory at once.
     static constexpr size_t MaxPendingPictures = 2;
+    // Module 111 (codec), description 3603: the result nn::codec clients treat as "try again"
+    static constexpr Result ResultInputQueueFull{static_cast<ErrorModule>(111), 3603};
     static constexpr size_t MaxBufferedPictures = 16;
 
     void SignalSubmissionReady() {
