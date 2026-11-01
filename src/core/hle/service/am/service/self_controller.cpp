@@ -81,6 +81,8 @@ ISelfController::ISelfController(Core::System& system_, std::shared_ptr<Applet> 
         {240, D<&ISelfController::Unknown240>, "Unknown240"},
         {1000, nullptr, "GetDebugStorageChannel"},
         {2000, &ISelfController::GetGraphicsSupervisor, "GetGraphicsSupervisor"},
+        {2400, D<&ISelfController::SetSwitch2Flag>, "Unknown2400"}, // Switch 2
+        {2401, D<&ISelfController::SetSwitch2Flag>, "Unknown2401"}, // Switch 2
     };
     // clang-format on
 
@@ -465,6 +467,12 @@ Result ISelfController::Unknown230(u32 in_val, Out<u16> out_val) {
 
     *out_val = 0;
 
+    R_SUCCEED();
+}
+
+// Switch 2 setters taking one bool (sent with the proxy helper for a single u8 argument)
+Result ISelfController::SetSwitch2Flag(bool enabled) {
+    LOG_WARNING(Service_AM, "(STUBBED) called, enabled={}", enabled);
     R_SUCCEED();
 }
 
