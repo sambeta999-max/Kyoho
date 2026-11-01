@@ -4,7 +4,9 @@
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <optional>
+#include <vector>
 
 #include <boost/container/flat_set.hpp>
 #include <boost/container/small_vector.hpp>
@@ -284,6 +286,7 @@ bool MeetsBias(const StorageBufferAddr& storage_buffer, const Bias& bias) noexce
 struct LowAddrInfo {
     IR::U32 value;
     s32 imm_offset;
+    std::optional<IR::U32> high;
 };
 
 /// Tries to track the first 32-bits of a global memory instruction
@@ -329,6 +332,7 @@ std::optional<LowAddrInfo> TrackLowAddress(IR::Inst* inst) {
     return LowAddrInfo{
         .value{IR::U32{addr_inst->Arg(0)}},
         .imm_offset = imm_offset,
+        .high{IR::U32{addr_inst->Arg(1)}},
     };
 }
 
@@ -369,6 +373,85 @@ std::optional<StorageBufferAddr> Track(const IR::Value& value, const Bias* bias)
     return BreadthFirstSearch(value, pred);
 }
 
+/// Constant buffer words a value is a sum of (immediate index and offset). Only additions (and the
+/// carries and copies around them) are followed: a pointer is added to offsets, while words that
+/// are multiplied, shifted or compared are strides, sizes and bounds.
+std::vector<StorageBufferAddr> CbufSources(const IR::Value& value) {
+    std::vector<StorageBufferAddr> result;
+    std::vector<const IR::Inst*> visited;
+    std::vector<IR::Value> stack{value};
+    while (!stack.empty()) {
+        const IR::Value current{stack.back()};
+        stack.pop_back();
+        if (current.IsImmediate()) {
+            continue;
+        }
+        const IR::Inst* const inst{current.InstRecursive()};
+        if (std::ranges::find(visited, inst) != visited.end()) {
+            continue;
+        }
+        visited.push_back(inst);
+        switch (inst->GetOpcode()) {
+        case IR::Opcode::GetCbufU32:
+        case IR::Opcode::GetCbufU32x2:
+            if (inst->Arg(0).IsImmediate() && inst->Arg(1).IsImmediate()) {
+                const u32 index{inst->Arg(0).U32()};
+                const u32 offset{inst->Arg(1).U32()};
+                result.push_back({.index = index, .offset = offset});
+                if (inst->GetOpcode() == IR::Opcode::GetCbufU32x2) {
+                    // A 64-bit load (ULDC.64) provides both words of a pointer
+                    result.push_back({.index = index, .offset = offset + 4});
+                }
+            }
+            break;
+        case IR::Opcode::IAdd32:
+        case IR::Opcode::IAdd64:
+        case IR::Opcode::ISub32:
+        case IR::Opcode::Phi:
+        case IR::Opcode::SelectU32:
+        case IR::Opcode::CompositeConstructU32x2:
+        case IR::Opcode::CompositeExtractU32x2:
+        case IR::Opcode::PackUint2x32:
+        case IR::Opcode::UnpackUint2x32:
+        case IR::Opcode::BitwiseAnd32:
+            for (size_t arg = 0; arg < inst->NumArgs(); ++arg) {
+                stack.push_back(inst->Arg(arg));
+            }
+            break;
+        default:
+            break;
+        }
+    }
+    return result;
+}
+
+/// A 64-bit address built from a pointer in a constant buffer takes its low word from c[x] and
+/// its high word from c[x + 4]. Among the low word's sources, picks the one whose high word is
+/// also a source of the address's high half, which rules out sizes and other words that only
+/// enter the offset (Fast Fusion: c[0x188] + (c[0x250] << 1) * y + ...).
+std::optional<StorageBufferAddr> TrackPointerPair(const LowAddrInfo& info) {
+    if (!info.high || info.high->IsImmediate()) {
+        return std::nullopt;
+    }
+    const std::vector<StorageBufferAddr> high_sources{CbufSources(*info.high)};
+    std::optional<StorageBufferAddr> result;
+    for (const StorageBufferAddr& low : CbufSources(info.value)) {
+        if (!Common::IsAligned(low.offset, 8)) {
+            continue;
+        }
+        const bool paired{std::ranges::any_of(high_sources, [&](const StorageBufferAddr& high) {
+            return high.index == low.index && high.offset == low.offset + 4;
+        })};
+        // 64-bit offsets added to the pointer pair up as well (Fast Fusion adds c[0x200] to the
+        // pointer at c[0x160]); kernel parameters put the pointers before the offsets, so the
+        // lowest pair is the base
+        if (paired && (!result || *result > low)) {
+            result = low;
+        }
+    }
+    return result;
+}
+
 /// Collects the storage buffer used by a global memory instruction and the instruction itself
 void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info) {
     // NVN puts storage buffers in a specific range, we have to bias towards these addresses to
@@ -387,7 +470,10 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info) 
     }
     // First try to find storage buffers in the NVN address
     const IR::U32 low_addr{low_addr_info->value};
-    std::optional<StorageBufferAddr> storage_buffer{Track(low_addr, &nvn_bias)};
+    std::optional<StorageBufferAddr> storage_buffer{TrackPointerPair(*low_addr_info)};
+    if (!storage_buffer) {
+        storage_buffer = Track(low_addr, &nvn_bias);
+    }
     if (!storage_buffer) {
         // If it fails, track without a bias
         storage_buffer = Track(low_addr, nullptr);
