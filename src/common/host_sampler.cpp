@@ -32,7 +32,7 @@ namespace {
 // callers (from the x64 unwind tables) are recorded, and every 5 s host-samples-<name>.txt in the
 // working directory is rewritten with the functions by exclusive (where the thread was) and
 // inclusive (anywhere on the recorded stack) sample counts.
-constexpr int Depth = 12;
+constexpr int Depth = 16;
 
 struct Target {
     std::string name;
@@ -102,7 +102,7 @@ void Report() {
                     continue;
                 }
                 std::string chain;
-                for (int j = i + 1; j < Depth && j <= i + 4 && frames[j] != 0; ++j) {
+                for (int j = i + 1; j < Depth && j <= i + 7 && frames[j] != 0; ++j) {
                     chain += (j == i + 1 ? "" : " <- ") + Symbol(frames[j], cache);
                 }
                 callers[chain] += count;
