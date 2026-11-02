@@ -151,6 +151,9 @@ PixelFormat PixelFormatFromTextureInfo(TextureFormat format, ComponentType red, 
         return PixelFormat::X8_D24_UNORM;
     case Hash(TextureFormat::X8Z24, UNORM, UINT, UINT, UINT, LINEAR):
         return PixelFormat::X8_D24_UNORM;
+    // NS2 descriptors, with UNORM unused blue and alpha components as for S8Z24 below
+    case Hash(TextureFormat::X8Z24, UNORM, UINT, UNORM, UNORM, LINEAR):
+        return PixelFormat::X8_D24_UNORM;
     case Hash(TextureFormat::Z24S8, UINT, UNORM, UNORM, UNORM, LINEAR):
         return PixelFormat::S8_UINT_D24_UNORM;
     case Hash(TextureFormat::Z24S8, UINT, UNORM, UINT, UINT, LINEAR):
