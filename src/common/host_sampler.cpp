@@ -92,8 +92,22 @@ void Report() {
     for (Target* const target : targets) {
         std::map<std::string, unsigned long long> exclusive;
         std::map<std::string, unsigned long long> inclusive;
+        // EDEN_HOST_SAMPLER_FOCUS=<part of a function name>: also count the callers above it
+        static const char* const focus = std::getenv("EDEN_HOST_SAMPLER_FOCUS");
+        std::map<std::string, unsigned long long> callers;
         for (const auto& [frames, count] : target->stacks) {
             std::vector<std::string> seen;
+            for (int i = 0; focus && i < Depth && frames[i] != 0; ++i) {
+                if (Symbol(frames[i], cache).find(focus) == std::string::npos) {
+                    continue;
+                }
+                std::string chain;
+                for (int j = i + 1; j < Depth && j <= i + 4 && frames[j] != 0; ++j) {
+                    chain += (j == i + 1 ? "" : " <- ") + Symbol(frames[j], cache);
+                }
+                callers[chain] += count;
+                break;
+            }
             for (int i = 0; i < Depth && frames[i] != 0; ++i) {
                 std::string name = Symbol(frames[i], cache);
                 if (i == 0) {
@@ -121,6 +135,14 @@ void Report() {
             for (const auto& [count, name] : sorted(exclusive)) {
                 if (lines++ == 80) break;
                 std::fprintf(file, "%6.2f%% %s\n", 100.0 * count / total, name.c_str());
+            }
+            if (focus) {
+                std::fprintf(file, "\ncallers of %s\n", focus);
+                int callers_lines = 0;
+                for (const auto& [count, name] : sorted(callers)) {
+                    if (callers_lines++ == 25) break;
+                    std::fprintf(file, "%6.2f%% %s\n", 100.0 * count / total, name.c_str());
+                }
             }
             std::fprintf(file, "\ninclusive\n");
             lines = 0;
