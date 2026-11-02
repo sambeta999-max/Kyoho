@@ -118,6 +118,8 @@ add_library(
     string_util.cpp
     string_util.h
     swap.h
+    host_sampler.cpp
+    host_sampler.h
     thread.cpp
     thread.h
     adpf.cpp
