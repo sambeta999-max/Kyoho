@@ -70,7 +70,15 @@ void ReleaseSemaphore(VideoCore::RasterizerInterface& rasterizer, MemoryManager&
     if (release.timestamp) {
         LOG_WARNING(HW_GPU, "Semaphore release at {:#x} without its timestamp", release.address);
     }
-    rasterizer.SignalFence([&memory_manager, release] {
+    // What the release will leave, for acquires that come before the host GPU reaches it
+    u64 pending_value = release.payload;
+    if (release.reduction) {
+        pending_value = ReduceSemaphore(
+            *release.reduction, memory_manager.ReadSemaphore(release.address, release.payload_64),
+            pending_value, release.reduction_signed, release.payload_64);
+    }
+    const u64 ticket = memory_manager.SetPendingSemaphore(release.address, pending_value);
+    rasterizer.SignalFence([&memory_manager, release, ticket] {
         u64 value = release.payload;
         if (release.reduction) {
             const u64 old_value = release.payload_64 ? memory_manager.Read<u64>(release.address)
@@ -83,6 +91,7 @@ void ReleaseSemaphore(VideoCore::RasterizerInterface& rasterizer, MemoryManager&
         } else {
             memory_manager.Write<u32>(release.address, static_cast<u32>(value));
         }
+        memory_manager.ClearPendingSemaphore(release.address, ticket);
     });
 }
 

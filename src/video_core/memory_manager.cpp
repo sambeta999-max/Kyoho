@@ -210,6 +210,31 @@ GPUVAddr MemoryManager::BigPageTableOp(GPUVAddr gpu_addr, [[maybe_unused]] DAddr
     return gpu_addr;
 }
 
+u64 MemoryManager::SetPendingSemaphore(GPUVAddr addr, u64 value) {
+    std::scoped_lock lock{pending_semaphores_mutex};
+    const u64 ticket = ++pending_semaphore_ticket;
+    pending_semaphores.insert_or_assign(addr, std::pair{value, ticket});
+    return ticket;
+}
+
+void MemoryManager::ClearPendingSemaphore(GPUVAddr addr, u64 ticket) {
+    std::scoped_lock lock{pending_semaphores_mutex};
+    if (const auto it = pending_semaphores.find(addr);
+        it != pending_semaphores.end() && it->second.second == ticket) {
+        pending_semaphores.erase(it);
+    }
+}
+
+u64 MemoryManager::ReadSemaphore(GPUVAddr addr, bool is_64) {
+    {
+        std::scoped_lock lock{pending_semaphores_mutex};
+        if (const auto it = pending_semaphores.find(addr); it != pending_semaphores.end()) {
+            return is_64 ? it->second.first : static_cast<u32>(it->second.first);
+        }
+    }
+    return is_64 ? Read<u64>(addr) : Read<u32>(addr);
+}
+
 void MemoryManager::BindRasterizer(VideoCore::RasterizerInterface* rasterizer_) {
     rasterizer = rasterizer_;
 }

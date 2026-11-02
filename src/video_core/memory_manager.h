@@ -50,6 +50,17 @@ public:
     bool UsesNativeTiling() const { return native_tiling; }
     bool IsShuttingDown() const;
 
+    /// Semaphore releases wait for the host GPU to reach them before they reach guest memory (GPU
+    /// accuracy High), so the guest CPU sees them in order with the work before them. Acquires on
+    /// the GPU do not need to wait for that: commands after an acquire reach the host queue after
+    /// the work before the release anyway. The released value is kept here until it is written.
+    /// Returns a ticket for ClearPendingSemaphore.
+    u64 SetPendingSemaphore(GPUVAddr addr, u64 value);
+    /// Forgets a pending value once it is in guest memory, unless a later release replaced it.
+    void ClearPendingSemaphore(GPUVAddr addr, u64 ticket);
+    /// The pending value of a semaphore, or what guest memory holds.
+    u64 ReadSemaphore(GPUVAddr addr, bool is_64);
+
     static constexpr bool HAS_FLUSH_INVALIDATION = true;
 
     inline size_t GetID() const noexcept {
@@ -238,6 +249,9 @@ private:
 
     bool native_tiling{};
     mutable std::mutex guard;
+    std::mutex pending_semaphores_mutex;
+    std::unordered_map<GPUVAddr, std::pair<u64, u64>> pending_semaphores; ///< value, ticket
+    u64 pending_semaphore_ticket{};
 
     static constexpr size_t continuous_bits = 64;
 

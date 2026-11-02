@@ -153,7 +153,8 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
         AcquireOrSuspend(dma_pusher, semaphore);
     } else {
         do {
-            const u32 word = dma_pusher.memory_manager.Read<u32>(regs.semaphore_address.SemaphoreAddress());
+            const u32 word = static_cast<u32>(dma_pusher.memory_manager.ReadSemaphore(
+                regs.semaphore_address.SemaphoreAddress(), false));
             regs.acquire_source = true;
             regs.acquire_value = regs.semaphore_sequence;
             if (op == GpuSemaphoreOperation::AcquireEqual) {
@@ -189,13 +190,15 @@ void Puller::ProcessSemaphoreRelease(DmaPusher& dma_pusher) {
 }
 
 void Puller::ProcessSemaphoreAcquire(DmaPusher& dma_pusher) {
-    u32 word = dma_pusher.memory_manager.Read<u32>(regs.semaphore_address.SemaphoreAddress());
+    u32 word = static_cast<u32>(
+        dma_pusher.memory_manager.ReadSemaphore(regs.semaphore_address.SemaphoreAddress(), false));
     const auto value = regs.semaphore_acquire;
     while (word != value) {
         regs.acquire_active = true;
         regs.acquire_value = value;
         dma_pusher.rasterizer->ReleaseFences();
-        word = dma_pusher.memory_manager.Read<u32>(regs.semaphore_address.SemaphoreAddress());
+        word = static_cast<u32>(dma_pusher.memory_manager.ReadSemaphore(
+            regs.semaphore_address.SemaphoreAddress(), false));
         // TODO(kemathe73) figure out how to do the acquire_timeout
         regs.acquire_mode = false;
         regs.acquire_source = false;
@@ -215,8 +218,8 @@ void Puller::ProcessHostSemaphoreExecute(DmaPusher& dma_pusher) {
 }
 
 bool Puller::IsAcquired(DmaPusher& dma_pusher, const HostSemaphore& semaphore) const {
-    const u64 value = semaphore.payload_64 ? dma_pusher.memory_manager.Read<u64>(semaphore.address)
-                                           : dma_pusher.memory_manager.Read<u32>(semaphore.address);
+    const u64 value = dma_pusher.memory_manager.ReadSemaphore(semaphore.address,
+                                                              semaphore.payload_64);
     return semaphore.IsAcquired(value);
 }
 

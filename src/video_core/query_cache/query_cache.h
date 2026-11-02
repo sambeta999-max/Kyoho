@@ -291,6 +291,14 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
             impl->pending_unregister.push_back(query_location);
         }
     });
+    if (counter_type == QueryType::Payload && (is_fence || Settings::IsGPULevelHigh())) {
+        // Releases reach guest memory once the host GPU is past them; acquires see them before
+        const u64 ticket = gpu_memory->SetPendingSemaphore(addr, payload);
+        operation = [inner = std::move(operation), memory = gpu_memory, addr, ticket] {
+            inner();
+            memory->ClearPendingSemaphore(addr, ticket);
+        };
+    }
     if (is_fence) {
         impl->rasterizer.SignalFence(std::move(operation));
     } else {
