@@ -602,7 +602,7 @@ void TextureCache<P>::WriteMemory(DAddr cpu_addr, size_t size) {
 
 template <class P>
 bool TextureCache<P>::IsDownloadable(const ImageBase& image) const noexcept {
-    if (!image.IsSafeGpuCopy()) {
+    if (!image.IsSafeGpuCopy() || True(image.flags & ImageFlagBits::TrimmedLevels)) {
         return false;
     }
     if (image.info.num_samples == 1) {
@@ -1182,6 +1182,24 @@ void TextureCache<P>::UploadImageContents(Image& image, StagingBuffer& staging) 
     const std::span<u8> mapped_span = staging.mapped_span;
     const GPUVAddr gpu_addr = image.gpu_addr;
 
+    if (True(image.flags & ImageFlagBits::TrimmedLevels)) {
+        // Only read the levels the host keeps: each layer's tail of the mip chain, packed so the
+        // layer stride of the staging buffer is the size of that tail
+        auto uploads = FullUploadSwizzles(image.info);
+        const size_t skipped = uploads[image.host_level_offset].buffer_offset;
+        const size_t tail = image.info.layer_stride - skipped;
+        for (s32 layer = 0; layer < image.info.resources.layers; ++layer) {
+            gpu_memory->ReadBlock(gpu_addr + layer * image.info.layer_stride + skipped,
+                                  mapped_span.data() + layer * tail, tail,
+                                  VideoCommon::CacheType::NoTextureCache);
+        }
+        uploads.erase(uploads.begin(), uploads.begin() + image.host_level_offset);
+        for (auto& upload : uploads) {
+            upload.buffer_offset -= skipped;
+        }
+        runtime.AccelerateImageUpload(image, staging, uploads, 0, 0);
+        return;
+    }
     if (True(image.flags & ImageFlagBits::AcceleratedUpload)) {
         gpu_memory->ReadBlock(gpu_addr, mapped_span.data(), mapped_span.size_bytes(),
                               VideoCommon::CacheType::NoTextureCache);
@@ -1554,14 +1572,14 @@ bool TextureCache<P>::ScaleDown(Image& image) {
 template <class P>
 ImageId TextureCache<P>::InsertImage(const ImageInfo& info, GPUVAddr gpu_addr,
                                      RelaxedOptions options) {
-    if (ApproximateImageBytes(info) > MaxImageBytes) [[unlikely]] {
+    if (ApproximateImageBytes(info) > MaxImageBytes && !runtime.CanTrimLevels(info)) [[unlikely]] {
         // Sparse (partially resident) textures can describe more memory than the console has,
         // such as Mario Kart World's 8192x8192 array of 68 layers with 12 levels. A host image
         // of that size cannot be allocated; the texture reads as the null image instead.
         static bool warned{};
         if (!std::exchange(warned, true)) {
-            LOG_WARNING(HW_GPU, "Image {}x{}x{} with {} layers and {} levels is too large",
-                        info.size.width, info.size.height, info.size.depth,
+            LOG_WARNING(HW_GPU, "Image {}x{}x{} format {} with {} layers and {} levels is too large",
+                        info.size.width, info.size.height, info.size.depth, static_cast<u32>(info.format),
                         info.resources.layers, info.resources.levels);
         }
         return ImageId{};

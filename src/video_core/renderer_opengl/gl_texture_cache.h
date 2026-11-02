@@ -135,6 +135,10 @@ public:
         return false;
     }
 
+    bool CanTrimLevels(const VideoCommon::ImageInfo&) const noexcept {
+        return false;
+    }
+
     bool HasBrokenTextureViewFormats() const noexcept {
         return has_broken_texture_view_formats;
     }

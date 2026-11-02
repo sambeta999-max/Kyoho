@@ -30,6 +30,7 @@
 #include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
 #include "video_core/renderer_vulkan/vk_update_descriptor.h"
 #include "video_core/texture_cache/accelerated_swizzle.h"
+#include "video_core/texture_cache/util.h"
 #include "video_core/texture_cache/types.h"
 #include "video_core/textures/decoders.h"
 #include "video_core/vulkan_common/vulkan_device.h"
@@ -558,6 +559,18 @@ void ASTCDecoderPass::Assemble(Image& image, const StagingBufferRef& map,
                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, image_barrier);
         cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE, vk_pipeline);
     });
+    // A trimmed image's input holds each layer's mip chain from the first level the host keeps
+    // (see TextureCache::UploadImageContents), so its layer stride is the size of that tail
+    const s32 host_level_offset = static_cast<s32>(image.host_level_offset);
+    const u32 input_layer_stride =
+        host_level_offset != 0
+            ? image.info.layer_stride -
+                  static_cast<u32>(VideoCommon::FullUploadSwizzles(image.info)[host_level_offset]
+                                       .buffer_offset)
+            : image.info.layer_stride;
+    const size_t input_size = host_level_offset != 0
+                                  ? size_t{input_layer_stride} * image.info.resources.layers
+                                  : image.guest_size_bytes;
     for (const VideoCommon::SwizzleParameters& swizzle : swizzles) {
         const size_t input_offset = swizzle.buffer_offset + map.offset;
         const u32 num_dispatches_x = Common::DivCeil(swizzle.num_tiles.width, 8U);
@@ -566,12 +579,14 @@ void ASTCDecoderPass::Assemble(Image& image, const StagingBufferRef& map,
 
         compute_pass_descriptor_queue.Acquire(scheduler, 2);
         compute_pass_descriptor_queue.AddBuffer(map.buffer, input_offset,
-                                                image.guest_size_bytes - swizzle.buffer_offset);
-        compute_pass_descriptor_queue.AddImage(image.StorageImageView(swizzle.level));
+                                                input_size - swizzle.buffer_offset);
+        compute_pass_descriptor_queue.AddImage(
+            image.StorageImageView(swizzle.level - host_level_offset));
         const void* const descriptor_data{compute_pass_descriptor_queue.UpdateData()};
 
         // To unswizzle the ASTC data
-        const auto params = MakeBlockLinearSwizzle2DParams(swizzle, image.info);
+        auto params = MakeBlockLinearSwizzle2DParams(swizzle, image.info);
+        params.layer_stride = input_layer_stride;
         ASSERT(params.origin == (std::array<u32, 3>{0, 0, 0}));
         ASSERT(params.destination == (std::array<s32, 3>{0, 0, 0}));
         ASSERT(params.bytes_per_block_log2 == 4);

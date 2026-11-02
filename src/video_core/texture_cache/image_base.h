@@ -45,6 +45,10 @@ enum class ImageFlagBits : u32 {
 
     AsynchronousDecode = 1 << 16,
     IsDecoding = 1 << 17, ///< Is currently being decoded asynchronously.
+
+    /// The host image keeps only the levels from host_level_offset on, as its decoded copy
+    /// would not fit in device memory. Guest level host_level_offset is host level 0.
+    TrimmedLevels = 1 << 18,
 };
 DECLARE_ENUM_FLAG_OPERATORS(ImageFlagBits)
 
@@ -89,6 +93,7 @@ struct ImageBase {
 
     ImageInfo info;
 
+    u32 host_level_offset = 0; ///< See ImageFlagBits::TrimmedLevels
     u32 guest_size_bytes = 0;
     u32 unswizzled_size_bytes = 0;
     u32 converted_size_bytes = 0;

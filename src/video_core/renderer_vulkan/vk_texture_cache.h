@@ -105,6 +105,9 @@ public:
 
     void TransitionImageLayout(Image& image);
 
+    /// Whether an image too large to allocate can keep only its lower levels on the host
+    bool CanTrimLevels(const VideoCommon::ImageInfo& info) const;
+
     bool HasBrokenTextureViewFormats() const noexcept {
         // No known Vulkan driver has broken image views
         return false;
