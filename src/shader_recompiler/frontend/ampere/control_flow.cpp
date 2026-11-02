@@ -205,6 +205,37 @@ std::optional<std::pair<u32, Instruction>> LastWriterInFunction(Environment& env
     return std::nullopt;
 }
 
+// The register copied by MOV Rd, Ra or by IMAD.MOV.U32 Rd, RZ, RZ, Ra
+std::optional<u32> CopySource(Instruction insn) {
+    if (insn.Form() != Ampere::AluForm::RegReg) {
+        return std::nullopt;
+    }
+    switch (Ampere::Decode(insn)) {
+    case Opcode::MOV:
+        return insn.SrcBReg();
+    case Opcode::IMAD:
+        if (insn.SrcA() == RZ && insn.Bits(32, 8) == RZ && !insn.Bit(75)) {
+            return static_cast<u32>(insn.Bits(64, 8));
+        }
+        return std::nullopt;
+    default:
+        return std::nullopt;
+    }
+}
+
+// MOV Rd, imm or IMAD.MOV.U32 Rd, RZ, RZ, imm
+bool IsImmediateMove(Instruction insn) {
+    switch (Ampere::Decode(insn)) {
+    case Opcode::MOV:
+        return insn.Form() == Ampere::AluForm::ImmReg;
+    case Opcode::IMAD:
+        return insn.Form() == Ampere::AluForm::RegImm && insn.SrcA() == RZ &&
+               insn.Bits(64, 8) == RZ;
+    default:
+        return false;
+    }
+}
+
 // A subroutine call loads a link register before CALL.REL.NOINC, and the callee returns with
 // RET.REL.NODEC Rlink, which jumps to Rlink plus its own relative target. Graphics programs count
 // addresses from the start of the program header, so the link value is not the return offset.
@@ -226,16 +257,15 @@ bool IsSubroutineCall(Environment& env, u32 call_offset, u32 begin_offset, u32 t
         u32 link_reg{insn.SrcA()};
         for (u32 copy_offset = offset, depth = 0; depth < 4; ++depth) {
             const auto copy{LastWriter(env, link_reg, copy_offset, target)};
-            if (!copy || Ampere::Decode(copy->second) != Opcode::MOV ||
-                copy->second.Form() != Ampere::AluForm::RegReg) {
+            const std::optional source{copy ? CopySource(copy->second) : std::nullopt};
+            if (!source) {
                 break;
             }
-            link_reg = copy->second.SrcBReg();
+            link_reg = *source;
             copy_offset = copy->first;
         }
         const auto link{LastWriterInFunction(env, link_reg, call_offset, begin_offset)};
-        return link && Ampere::Decode(link->second) == Opcode::MOV &&
-               link->second.Form() == Ampere::AluForm::ImmReg &&
+        return link && IsImmediateMove(link->second) &&
                link->second.Imm32() + RelativeTarget(offset, insn) == call_offset + 16;
     }
     return false;
@@ -257,9 +287,16 @@ std::optional<BranchTable> TrackBranchTable(Environment& env, u32 brx_offset, u3
     }
     const Instruction ldc{load->second};
     const auto scale{writer(ldc.SrcA(), load->first)};
-    if (!scale || Ampere::Decode(scale->second) != Opcode::SHF ||
-        scale->second.Form() != Ampere::AluForm::ImmReg || scale->second.Bit(76) ||
-        scale->second.Bits(32, 32) != 2 || scale->second.Bits(64, 8) != RZ) {
+    // SHF.L.U32 Rj, Ri, 2 or IMAD.SHL.U32 Rj, Ri, 4, RZ
+    if (!scale || scale->second.Form() != Ampere::AluForm::ImmReg ||
+        scale->second.Bits(64, 8) != RZ) {
+        return std::nullopt;
+    }
+    const Opcode scale_opcode{Ampere::Decode(scale->second)};
+    const bool is_shift{scale_opcode == Opcode::SHF && !scale->second.Bit(76) &&
+                        scale->second.Bits(32, 32) == 2};
+    const bool is_multiply{scale_opcode == Opcode::IMAD && scale->second.Bits(32, 32) == 4};
+    if (!is_shift && !is_multiply) {
         return std::nullopt;
     }
     const auto clamp{writer(scale->second.SrcA(), scale->first)};

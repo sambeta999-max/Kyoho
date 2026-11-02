@@ -580,6 +580,22 @@ TEST_CASE("Ampere translate: IMAD.HI adds a register pair", "[shader][ampere]") 
     REQUIRE(colors[1] == 1u);
 }
 
+TEST_CASE("Ampere translate: call returning through a copied link", "[shader][ampere]") {
+    Translation t;
+    Translate(t, {
+        // MOV R12, 0x20
+        MovImm(12, 0x20),
+        // CALL.REL.NOINC 0x30
+        Encoding{0x944}.Set(32, 32, 0x10).Set(87, 3, PT),
+        Exit(),
+        // IMAD.MOV.U32 R2, RZ, RZ, R12
+        Encoding{0x224}.Set(16, 8, 2).Set(24, 8, RZ).Set(32, 8, RZ).Set(64, 8, 12).Set(81, 3, PT),
+        // RET.REL.NODEC R2 0x0
+        Encoding{0x950}.Set(24, 8, 2).Set(32, 32, static_cast<u32>(-0x50)).Set(87, 3, PT),
+    });
+    REQUIRE(t.program.blocks.size() >= 1);
+}
+
 TEST_CASE("Ampere translate: floating point", "[shader][ampere]") {
     Translation t;
     Translate(t, {
