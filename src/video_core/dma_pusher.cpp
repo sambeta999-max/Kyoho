@@ -60,10 +60,16 @@ bool DmaPusher::Step() {
 
     auto* const split = VideoCommon::GpuSplit::Active();
     // A channel suspended on a semaphore continues where it stopped once the semaphore is ready
-    if (split && puller.HasPendingNativeAcquire()) {
-        split->Drain();
+    if (split != nullptr) {
+        if (puller.HasPendingNativeAcquire()) {
+            if (!CanResumeNativeAcquire()) {
+                return false;
+            }
+            puller.ClearPendingAcquire();
+        }
+    } else if (!puller.ResumeNativeAcquire(*this)) {
+        return false;
     }
-    if (!puller.ResumeNativeAcquire(*this)) return false;
 
     CommandList& command_list = dma_pushbuffer.front();
 
@@ -123,14 +129,28 @@ bool DmaPusher::Step() {
             }
         }
         const bool use_safe = split ? split_safe : (Settings::IsDMALevelDefault() ? Settings::IsGPULevelHigh() : Settings::IsDMALevelSafe());
-        if (use_safe) {
+        if (split && command_resume_offset != 0 && split_saved_address == dma_state.dma_get &&
+            split_saved_commands.size() == header.size) {
+            // A channel resumed in the middle of a segment goes on with the words the front
+            // fetched, as a PBDMA does; the guest may have reused that memory since
+            const std::span<const CommandHeader> commands{split_saved_commands};
+            command_resume_offset += ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
+        } else if (use_safe) {
             Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::SafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
             const std::span<const CommandHeader> commands{headers.data(), headers.size()};
             command_resume_offset += ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
+            if (split && puller.HasPendingNativeAcquire()) {
+                split_saved_commands.assign(commands.begin(), commands.end());
+                split_saved_address = dma_state.dma_get;
+            }
         } else {
             Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::UnsafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
             const std::span<const CommandHeader> commands{headers.data(), headers.size()};
             command_resume_offset += ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
+            if (split && puller.HasPendingNativeAcquire()) {
+                split_saved_commands.assign(commands.begin(), commands.end());
+                split_saved_address = dma_state.dma_get;
+            }
         }
     }
 
@@ -304,10 +324,24 @@ bool DmaPusher::SplitReadsGpuWritten(VideoCommon::GpuSplit& split, GPUVAddr addr
 }
 
 bool DmaPusher::CanResumeNativeAcquire() {
-    if (auto* const split = VideoCommon::GpuSplit::Active(); split && !split->OnBackThread()) {
-        split->Drain();
+    auto* const split = VideoCommon::GpuSplit::Active();
+    if (split == nullptr || split->OnBackThread()) {
+        return puller.CanResumeNativeAcquire(*this);
     }
-    return puller.CanResumeNativeAcquire(*this);
+    if (!puller.HasPendingNativeAcquire() || split->Executed() < split_acquire_position) {
+        return false;
+    }
+    if (puller.IsPendingAcquireMet(*this)) {
+        return true;
+    }
+    // Usually the release is work the back has not executed yet: check again later. Once the
+    // back is idle, only the host GPU can still release it; waiting for that is expensive, so
+    // the back does it only then
+    if (split->Executed() == split->Pushed()) {
+        split->PushTask([this] { rasterizer->ReleaseFences(); });
+        split_acquire_position = split->Pushed();
+    }
+    return false;
 }
 
 Engines::EngineInterface* DmaPusher::FrontMacroEngine(u32 subchannel) {
@@ -334,7 +368,28 @@ void DmaPusher::SplitPullerMethod(VideoCommon::GpuSplit& split,
         split.PushTask(puller.MakeBackAction(*this, call));
         return;
     case Engines::Puller::SplitPlace::Front:
-        if (puller.IsNativeAcquireMet(*this, call)) {
+        if (const auto semaphore = puller.DecodeNativeAcquire(*this, call)) {
+            // A greater-or-equal counter that holds already still holds after the releases the
+            // back has not executed yet
+            const bool greater_equal =
+                semaphore->operation == Engines::HostSemaphore::Operation::AcquireStrictGeq ||
+                semaphore->operation == Engines::HostSemaphore::Operation::AcquireCircGeq;
+            if (greater_equal && puller.IsAcquiredNow(*this, *semaphore)) {
+                return;
+            }
+            // Most acquires hold once the back has executed what comes before them and the
+            // host GPU has finished it, as on one thread. One that still does not hold
+            // suspends the channel without stopping the front; it is checked again once the
+            // back has executed everything before it
+            puller.SetPendingAcquire(*semaphore);
+            split_acquire_position = split.Pushed();
+            split.Drain();
+            if (!puller.IsPendingAcquireMet(*this)) {
+                rasterizer->ReleaseFences();
+            }
+            if (puller.IsPendingAcquireMet(*this)) {
+                puller.ClearPendingAcquire();
+            }
             return;
         }
         // Acquires decide whether this channel goes on now and binding changes the subchannels;

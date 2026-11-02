@@ -96,11 +96,23 @@ public:
     enum class SplitPlace { State, Back, Front };
     /// Stores the method's register and says where its action runs
     SplitPlace StoreForSplit(const DmaPusher& dma_pusher, const MethodCall& method_call);
-    /// A native "greater or equal" semaphore acquire that already holds does nothing else, so the
-    /// front of a split GPU thread need not wait for the back to check it. A release still
-    /// queued on the back can only raise such a counter; other acquires could be met by a value
-    /// that a queued release replaces.
-    [[nodiscard]] bool IsNativeAcquireMet(DmaPusher& dma_pusher, const MethodCall& method_call);
+    /// The semaphore a native acquire method waits for, from the registers as stored
+    [[nodiscard]] std::optional<HostSemaphore> DecodeNativeAcquire(
+        const DmaPusher& dma_pusher, const MethodCall& method_call) const;
+    /// Whether a semaphore holds now, from memory and the releases already executed
+    [[nodiscard]] bool IsAcquiredNow(DmaPusher& dma_pusher, const HostSemaphore& semaphore) const {
+        return IsAcquired(dma_pusher, semaphore);
+    }
+    /// Suspends the channel on an acquire without checking it (split GPU thread)
+    void SetPendingAcquire(const HostSemaphore& semaphore) {
+        pending_acquire = semaphore;
+    }
+    [[nodiscard]] bool IsPendingAcquireMet(DmaPusher& dma_pusher) const {
+        return pending_acquire && IsAcquired(dma_pusher, *pending_acquire);
+    }
+    void ClearPendingAcquire() {
+        pending_acquire.reset();
+    }
     /// The method's action with the registers as they are now, to run on the back
     std::function<void()> MakeBackAction(DmaPusher& dma_pusher, const MethodCall& method_call) const;
 private:

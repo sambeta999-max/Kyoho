@@ -61,6 +61,15 @@ public:
     /// Waits until the back has executed everything pushed so far
     void Drain();
 
+    /// Entries pushed so far, and executed so far: the back has executed everything before a
+    /// position once Executed() reaches it
+    [[nodiscard]] u64 Pushed() const noexcept {
+        return entry_head.load(std::memory_order_relaxed);
+    }
+    [[nodiscard]] u64 Executed() const noexcept {
+        return entry_tail.load(std::memory_order_acquire);
+    }
+
     /// Notes device memory the GPU wrote, from any thread; nothing when the split is off
     static void MarkGpuWritten(DAddr address, u64 size) noexcept {
         if (GpuSplit* const split = active) {

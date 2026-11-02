@@ -209,6 +209,12 @@ public:
     std::array<Engines::EngineTypes, max_subchannels> subchannel_type;
     u32 pending_macro_mask{}; ///< Subchannels holding a deferred macro call
     u32 back_pending_macro_mask{}; ///< The same for engines whose macros run on the back
+    /// Split GPU thread: the suspended acquire is checked once the back has executed this many
+    /// entries
+    u64 split_acquire_position{};
+    /// The segment a split GPU thread's channel was suspended in, as fetched
+    std::vector<CommandHeader> split_saved_commands;
+    GPUVAddr split_saved_address{};
 
 
     Engines::Puller puller;

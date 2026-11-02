@@ -48,7 +48,9 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                 if (!state.queue.TryPop(next)) {
                     const auto now = std::chrono::steady_clock::now();
                     if (poll_until == std::chrono::steady_clock::time_point{}) {
-                        poll_until = now + std::chrono::milliseconds{2};
+                        // With a split GPU thread the release is usually work the back is
+                        // still executing
+                        poll_until = now + std::chrono::milliseconds{GpuSplit::Active() ? 20 : 2};
                     }
                     if (now < poll_until) {
                         std::this_thread::yield();

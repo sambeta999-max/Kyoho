@@ -37,10 +37,6 @@ void Scheduler::Push(GPU& gpu, s32 channel, CommandList&& entries) {
 }
 
 void Scheduler::ResumePending(GPU& gpu) {
-    // Checking a semaphore can release fences through the rasterizer
-    if (auto* const split = VideoCommon::GpuSplit::Active()) {
-        split->Drain();
-    }
     // Resuming a channel can release the semaphore another channel waits on, so repeat until no
     // channel makes progress
     for (size_t pass = 0; pass < 64; ++pass) {

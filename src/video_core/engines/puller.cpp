@@ -302,29 +302,40 @@ Puller::SplitPlace Puller::StoreForSplit(const DmaPusher& dma_pusher,
     }
 }
 
-bool Puller::IsNativeAcquireMet(DmaPusher& dma_pusher, const MethodCall& method_call) {
+std::optional<HostSemaphore> Puller::DecodeNativeAcquire(const DmaPusher& dma_pusher,
+                                                        const MethodCall& method_call) const {
     const bool native = dma_pusher.channel_state.native_abi;
     if ((is_ampere_host || native) && method_call.method == HOST_SEM_ADDR_LO + 4) {
         const auto semaphore = HostSemaphore::Decode(
             regs.reg_array[HOST_SEM_ADDR_LO], regs.reg_array[HOST_SEM_ADDR_LO + 1],
             regs.reg_array[HOST_SEM_ADDR_LO + 2], regs.reg_array[HOST_SEM_ADDR_LO + 3],
             regs.reg_array[HOST_SEM_ADDR_LO + 4]);
-        const bool greater_equal = semaphore.operation == HostSemaphore::Operation::AcquireStrictGeq ||
-                                   semaphore.operation == HostSemaphore::Operation::AcquireCircGeq;
-        return greater_equal && IsAcquired(dma_pusher, semaphore);
+        if (!semaphore.IsAcquire()) {
+            return std::nullopt;
+        }
+        return semaphore;
     }
-    if (!native || static_cast<BufferMethods>(method_call.method) != BufferMethods::SemaphoreOperation) {
-        return false;
+    if (!native ||
+        static_cast<BufferMethods>(method_call.method) != BufferMethods::SemaphoreOperation) {
+        return std::nullopt;
     }
     HostSemaphore semaphore{
         .address = regs.semaphore_address.SemaphoreAddress(),
         .payload = regs.semaphore_sequence,
     };
-    if (GpuSemaphoreOperation(regs.semaphore_trigger & 0x1F) != GpuSemaphoreOperation::AcquireGequal) {
-        return false;
+    switch (GpuSemaphoreOperation(regs.semaphore_trigger & 0x1F)) {
+    case GpuSemaphoreOperation::AcquireEqual:
+        semaphore.operation = HostSemaphore::Operation::Acquire;
+        return semaphore;
+    case GpuSemaphoreOperation::AcquireGequal:
+        semaphore.operation = HostSemaphore::Operation::AcquireStrictGeq;
+        return semaphore;
+    case GpuSemaphoreOperation::AcquireMask:
+        semaphore.operation = HostSemaphore::Operation::AcquireAnd;
+        return semaphore;
+    default:
+        return std::nullopt;
     }
-    semaphore.operation = HostSemaphore::Operation::AcquireStrictGeq;
-    return IsAcquired(dma_pusher, semaphore);
 }
 
 std::function<void()> Puller::MakeBackAction(DmaPusher& dma_pusher,
