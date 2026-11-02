@@ -364,7 +364,8 @@ private:
             } else if (decoder) {
                 const s64 pts = static_cast<s64>(u64{packet[5]} | (u64{packet[6]} << 32));
                 const bool end_of_stream = (packet[7] & 0xff) != 0;
-                const auto data = ctx.ReadBuffer();
+                // Submissions that only signal the end of the stream carry no input
+                const auto data = ctx.CanReadBuffer() ? ctx.ReadBuffer() : std::span<const u8>{};
                 std::vector<VideoCommon::DecodedVideoFrame> frames;
                 if (!data.empty()) {
                     decoder->Decode(data, pts, frames);
