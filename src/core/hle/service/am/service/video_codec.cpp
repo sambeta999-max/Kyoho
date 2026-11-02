@@ -150,6 +150,7 @@ class IVideoDecService final : public LoggingTipcSession<IVideoDecService> {
         u32 width{};
         u32 height{};
         u64 pts{};
+        bool end_of_stream{};
     };
 
 public:
@@ -266,6 +267,7 @@ private:
 
     void Start(HLERequestContext& ctx) {
         started = true;
+        end_of_stream_queued = false;
         // The decoder accepts input once started; a client that cleared the event when it
         // attached it waits for this signal before its first submission.
         SignalSubmissionReady();
@@ -282,6 +284,7 @@ private:
             decoder->Flush();
         }
         pending.clear();
+        end_of_stream_queued = false;
         SignalSubmissionReady();
         ReplyResult(ctx, ResultSuccess);
     }
@@ -373,6 +376,18 @@ private:
                 if (end_of_stream) {
                     decoder->Drain(frames);
                 }
+                if (!frames.empty()) {
+                    last_pts = frames.back().pts;
+                }
+                // Clients wait for the record that ends the stream (Fire Emblem: Fortune's Weave
+                // submits again until it comes), so it takes an image like a picture
+                if (end_of_stream && !end_of_stream_queued) {
+                    end_of_stream_queued = true;
+                    VideoCommon::DecodedVideoFrame end{};
+                    end.pts = last_pts;
+                    end.end_of_stream = true;
+                    frames.push_back(std::move(end));
+                }
                 for (auto& frame : frames) {
                     pending.push_back(std::move(frame));
                 }
@@ -444,7 +459,10 @@ private:
             const u32 image = free_images.front().first;
             WaitForRelease(free_images.front().second);
             free_images.pop_front();
-            if (const auto target = pools->Find(image)) {
+            const auto target = pools->Find(image);
+            if (frame.end_of_stream) {
+                properties.push_back({image, width, height, u64(frame.pts), true});
+            } else if (target) {
                 const auto& layout = target->layout;
                 const u32 rows = std::min(frame.height, target->height);
                 const u32 row = std::min(frame.width, target->width);
@@ -487,7 +505,7 @@ private:
                         target->address + layout.chroma_offset + layout.chroma_pitch * y,
                         frame.chroma.data() + size_t{(frame.width + 1) & ~1U} * y, chroma_row);
                 }
-                properties.push_back({image, frame.width, frame.height, u64(frame.pts)});
+                properties.push_back({image, frame.width, frame.height, u64(frame.pts), false});
             }
             pending.pop_front();
             nv_module->GetContainer().GetSyncpointManager().IncrementSyncpointMaxExt(*syncpoint, 1);
@@ -517,7 +535,7 @@ private:
         rb.Push<u32>(record.height);
         rb.Push<u32>(0);
         rb.Push<u64>(record.pts * 1000);
-        rb.Push<u32>(0);
+        rb.Push<u32>(record.end_of_stream ? 1 : 0);
     }
 
     Kernel::KProcess* process;
@@ -532,6 +550,8 @@ private:
     u32 width{};
     u32 height{};
     bool started{};
+    bool end_of_stream_queued{};
+    s64 last_pts{};
     std::unique_ptr<VideoCommon::NativeVideoDecoder> decoder;
 
     std::optional<u32> syncpoint;

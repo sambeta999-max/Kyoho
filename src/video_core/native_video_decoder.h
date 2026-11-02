@@ -30,6 +30,7 @@ struct DecodedVideoFrame {
     u32 width{};
     u32 height{};
     s64 pts{};
+    bool end_of_stream{}; ///< No picture: the output record that ends the stream
     std::vector<u8> luma;
     std::vector<u8> chroma;
 };
