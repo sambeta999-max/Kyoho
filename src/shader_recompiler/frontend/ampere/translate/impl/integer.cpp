@@ -559,19 +559,31 @@ void Lea(TranslatorVisitor& v, Instruction insn, bool uniform) {
     IR::U32 shifted;
     if (!high) {
         shifted = v.ir.ShiftLeftLogical(a, v.ir.Imm32(shift));
+    } else if (insn.Bit(73)) {
+        // .SX32: the upper word of the pair is the sign extension of a
+        shifted = v.ir.ShiftRightArithmetic(a, v.ir.Imm32(shift == 0 ? 31 : 32 - shift));
     } else if (shift == 0) {
         shifted = v.SrcC(insn, uniform);
     } else {
         shifted = v.ir.BitwiseOr(v.ir.ShiftLeftLogical(v.SrcC(insn, uniform), v.ir.Imm32(shift)),
                                  v.ir.ShiftRightLogical(a, v.ir.Imm32(32 - shift)));
     }
-    const IR::U32 b{v.SrcB(insn, uniform)};
+    // A negated addend is its one's complement plus one, or plus the carry input in the .X form
+    // (bit 63 when the addend is in the wide field and no immediate takes it)
+    const bool negate_b{(insn.Form() == AluForm::RegReg || insn.Form() == AluForm::CbufReg ||
+                          insn.Form() == AluForm::URegReg) &&
+                         insn.Bit(63)};
+    const IR::U32 b{negate_b ? IR::U32{v.ir.BitwiseNot(v.SrcB(insn, uniform))}
+                             : v.SrcB(insn, uniform)};
     IR::U32 sum{v.ir.IAdd(shifted, b)};
     IR::U32 carries{CarryOf(v.ir, sum, b)};
-    if (insn.Bit(74)) {
-        const IR::U1 carry_pred{uniform ? v.UP(insn.Bits(87, 3), insn.Bit(90))
-                                        : v.P(insn.Bits(87, 3), insn.Bit(90))};
-        const IR::U32 carry_in{PredicateBit(v.ir, carry_pred)};
+    if (insn.Bit(74) || negate_b) {
+        IR::U32 carry_in{v.ir.Imm32(1)};
+        if (insn.Bit(74)) {
+            const IR::U1 carry_pred{uniform ? v.UP(insn.Bits(87, 3), insn.Bit(90))
+                                            : v.P(insn.Bits(87, 3), insn.Bit(90))};
+            carry_in = PredicateBit(v.ir, carry_pred);
+        }
         const IR::U32 next{v.ir.IAdd(sum, carry_in)};
         carries = v.ir.IAdd(carries, CarryOf(v.ir, next, carry_in));
         sum = next;

@@ -534,6 +534,32 @@ TEST_CASE("Ampere translate: uniform predicate guard", "[shader][ampere]") {
     REQUIRE(cfg.Dot().find("UP0") != std::string::npos);
 }
 
+TEST_CASE("Ampere translate: LEA with a negated addend", "[shader][ampere]") {
+    Translation t;
+    Translate(t, {
+        MovImm(4, 5),
+        MovImm(5, 7),
+        // LEA R0, R4, -R5, 0x3
+        Encoding{0x211}.Set(16, 8, 0).Set(24, 8, 4).Set(32, 8, 5).Set(63, 1, 1).Set(75, 5, 3)
+            .Set(81, 3, PT),
+        // LEA R1, R4, R5, 0x3
+        Encoding{0x211}.Set(16, 8, 1).Set(24, 8, 4).Set(32, 8, 5).Set(75, 5, 3).Set(81, 3, PT),
+        MovImm(6, 0xfffffff0),
+        // LEA.HI.SX32 R2, R6, R5, 0x1c
+        Encoding{0x211}.Set(16, 8, 2).Set(24, 8, 6).Set(32, 8, 5).Set(64, 8, RZ).Set(73, 1, 1)
+            .Set(75, 5, 0x1c).Set(80, 1, 1).Set(81, 3, PT),
+        // LEA.HI R3, R6, R5, RZ, 0x1c
+        Encoding{0x211}.Set(16, 8, 3).Set(24, 8, 6).Set(32, 8, 5).Set(64, 8, RZ).Set(75, 5, 0x1c)
+            .Set(80, 1, 1).Set(81, 3, PT),
+        Exit(),
+    });
+    const auto colors{FragColors(t.program)};
+    REQUIRE(colors[0] == 33u);
+    REQUIRE(colors[1] == 47u);
+    REQUIRE(colors[2] == 6u);
+    REQUIRE(colors[3] == 0x10000006u);
+}
+
 TEST_CASE("Ampere translate: floating point", "[shader][ampere]") {
     Translation t;
     Translate(t, {
