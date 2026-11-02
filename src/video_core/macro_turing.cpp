@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <cstdlib>
 
 #include "common/logging.h"
 #include "video_core/engines/semaphore.h"
@@ -180,9 +181,102 @@ void TuringMacroEngine::Upload(u32 word) {
         return;
     }
     code[upload_word++] = word;
+    ++code_generation;
 }
 
+namespace {
+bool MemoEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_MME_MEMO");
+        return value == nullptr || value[0] != '0';
+    }();
+    return enabled;
+}
+
+bool MemoVerify() {
+    static const bool verify = std::getenv("EDEN_MME_MEMO_VERIFY") != nullptr;
+    return verify;
+}
+
+/// Runs a macro without executing its method writes, for comparisons
+class CaptureHost final : public TuringMacroEngine::Host {
+public:
+    explicit CaptureHost(TuringMacroEngine::Host& host_) : host{host_} {}
+    u32 ReadState(u32 method) override {
+        return host.ReadState(method);
+    }
+    void CallMethod(u32 method, u32 value) override {
+        writes.emplace_back(method, value);
+    }
+    void ReadMemory(GPUVAddr address, std::span<u32> data) override {
+        host.ReadMemory(address, data);
+    }
+    void WriteMemory(GPUVAddr, std::span<const u32>) override {}
+
+    TuringMacroEngine::Host& host;
+    MacroMemoPairs writes;
+};
+} // Anonymous namespace
+
 bool TuringMacroEngine::Execute(u32 start, std::span<const u32> parameters, Host& host) {
+    if (!MemoEnabled()) {
+        return Interpret(start, parameters, host);
+    }
+    memo.Synchronize(code_generation);
+    MacroMemo::Effects effects;
+    if (memo.Find(start, parameters, data_ram, effects)) {
+        if (MemoVerify()) {
+            Verify(start, parameters, host, effects);
+        }
+        for (size_t i = 0; i < effects.data_ram_writes.size(); i += 2) {
+            data_ram[effects.data_ram_writes[i]] = effects.data_ram_writes[i + 1];
+        }
+        for (size_t i = 0; i < effects.writes.size(); i += 2) {
+            host.CallMethod(effects.writes[i], effects.writes[i + 1]);
+        }
+        return true;
+    }
+    recording = true;
+    memo_ok = true;
+    data_ram_reads.clear();
+    data_ram_writes.clear();
+    method_writes.clear();
+    const bool result = Interpret(start, parameters, host);
+    recording = false;
+    if (result && memo_ok) {
+        memo.Store(start, parameters, data_ram_reads, data_ram_writes, method_writes);
+    }
+    return result;
+}
+
+void TuringMacroEngine::Verify(u32 start, std::span<const u32> parameters, Host& host,
+                               const MacroMemo::Effects& effects) {
+    static u64 checked{};
+    static u64 differences{};
+    const auto saved_data_ram = data_ram;
+    CaptureHost capture{host};
+    Interpret(start, parameters, capture);
+    auto expected_data_ram = saved_data_ram;
+    for (size_t i = 0; i < effects.data_ram_writes.size(); i += 2) {
+        expected_data_ram[effects.data_ram_writes[i]] = effects.data_ram_writes[i + 1];
+    }
+    bool same = expected_data_ram == data_ram && capture.writes.size() * 2 == effects.writes.size();
+    for (size_t i = 0; same && i < capture.writes.size(); ++i) {
+        same = capture.writes[i].first == effects.writes[i * 2] &&
+               capture.writes[i].second == effects.writes[i * 2 + 1];
+    }
+    data_ram = saved_data_ram;
+    ++checked;
+    if (!same && differences++ < 16) {
+        LOG_ERROR(HW_GPU, "MME memo differs from the interpreter: macro {:#x}, {} parameters",
+                  start, parameters.size());
+    }
+    if ((checked & 0xFFFFF) == 0) {
+        LOG_WARNING(HW_GPU, "MME memo verified {} calls, {} differences", checked, differences);
+    }
+}
+
+bool TuringMacroEngine::Interpret(u32 start, std::span<const u32> parameters, Host& host) {
     fifo.assign(parameters.begin(), parameters.end());
     fifo_position = 0;
 
@@ -306,6 +400,7 @@ bool TuringMacroEngine::Execute(u32 start, std::span<const u32> parameters, Host
                 result = carry;
                 break;
             case AluOp::Extended:
+                memo_ok = false;
                 if (x == EXTENDED_READ_FIFO_BARRIER) {
                     ReadFifoBarrier(host);
                 } else {
@@ -355,6 +450,7 @@ bool TuringMacroEngine::Execute(u32 start, std::span<const u32> parameters, Host
                 break;
             case AluOp::State:
                 result = host.ReadState((x + y) & 0xFFFF);
+                memo_ok = false;
                 break;
             case AluOp::Loop:
                 if (loop_count != 0 || imm < 2) {
@@ -398,12 +494,20 @@ bool TuringMacroEngine::Execute(u32 start, std::span<const u32> parameters, Host
                     return fail("data RAM read out of bounds");
                 }
                 result = data_ram[x];
+                if (recording && std::ranges::none_of(data_ram_writes, [x](const auto& write) {
+                        return write.first == x;
+                    })) {
+                    data_ram_reads.emplace_back(x, result);
+                }
                 break;
             case AluOp::DWrite:
                 if (x >= DATA_RAM_WORDS) {
                     return fail("data RAM write out of bounds");
                 }
                 data_ram[x] = y;
+                if (recording) {
+                    data_ram_writes.emplace_back(x, y);
+                }
                 break;
             }
             results[lane] = result;
@@ -447,6 +551,9 @@ bool TuringMacroEngine::Execute(u32 start, std::span<const u32> parameters, Host
                 method_increment = (value >> 12) & 0xF;
             }
             if (inst.Emit(lane) != OutOp::None) {
+                if (recording) {
+                    method_writes.emplace_back(method, output(inst.Emit(lane)));
+                }
                 host.CallMethod(method, output(inst.Emit(lane)));
                 method += method_increment;
             }
@@ -476,6 +583,20 @@ void TuringMacroEngine::ReadFifoBarrier(Host& host) {
 }
 
 bool TuringMacroEngine::ProcessMethod(u32 method, u32 value, Host& host) {
+    // A macro that drives the MME's DMA reads or writes memory while it runs
+    switch (method) {
+    case SET_MME_MEM_ADDRESS_A:
+    case SET_MME_MEM_ADDRESS_B:
+    case SET_MME_DATA_RAM_ADDRESS:
+    case MME_DMA_READ:
+    case MME_DMA_WRITE:
+    case MME_DMA_READ_FIFOED:
+    case MME_DMA_REDUCTION:
+        memo_ok = false;
+        break;
+    default:
+        break;
+    }
     switch (method) {
     case SET_MME_MEM_ADDRESS_A:
         mem_address_high = value;

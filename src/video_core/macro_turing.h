@@ -8,7 +8,10 @@
 #include <span>
 #include <vector>
 
+#include <unordered_map>
+
 #include "common/common_types.h"
+#include "video_core/macro_memo.h"
 
 namespace Tegra {
 
@@ -40,7 +43,10 @@ public:
     /// LOAD_MME_INSTRUCTION_RAM
     void Upload(u32 word);
 
-    /// Runs the macro starting at an instruction; false if it failed
+    /// Runs the macro starting at an instruction; false if it failed. A call that depends only on
+    /// its parameters and the data RAM words it reads replays the effects of an identical earlier
+    /// call (EDEN_MME_MEMO=0 turns this off, EDEN_MME_MEMO_VERIFY=1 interprets every replayed call
+    /// too and logs differences).
     bool Execute(u32 start, std::span<const u32> parameters, Host& host);
 
     /// Handles the MME DMA methods of the 3D class; false for any other method
@@ -51,6 +57,10 @@ public:
     }
 
 private:
+    bool Interpret(u32 start, std::span<const u32> parameters, Host& host);
+    void Verify(u32 start, std::span<const u32> parameters, Host& host,
+                const MacroMemo::Effects& effects);
+
     /// Method of the EXTENDED operation that waits for MME_DMA_READ_FIFOED
     static constexpr u32 EXTENDED_READ_FIFO_BARRIER = 0x1000;
 
@@ -73,6 +83,15 @@ private:
     /// Parameters of the running macro; MME_DMA_READ_FIFOED replaces them
     std::vector<u32> fifo;
     size_t fifo_position{};
+
+    MacroMemo memo;
+    u64 code_generation{};
+    /// What the call being interpreted did, while it can still be remembered
+    bool recording{};
+    bool memo_ok{};
+    MacroMemoPairs data_ram_reads;
+    MacroMemoPairs data_ram_writes;
+    MacroMemoPairs method_writes;
 };
 
 /// The MME of one channel, shared by its 3D and compute subchannels: one instruction RAM, table
