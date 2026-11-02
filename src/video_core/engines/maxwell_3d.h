@@ -3147,6 +3147,22 @@ public:
     bool HasPendingMacro() const override {
         return is_ampere && executing_macro != 0;
     }
+
+    bool SupportsFrontMacros() const override {
+        return is_ampere;
+    }
+    void EnableFrontMacros() override;
+    bool MacrosOnFront() const override {
+        return front_macros;
+    }
+    bool IsFrontMethod(u32 method) const override;
+    void FrontCallMethod(Core::System& system, u32 method, u32 argument) override;
+    void FrontCallMultiMethod(Core::System& system, u32 method, const u32* base_start,
+                              u32 amount) override;
+    void FrontWrite(u32 method, u32 argument) override;
+    void FrontMultiWrite(u32 method, const u32* base_start, u32 amount) override;
+    /// Logs where the front's copy differs from the registers; the back must be idle
+    void VerifyFrontRegisters();
     bool IsMacroData(u32 method) const override;
     /// Runs a deferred native macro call with the parameters it has received.
     void FlushPendingMacro(Core::System& system) override;
@@ -3326,6 +3342,17 @@ private:
 
     std::vector<std::pair<GPUVAddr, size_t>> macro_segments;
     bool current_macro_dirty{};
+
+    u32 FrontShadowRam(u32 method, u32 argument);
+    void FrontFlushMacro(Core::System& system);
+    /// Keeps the limit registers of AMPERE_B index and vertex buffers at start + size; returns
+    /// the register to mark dirty
+    static std::optional<u32> SyncAmpereBufferLimits(Regs& target, u32 method);
+
+    bool front_macros{};
+    std::unique_ptr<Regs> front_regs;   ///< The registers as the front has sent them
+    std::unique_ptr<Regs> front_shadow; ///< Shadow RAM as the front has sent it
+    u64 front_macro_calls{};
 };
 
 #define ASSERT_REG_POSITION(field_name, position)                                                  \

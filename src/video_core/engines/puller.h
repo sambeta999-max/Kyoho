@@ -8,6 +8,8 @@
 
 #include <array>
 #include <cstddef>
+#include <functional>
+#include <optional>
 #include <vector>
 #include "common/bit_field.h"
 #include "common/common_funcs.h"
@@ -88,6 +90,19 @@ public:
     void CallPullerMethod(DmaPusher& dma_pusher, const MethodCall& method_call);
     void CallEngineMethod(DmaPusher& dma_pusher, const MethodCall& method_call);
     void CallEngineMultiMethod(DmaPusher& dma_pusher, u32 method, u32 subchannel, const u32* base_start, u32 amount, u32 methods_pending);
+
+    /// Where a puller method runs when the GPU thread is split (gpu_split.h): it only stores
+    /// state, its action can run later on the back, or its result is needed on the front now
+    enum class SplitPlace { State, Back, Front };
+    /// Stores the method's register and says where its action runs
+    SplitPlace StoreForSplit(const DmaPusher& dma_pusher, const MethodCall& method_call);
+    /// A native "greater or equal" semaphore acquire that already holds does nothing else, so the
+    /// front of a split GPU thread need not wait for the back to check it. A release still
+    /// queued on the back can only raise such a counter; other acquires could be met by a value
+    /// that a queued release replaces.
+    [[nodiscard]] bool IsNativeAcquireMet(DmaPusher& dma_pusher, const MethodCall& method_call);
+    /// The method's action with the registers as they are now, to run on the back
+    std::function<void()> MakeBackAction(DmaPusher& dma_pusher, const MethodCall& method_call) const;
 private:
     static constexpr std::size_t NUM_REGS = 0x800;
     struct Regs {

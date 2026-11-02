@@ -5,7 +5,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <cstring>
+#include <cstdlib>
 #include <optional>
+#include <string>
 #include "common/assert.h"
 #include "common/bit_util.h"
 #include "common/scope_exit.h"
@@ -17,6 +19,7 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/semaphore.h"
 #include "video_core/gpu.h"
+#include "video_core/gpu_split.h"
 #include "video_core/memory_manager.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/textures/texture.h"
@@ -64,6 +67,49 @@ public:
 private:
     Core::System* system;
     Maxwell3D& maxwell3d;
+    MemoryManager& memory_manager;
+};
+
+/// What a Turing macro runs on at the front of a split GPU thread: the front's copy of the
+/// registers, with method writes sent to the back
+class FrontMacroHost final : public TuringMacroEngine::Host {
+public:
+    FrontMacroHost(Core::System* system_, Maxwell3D& maxwell3d_, const Maxwell3D::Regs& regs_,
+                   MemoryManager& memory_manager_)
+        : system{system_}, maxwell3d{maxwell3d_}, regs{regs_}, memory_manager{memory_manager_} {}
+
+    u32 ReadState(u32 method) override {
+        return method < Maxwell3D::Regs::NUM_REGS ? regs.reg_array[method] : 0;
+    }
+
+    void CallMethod(u32 method, u32 value) override {
+        if (system == nullptr || method >= 0xE00) {
+            LOG_ERROR(HW_GPU, "Unsupported method {:#x} emitted by a macro", method);
+            return;
+        }
+        if (maxwell3d.IsFrontMethod(method)) {
+            maxwell3d.FrontCallMethod(*system, method, value);
+            return;
+        }
+        maxwell3d.FrontWrite(method, value);
+        VideoCommon::GpuSplit::Active()->PushEngineMethod(maxwell3d, method, value);
+    }
+
+    // Guest memory as of this point: everything sent before has to be executed
+    void ReadMemory(GPUVAddr address, std::span<u32> data) override {
+        VideoCommon::GpuSplit::Active()->Drain();
+        memory_manager.ReadBlock(address, data.data(), data.size_bytes());
+    }
+
+    void WriteMemory(GPUVAddr address, std::span<const u32> data) override {
+        VideoCommon::GpuSplit::Active()->Drain();
+        memory_manager.WriteBlock(address, data.data(), data.size_bytes());
+    }
+
+private:
+    Core::System* system;
+    Maxwell3D& maxwell3d;
+    const Maxwell3D::Regs& regs;
     MemoryManager& memory_manager;
 };
 } // Anonymous namespace
@@ -294,6 +340,10 @@ bool Maxwell3D::IsMacroData(u32 method) const {
 }
 
 void Maxwell3D::FlushPendingMacro(Core::System& system) {
+    if (front_macros) {
+        FrontFlushMacro(system);
+        return;
+    }
     if (executing_macro == 0) {
         return;
     }
@@ -314,8 +364,15 @@ void Maxwell3D::RefreshParametersImpl() {
             current_index += segment.second;
             continue;
         }
-        memory_manager.ReadBlock(segment.first, &macro_params[current_index],
-                                 sizeof(u32) * segment.second);
+        // The front of a split GPU thread reads without flushing the rasterizer, as it reads
+        // command lists
+        if (front_macros) {
+            memory_manager.ReadBlockUnsafe(segment.first, &macro_params[current_index],
+                                           sizeof(u32) * segment.second);
+        } else {
+            memory_manager.ReadBlock(segment.first, &macro_params[current_index],
+                                     sizeof(u32) * segment.second);
+        }
         current_index += segment.second;
     }
 }
@@ -390,6 +447,14 @@ void Maxwell3D::ProcessDirtyRegisters(u32 method, u32 argument) {
 }
 
 void Maxwell3D::SyncAmpereBufferLimits(u32 method) {
+    if (const auto index = SyncAmpereBufferLimits(regs, method)) {
+        for (auto const& table : dirty.tables) {
+            dirty.flags[table[*index]] = true;
+        }
+    }
+}
+
+std::optional<u32> Maxwell3D::SyncAmpereBufferLimits(Regs& regs, u32 method) {
     // AMPERE_B sets index and vertex buffer sizes (bits 39:32 in A, 31:0 in B) instead of
     // limit addresses. The limit registers are unused there, so they are kept at start + size.
     static constexpr u32 INDEX_BUFFER_SIZE_A = 0x238 / sizeof(u32);
@@ -398,13 +463,8 @@ void Maxwell3D::SyncAmpereBufferLimits(u32 method) {
     static constexpr u32 VERTEX_STREAM_WORDS = sizeof(Regs::VertexStream) / sizeof(u32);
     static constexpr u32 VERTEX_STREAMS = MAXWELL3D_REG_INDEX(vertex_streams);
     static constexpr u32 VERTEX_STREAM_LIMITS = MAXWELL3D_REG_INDEX(vertex_stream_limits);
-    const auto size_at{[this](u32 index) {
+    const auto size_at{[&regs](u32 index) {
         return (u64{regs.reg_array[index] & 0xFF} << 32) | regs.reg_array[index + 1];
-    }};
-    const auto mark_dirty{[this](u32 index) {
-        for (auto const& table : dirty.tables) {
-            dirty.flags[table[index]] = true;
-        }
     }};
     if (method == INDEX_BUFFER_SIZE_A || method == INDEX_BUFFER_SIZE_A + 1 ||
         method == MAXWELL3D_REG_INDEX(index_buffer.start_addr_high) ||
@@ -412,8 +472,7 @@ void Maxwell3D::SyncAmpereBufferLimits(u32 method) {
         const GPUVAddr end{regs.index_buffer.StartAddress() + size_at(INDEX_BUFFER_SIZE_A)};
         regs.index_buffer.limit_addr_high = static_cast<u32>(end >> 32);
         regs.index_buffer.limit_addr_low = static_cast<u32>(end);
-        mark_dirty(MAXWELL3D_REG_INDEX(index_buffer.limit_addr_high));
-        return;
+        return static_cast<u32>(MAXWELL3D_REG_INDEX(index_buffer.limit_addr_high));
     }
     std::optional<u32> stream;
     if (method >= VERTEX_STREAM_SIZE_A &&
@@ -424,7 +483,7 @@ void Maxwell3D::SyncAmpereBufferLimits(u32 method) {
         stream = (method - VERTEX_STREAMS) / VERTEX_STREAM_WORDS;
     }
     if (!stream) {
-        return;
+        return std::nullopt;
     }
     // Limits are inclusive; a zero size leaves an empty range
     const u64 size{size_at(VERTEX_STREAM_SIZE_A + *stream * VERTEX_STREAM_SIZE_WORDS)};
@@ -432,7 +491,198 @@ void Maxwell3D::SyncAmpereBufferLimits(u32 method) {
     auto& stream_limit{regs.vertex_stream_limits[*stream]};
     stream_limit.address_high = static_cast<u32>(limit >> 32);
     stream_limit.address_low = static_cast<u32>(limit);
-    mark_dirty(VERTEX_STREAM_LIMITS + *stream * VERTEX_STREAM_SIZE_WORDS);
+    return static_cast<u32>(VERTEX_STREAM_LIMITS + *stream * VERTEX_STREAM_SIZE_WORDS);
+}
+
+void Maxwell3D::EnableFrontMacros() {
+    front_regs = std::make_unique<Regs>(regs);
+    front_shadow = std::make_unique<Regs>(shadow_state);
+    // Writes the back has not applied yet
+    for (const auto& [method, value] : method_sink) {
+        front_regs->reg_array[method] = FrontShadowRam(method, value);
+    }
+    front_macros = true;
+}
+
+bool Maxwell3D::IsFrontMethod(u32 method) const {
+    if (method >= MacroRegistersStart) {
+        return true;
+    }
+    if ((method >= AMPERE_MME_DMA_BEGIN && method < AMPERE_MME_DMA_END) ||
+        method == AMPERE_MME_DMA_WRITE_METHOD_BARRIER) {
+        return true;
+    }
+    switch (method) {
+    case MAXWELL3D_REG_INDEX(load_mme.instruction_ptr):
+    case MAXWELL3D_REG_INDEX(load_mme.instruction):
+    case MAXWELL3D_REG_INDEX(load_mme.start_address):
+        return true;
+    default:
+        return false;
+    }
+}
+
+u32 Maxwell3D::FrontShadowRam(u32 method, u32 argument) {
+    auto const control = front_shadow->shadow_ram_control;
+    if (control == Regs::ShadowRamControl::Track ||
+        control == Regs::ShadowRamControl::TrackWithFilter) {
+        return front_shadow->reg_array[method] = argument;
+    }
+    if (control == Regs::ShadowRamControl::Replay) {
+        return front_shadow->reg_array[method];
+    }
+    return argument;
+}
+
+void Maxwell3D::FrontWrite(u32 method, u32 argument) {
+    // CallMethod and ProcessMethodCall as far as they change registers
+    const u32 value = FrontShadowRam(method, argument);
+    front_regs->reg_array[method] = value;
+    SyncAmpereBufferLimits(*front_regs, method);
+    switch (method) {
+    case MAXWELL3D_REG_INDEX(shadow_ram_control):
+        front_shadow->shadow_ram_control = static_cast<Regs::ShadowRamControl>(argument);
+        break;
+    case MAXWELL3D_REG_INDEX(falcon[4]):
+        front_regs->shadow_scratch[0] = 1;
+        break;
+    default:
+        if (method >= MAXWELL3D_REG_INDEX(const_buffer.buffer) &&
+            method < MAXWELL3D_REG_INDEX(const_buffer.buffer) + 16) {
+            front_regs->const_buffer.offset += sizeof(u32);
+        }
+        break;
+    }
+}
+
+void Maxwell3D::FrontMultiWrite(u32 method, const u32* base_start, u32 amount) {
+    // CallMultiMethod as far as it changes registers
+    if (method >= MAXWELL3D_REG_INDEX(const_buffer.buffer) &&
+        method < MAXWELL3D_REG_INDEX(const_buffer.buffer) + 16) {
+        front_regs->const_buffer.offset += amount * static_cast<u32>(sizeof(u32));
+        return;
+    }
+    switch (method) {
+    case MAXWELL3D_REG_INDEX(inline_data):
+        return;
+    case MAXWELL3D_REG_INDEX(draw_inline_index):
+    case MAXWELL3D_REG_INDEX(inline_index_2x16.even):
+    case MAXWELL3D_REG_INDEX(inline_index_4x8.index0):
+        if (front_shadow->shadow_ram_control != Regs::ShadowRamControl::Replay) {
+            if (amount != 0) {
+                front_regs->reg_array[method] = FrontShadowRam(method, base_start[amount - 1]);
+                SyncAmpereBufferLimits(*front_regs, method);
+            }
+            return;
+        }
+        break;
+    default:
+        break;
+    }
+    for (u32 i = 0; i < amount; ++i) {
+        FrontWrite(method, base_start[i]);
+    }
+}
+
+void Maxwell3D::FrontCallMethod(Core::System& system, u32 method, u32 argument) {
+    if (method >= MacroRegistersStart) {
+        FrontCallMultiMethod(system, method, &argument, 1);
+        return;
+    }
+    const u32 value = FrontShadowRam(method, argument);
+    front_regs->reg_array[method] = value;
+    FrontMacroHost host{nullptr, *this, *front_regs, memory_manager};
+    switch (method) {
+    case MAXWELL3D_REG_INDEX(load_mme.instruction_ptr):
+        return TuringMacro().SetUploadPointer(front_regs->load_mme.instruction_ptr);
+    case MAXWELL3D_REG_INDEX(load_mme.instruction):
+        return TuringMacro().Upload(value);
+    case MAXWELL3D_REG_INDEX(load_mme.start_address):
+        MacroPositions()[front_regs->load_mme.start_address_ptr++] = value;
+        return;
+    default:
+        TuringMacro().ProcessMethod(method, value, host);
+        return;
+    }
+}
+
+void Maxwell3D::FrontCallMultiMethod(Core::System& system, u32 method, const u32* base_start,
+                                     u32 amount) {
+    if (method < MacroRegistersStart) {
+        for (u32 i = 0; i < amount; ++i) {
+            FrontCallMethod(system, method, base_start[i]);
+        }
+        return;
+    }
+    // ProcessMacro of AMPERE_B
+    if ((method - MacroRegistersStart) % 2 == 0) {
+        FrontFlushMacro(system);
+        executing_macro = method;
+    } else if (executing_macro == 0) {
+        LOG_ERROR(HW_GPU, "Macro data {:#x} without a macro call", method * sizeof(u32));
+        return;
+    }
+    macro_params.insert(macro_params.end(), base_start, base_start + amount);
+    macro_segments.emplace_back(current_dma_segment, amount);
+    current_macro_dirty |= current_dirty;
+    current_dirty = false;
+}
+
+void Maxwell3D::FrontFlushMacro(Core::System& system) {
+    if (executing_macro == 0) {
+        return;
+    }
+    const u32 entry = ((executing_macro - MacroRegistersStart) >> 1) %
+                      static_cast<u32>(MacroPositions().size());
+    executing_macro = 0;
+    RefreshParameters();
+    FrontMacroHost host{&system, *this, *front_regs, memory_manager};
+    TuringMacro().Execute(MacroPositions()[entry], macro_params, host);
+    auto& split = *VideoCommon::GpuSplit::Active();
+    split.PushCall([](void* engine) {
+        auto& maxwell3d = *static_cast<Maxwell3D*>(engine);
+        maxwell3d.draw_manager.DrawDeferred(maxwell3d);
+    }, this);
+    macro_params.clear();
+    macro_segments.clear();
+    current_macro_dirty = false;
+    static const bool verify = std::getenv("EDEN_GPU_SPLIT_VERIFY") != nullptr;
+    if (verify && (++front_macro_calls & 0xFFF) == 0) {
+        split.PushTask([this, &system] { ConsumeSink(system); });
+        split.Drain();
+        VerifyFrontRegisters();
+    }
+}
+
+void Maxwell3D::VerifyFrontRegisters() {
+    static u64 checks{};
+    static u64 failures{};
+    ++checks;
+    u32 differences = 0;
+    std::string listing;
+    for (u32 index = 0; index < Regs::NUM_REGS; ++index) {
+        // Registers only the front handles
+        if ((index >= MAXWELL3D_REG_INDEX(load_mme) &&
+             index < MAXWELL3D_REG_INDEX(load_mme) + sizeof(Regs::LoadMME) / sizeof(u32)) ||
+            (index >= AMPERE_MME_DMA_BEGIN && index < AMPERE_MME_DMA_END) ||
+            index == AMPERE_MME_DMA_WRITE_METHOD_BARRIER) {
+            continue;
+        }
+        if (front_regs->reg_array[index] != regs.reg_array[index]) {
+            if (differences++ < 8) {
+                listing += fmt::format(" {:#x}: front {:#x} back {:#x};", index,
+                                       front_regs->reg_array[index], regs.reg_array[index]);
+            }
+        }
+    }
+    if (differences != 0 && failures++ < 32) {
+        LOG_ERROR(HW_GPU, "Split GPU thread: {} registers differ after {} checks:{}", differences,
+                  checks, listing);
+    }
+    if ((checks & 0x3F) == 0) {
+        LOG_WARNING(HW_GPU, "Split GPU thread: {} register checks, {} with differences", checks,
+                    failures);
+    }
 }
 
 void Maxwell3D::ProcessMethodCall(u32 method, u32 argument, u32 nonshadow_argument, bool is_last_call) {
@@ -546,7 +796,9 @@ void Maxwell3D::CallMacroMethod(Core::System& system, u32 method, const std::vec
 void Maxwell3D::CallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call) {
     // It is an error to write to a register other than the current macro's ARG register before
     // it has finished execution.
-    if (is_ampere && executing_macro != 0 && !IsMacroData(method)) {
+    if (front_macros) {
+        // The front handles macro state
+    } else if (is_ampere && executing_macro != 0 && !IsMacroData(method)) {
         FlushPendingMacro(system);
     } else if (executing_macro != 0) {
         ASSERT(method == executing_macro + 1);
@@ -566,7 +818,7 @@ void Maxwell3D::CallMethod(Core::System& system, u32 method, u32 method_argument
 }
 
 void Maxwell3D::CallMultiMethod(Core::System& system, u32 method, const u32* base_start, u32 amount, u32 methods_pending) {
-    if (HasPendingMacro() && !IsMacroData(method)) {
+    if (!front_macros && HasPendingMacro() && !IsMacroData(method)) {
         FlushPendingMacro(system);
     }
     // Methods after 0xE00 are special, they're actually triggers for some microcode that was

@@ -157,8 +157,16 @@ void Report() {
 
 void Run() {
     timeBeginPeriod(1);
+    // EDEN_HOST_SAMPLER_START=<seconds>: only sample after that long, to leave out loading
+    const char* const start_env = std::getenv("EDEN_HOST_SAMPLER_START");
+    const auto start = std::chrono::steady_clock::now() +
+                       std::chrono::seconds(start_env ? std::atoi(start_env) : 0);
     auto next_report = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     for (;;) {
+        if (std::chrono::steady_clock::now() < start) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            continue;
+        }
         {
             std::scoped_lock lock{targets_mutex};
             for (Target* const target : targets) {

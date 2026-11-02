@@ -9,7 +9,11 @@
 #include "common/assert.h"
 #include "common/logging.h"
 #include "core/core.h"
+#include <cstdlib>
+#include <string>
+
 #include "video_core/engines/kepler_compute.h"
+#include "video_core/gpu_split.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/qmd_v3.h"
 #include "video_core/engines/semaphore.h"
@@ -99,6 +103,48 @@ private:
     MemoryManager& memory_manager;
 };
 
+/// A compute macro at the front of a split GPU thread: the front's copy of the registers, with
+/// method writes sent to the back
+class FrontComputeMacroHost final : public TuringMacroEngine::Host {
+public:
+    FrontComputeMacroHost(Core::System* system_, KeplerCompute& compute_,
+                          const KeplerCompute::Regs& regs_, MemoryManager& memory_manager_)
+        : system{system_}, compute{compute_}, regs{regs_}, memory_manager{memory_manager_} {}
+
+    u32 ReadState(u32 method) override {
+        return method < KeplerCompute::Regs::NUM_REGS ? regs.reg_array[method] : 0;
+    }
+
+    void CallMethod(u32 method, u32 value) override {
+        if (system == nullptr || method >= MACRO_REGISTERS_START) {
+            LOG_ERROR(HW_GPU, "Unsupported method {:#x} emitted by a compute macro", method);
+            return;
+        }
+        if (compute.IsFrontMethod(method)) {
+            compute.FrontCallMethod(*system, method, value);
+            return;
+        }
+        compute.FrontWrite(method, value);
+        VideoCommon::GpuSplit::Active()->PushEngineMethod(compute, method, value);
+    }
+
+    void ReadMemory(GPUVAddr address, std::span<u32> data) override {
+        VideoCommon::GpuSplit::Active()->Drain();
+        memory_manager.ReadBlock(address, data.data(), data.size_bytes());
+    }
+
+    void WriteMemory(GPUVAddr address, std::span<const u32> data) override {
+        VideoCommon::GpuSplit::Active()->Drain();
+        memory_manager.WriteBlock(address, data.data(), data.size_bytes());
+    }
+
+private:
+    Core::System* system;
+    KeplerCompute& compute;
+    const KeplerCompute::Regs& regs;
+    MemoryManager& memory_manager;
+};
+
 } // Anonymous namespace
 
 KeplerCompute::KeplerCompute(MemoryManager& memory_manager_)
@@ -140,8 +186,130 @@ void KeplerCompute::ConsumeSinkImpl(Core::System& system) {
     method_sink.clear();
 }
 
+void KeplerCompute::EnableFrontMacros() {
+    front_regs = std::make_unique<Regs>(regs);
+    for (const auto& [method, value] : method_sink) {
+        front_regs->reg_array[method] = value;
+    }
+    front_macros = true;
+}
+
+bool KeplerCompute::IsFrontMethod(u32 method) const {
+    if (method >= MACRO_REGISTERS_START) {
+        return true;
+    }
+    if ((method >= AMPERE_MME_DMA_BEGIN && method < AMPERE_MME_DMA_END) ||
+        method == AMPERE_MME_DMA_WRITE_METHOD_BARRIER) {
+        return true;
+    }
+    switch (method) {
+    case LOAD_MME_INSTRUCTION_RAM_POINTER:
+    case LOAD_MME_INSTRUCTION_RAM:
+    case LOAD_MME_START_ADDRESS_RAM_POINTER:
+    case LOAD_MME_START_ADDRESS_RAM:
+        return true;
+    default:
+        return false;
+    }
+}
+
+void KeplerCompute::FrontWrite(u32 method, u32 argument) {
+    if (method < Regs::NUM_REGS) {
+        front_regs->reg_array[method] = argument;
+    }
+}
+
+void KeplerCompute::FrontMultiWrite(u32 method, const u32* base_start, u32 amount) {
+    // CallMultiMethod sends data uploads to the upload engine without storing them
+    if (method == KEPLER_COMPUTE_REG_INDEX(data_upload)) {
+        return;
+    }
+    for (u32 i = 0; i < amount; ++i) {
+        FrontWrite(method, base_start[i]);
+    }
+}
+
+void KeplerCompute::FrontCallMethod(Core::System& system, u32 method, u32 argument) {
+    if (method >= MACRO_REGISTERS_START) {
+        FrontCallMultiMethod(system, method, &argument, 1);
+        return;
+    }
+    front_regs->reg_array[method] = argument;
+    switch (method) {
+    case LOAD_MME_INSTRUCTION_RAM_POINTER:
+        return TuringMacro().SetUploadPointer(argument);
+    case LOAD_MME_INSTRUCTION_RAM:
+        return TuringMacro().Upload(argument);
+    case LOAD_MME_START_ADDRESS_RAM_POINTER:
+        macro_position_pointer = argument;
+        return;
+    case LOAD_MME_START_ADDRESS_RAM:
+        MacroPositions()[macro_position_pointer++ % MacroPositions().size()] = argument;
+        return;
+    default: {
+        FrontComputeMacroHost host{nullptr, *this, *front_regs, memory_manager};
+        TuringMacro().ProcessMethod(method, argument, host);
+        return;
+    }
+    }
+}
+
+void KeplerCompute::FrontCallMultiMethod(Core::System& system, u32 method, const u32* base_start,
+                                         u32 amount) {
+    if (method < MACRO_REGISTERS_START) {
+        for (u32 i = 0; i < amount; ++i) {
+            FrontCallMethod(system, method, base_start[i]);
+        }
+        return;
+    }
+    if ((method - MACRO_REGISTERS_START) % 2 == 0) {
+        FrontFlushMacro(system);
+        executing_macro = method;
+    } else if (executing_macro == 0) {
+        LOG_ERROR(HW_GPU, "Compute macro data {:#x} without a macro call", method * sizeof(u32));
+        return;
+    }
+    macro_params.insert(macro_params.end(), base_start, base_start + amount);
+}
+
+void KeplerCompute::FrontFlushMacro(Core::System& system) {
+    if (executing_macro == 0) {
+        return;
+    }
+    const u32 entry = ((executing_macro - MACRO_REGISTERS_START) >> 1) %
+                      static_cast<u32>(MacroPositions().size());
+    executing_macro = 0;
+    FrontComputeMacroHost host{&system, *this, *front_regs, memory_manager};
+    if (!TuringMacro().Execute(MacroPositions()[entry], macro_params, host)) {
+        LOG_ERROR(HW_GPU, "Compute macro {:#x} at {:#x} failed", entry, MacroPositions()[entry]);
+    }
+    macro_params.clear();
+    static const bool verify = std::getenv("EDEN_GPU_SPLIT_VERIFY") != nullptr;
+    if (verify) {
+        auto& split = *VideoCommon::GpuSplit::Active();
+        split.PushTask([this, &system] { ConsumeSink(system); });
+        split.Drain();
+        static u64 failures{};
+        u32 differences = 0;
+        std::string listing;
+        for (u32 index = 0; index < Regs::NUM_REGS; ++index) {
+            if (IsFrontMethod(index) || front_regs->reg_array[index] == regs.reg_array[index]) {
+                continue;
+            }
+            if (differences++ < 8) {
+                listing += fmt::format(" {:#x}: front {:#x} back {:#x};", index,
+                                       front_regs->reg_array[index], regs.reg_array[index]);
+            }
+        }
+        if (differences != 0 && failures++ < 32) {
+            LOG_ERROR(HW_GPU, "Split GPU thread: {} compute registers differ:{}", differences,
+                      listing);
+        }
+    }
+}
+
 void KeplerCompute::CallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call) {
-    if (executing_macro != 0 && !IsMacroData(method)) {
+    if (!front_macros && executing_macro != 0 && !IsMacroData(method)) {
         FlushPendingMacro(system);
     }
     if (method >= MACRO_REGISTERS_START && is_ampere) {
@@ -285,7 +453,7 @@ void KeplerCompute::CallMethod(Core::System& system, u32 method, u32 method_argu
 }
 
 void KeplerCompute::CallMultiMethod(Core::System& system, u32 method, const u32* base_start, u32 amount, u32 methods_pending) {
-    if (executing_macro != 0 && !IsMacroData(method)) {
+    if (!front_macros && executing_macro != 0 && !IsMacroData(method)) {
         FlushPendingMacro(system);
     }
     if (method >= MACRO_REGISTERS_START && is_ampere) {
@@ -327,6 +495,10 @@ bool KeplerCompute::IsMacroData(u32 method) const {
 }
 
 void KeplerCompute::FlushPendingMacro(Core::System& system) {
+    if (front_macros) {
+        FrontFlushMacro(system);
+        return;
+    }
     if (executing_macro == 0) {
         return;
     }

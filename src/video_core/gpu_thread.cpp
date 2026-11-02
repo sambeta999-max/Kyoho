@@ -16,6 +16,7 @@
 #include "video_core/control/scheduler.h"
 #include "video_core/dma_pusher.h"
 #include "video_core/gpu.h"
+#include "video_core/gpu_split.h"
 #include "video_core/gpu_thread.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/renderer_base.h"
@@ -38,21 +39,48 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
 
         auto current_context = context.Acquire();
         CommandDataContainer next;
+        // A suspended channel usually resumes within microseconds, once the host GPU or another
+        // channel releases its semaphore: poll without sleeping for a while
+        auto poll_until = std::chrono::steady_clock::time_point{};
         while (!stop_token.stop_requested()) {
             if (scheduler.HasPendingNativeChannels()) {
                 scheduler.ResumePending(system.GPU());
                 if (!state.queue.TryPop(next)) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds{1});
+                    const auto now = std::chrono::steady_clock::now();
+                    if (poll_until == std::chrono::steady_clock::time_point{}) {
+                        poll_until = now + std::chrono::milliseconds{2};
+                    }
+                    if (now < poll_until) {
+                        std::this_thread::yield();
+                    } else {
+                        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+                    }
                     continue;
                 }
+                poll_until = {};
             } else {
+                poll_until = {};
                 state.queue.PopWait(next, stop_token);
             }
             if (stop_token.stop_requested()) {
                 break;
             }
+            auto* const split = GpuSplit::Active();
             if (auto* submit_list = std::get_if<SubmitListCommand>(&next.data)) {
                 scheduler.Push(system.GPU(), submit_list->channel, std::move(submit_list->entries));
+            } else if (split) {
+                // Everything else reaches the rasterizer: the back runs it in order
+                split->PushTask([this, &renderer, data = std::move(next.data)] {
+                    if (std::holds_alternative<GPUTickCommand>(data)) {
+                        system.GPU().TickWork();
+                    } else if (const auto* flush = std::get_if<FlushRegionCommand>(&data)) {
+                        renderer.ReadRasterizer()->FlushRegion(flush->addr, flush->size);
+                    } else if (const auto* invalidate =
+                                   std::get_if<InvalidateRegionCommand>(&data)) {
+                        renderer.ReadRasterizer()->OnCacheInvalidation(invalidate->addr,
+                                                                       invalidate->size);
+                    }
+                });
             } else if (std::holds_alternative<GPUTickCommand>(next.data)) {
                 system.GPU().TickWork();
             } else if (const auto* flush = std::get_if<FlushRegionCommand>(&next.data)) {
@@ -62,12 +90,19 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
             } else {
                 ASSERT(false);
             }
-            state.signaled_fence.store(next.fence);
-            if (next.block) {
-                // We have to lock the write_lock to ensure that the condition_variable wait not get a
-                // race between the check and the lock itself.
-                std::scoped_lock lk{state.write_lock};
-                state.cv.notify_all();
+            const auto signal = [this, fence = next.fence, block = next.block] {
+                state.signaled_fence.store(fence);
+                if (block) {
+                    // We have to lock the write_lock to ensure that the condition_variable wait
+                    // not get a race between the check and the lock itself.
+                    std::scoped_lock lk{state.write_lock};
+                    state.cv.notify_all();
+                }
+            };
+            if (split) {
+                split->PushTask(signal);
+            } else {
+                signal();
             }
         }
     });

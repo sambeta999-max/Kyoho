@@ -31,6 +31,7 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/maxwell_dma.h"
 #include "video_core/gpu.h"
+#include "video_core/gpu_split.h"
 #include "video_core/gpu_thread.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/host1x/syncpoint_manager.h"
@@ -77,7 +78,14 @@ struct GPU::Impl {
             ASSERT(it != channels.end());
             bound_channel = channel_id;
             current_channel = it->second.get();
-            renderer->ReadRasterizer()->BindChannel(*current_channel);
+            auto* const rasterizer = renderer->ReadRasterizer();
+            if (auto* const active_split = VideoCommon::GpuSplit::Active(); active_split && !active_split->OnBackThread()) {
+                active_split->PushTask([rasterizer, channel = current_channel] {
+                    rasterizer->BindChannel(*channel);
+                });
+            } else {
+                rasterizer->BindChannel(*current_channel);
+            }
         }
     }
 
@@ -178,11 +186,20 @@ struct GPU::Impl {
     /// core timing events.
     void Start() {
         Settings::UpdateGPUAccuracy();
+        if (VideoCommon::GpuSplit::Requested() &&
+            Settings::values.renderer_backend.GetValue() == Settings::RendererBackend::Vulkan) {
+            LOG_INFO(HW_GPU, "The GPU thread is split in two (EDEN_GPU_SPLIT)");
+            split = std::make_unique<VideoCommon::GpuSplit>(system);
+            split->Start();
+        }
         gpu_thread.StartThread(*renderer, renderer->Context(), scheduler);
     }
 
     void NotifyShutdown() {
         gpu_thread.NotifyShutdown();
+        if (split) {
+            split->Stop();
+        }
         std::unique_lock lk{sync_mutex};
         shutting_down.store(true, std::memory_order::relaxed);
         sync_cv.notify_all();
@@ -351,6 +368,7 @@ struct GPU::Impl {
     Tegra::Control::Scheduler scheduler;
     ::Common::unordered_map<s32, std::shared_ptr<Tegra::Control::ChannelState>> channels;
     Tegra::Control::ChannelState* current_channel;
+    std::unique_ptr<VideoCommon::GpuSplit> split;
     s32 bound_channel{-1};
 
     std::deque<size_t> free_swap_counters;

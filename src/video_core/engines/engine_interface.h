@@ -47,6 +47,26 @@ public:
         return false;
     }
     virtual void FlushPendingMacro(Core::System& system) {}
+    /// With a split GPU thread (gpu_split.h) the front runs the macros of AMPERE_B and
+    /// AMPERE_COMPUTE_B, which share the MME of the channel, against its own copy of the
+    /// registers; the back executes the method writes
+    virtual bool SupportsFrontMacros() const {
+        return false;
+    }
+    virtual void EnableFrontMacros() {}
+    virtual bool MacrosOnFront() const {
+        return false;
+    }
+    /// Macro calls, macro uploads and MME DMA methods, which the front handles itself
+    virtual bool IsFrontMethod(u32 method) const {
+        return false;
+    }
+    virtual void FrontCallMethod(Core::System& system, u32 method, u32 argument) {}
+    virtual void FrontCallMultiMethod(Core::System& system, u32 method, const u32* base_start,
+                                      u32 amount) {}
+    /// Applies a method write that the back executes to the front's copy of the registers
+    virtual void FrontWrite(u32 method, u32 argument) {}
+    virtual void FrontMultiWrite(u32 method, const u32* base_start, u32 amount) {}
 
     void ConsumeSink(Core::System& system) {
         if (!method_sink.empty()) {

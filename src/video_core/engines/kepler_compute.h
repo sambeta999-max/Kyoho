@@ -234,6 +234,20 @@ public:
         return is_ampere;
     }
 
+    bool SupportsFrontMacros() const override {
+        return is_ampere;
+    }
+    void EnableFrontMacros() override;
+    bool MacrosOnFront() const override {
+        return front_macros;
+    }
+    bool IsFrontMethod(u32 method) const override;
+    void FrontCallMethod(Core::System& system, u32 method, u32 argument) override;
+    void FrontCallMultiMethod(Core::System& system, u32 method, const u32* base_start,
+                              u32 amount) override;
+    void FrontWrite(u32 method, u32 argument) override;
+    void FrontMultiWrite(u32 method, const u32* base_start, u32 amount) override;
+
     /// Uses the macros of the TSG, which the 3D and compute classes share
     void SetNativeMacroContext(std::shared_ptr<NativeMacroContext> context) {
         native_macro_context = std::move(context);
@@ -306,6 +320,10 @@ private:
     /// CALL_MME_MACRO method being fed parameters, or 0
     u32 executing_macro{};
     std::vector<u32> macro_params;
+
+    void FrontFlushMacro(Core::System& system);
+    bool front_macros{};
+    std::unique_ptr<Regs> front_regs; ///< The registers as the front of a split GPU thread sent them
 };
 
 #define ASSERT_REG_POSITION(field_name, position)                                                  \

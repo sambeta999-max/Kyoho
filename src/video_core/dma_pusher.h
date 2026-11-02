@@ -23,10 +23,18 @@ namespace Core {
 class System;
 }
 
+namespace VideoCommon {
+class GpuSplit;
+}
+
 namespace Tegra {
 
 namespace Control {
 struct ChannelState;
+}
+
+namespace Engines {
+class Maxwell3D;
 }
 
 class GPU;
@@ -132,7 +140,9 @@ public:
 
     void DispatchCalls();
     [[nodiscard]] bool HasPendingNativeAcquire() const { return puller.HasPendingNativeAcquire(); }
-    [[nodiscard]] bool CanResumeNativeAcquire() { return puller.CanResumeNativeAcquire(*this); }
+    /// Checking can release fences through the rasterizer, so a split GPU thread waits for its
+    /// back first
+    [[nodiscard]] bool CanResumeNativeAcquire();
 
     void BindSubchannel(Engines::EngineInterface* engine, u32 subchannel_id, Engines::EngineTypes engine_type) {
         subchannels[subchannel_id] = engine;
@@ -140,6 +150,13 @@ public:
     }
 
     void BindRasterizer(VideoCore::RasterizerInterface* rasterizer);
+
+    /// The back of a split GPU thread (gpu_split.h) executing what the front pushed
+    void BackCallMethod(u32 subchannel, u32 method, u32 argument, bool is_last_call,
+                        GPUVAddr segment);
+    void BackCallMultiMethod(u32 subchannel, u32 method, const u32* base_start, u32 amount,
+                             u32 methods_pending, GPUVAddr segment);
+    void BackFlushPendingMacros(u32 subchannel, u32 method);
 
 private:
     static constexpr u32 non_puller_methods = 0x40;
@@ -156,6 +173,15 @@ private:
     /// Runs deferred macro calls, except the one this method feeds with data.
     void FlushPendingMacros(u32 subchannel, u32 method);
     void FlushPendingMacros();
+
+    /// The 3D engine of the subchannel when its macros run on the front of a split GPU thread
+    Engines::EngineInterface* FrontMacroEngine(u32 subchannel);
+    void SplitCallMethod(VideoCommon::GpuSplit& split, u32 argument);
+    void SplitCallMultiMethod(VideoCommon::GpuSplit& split, const u32* base_start,
+                              u32 num_methods);
+    void SplitPullerMethod(VideoCommon::GpuSplit& split, const Engines::Puller::MethodCall& call);
+    /// Whether a command list the front is about to read holds data the GPU wrote
+    bool SplitReadsGpuWritten(VideoCommon::GpuSplit& split, GPUVAddr address, size_t size);
 
 public:
     Common::ScratchBuffer<CommandHeader> command_headers; ///< Buffer for list of commands fetched at once
@@ -182,8 +208,11 @@ public:
     std::array<Engines::EngineInterface*, max_subchannels> subchannels{};
     std::array<Engines::EngineTypes, max_subchannels> subchannel_type;
     u32 pending_macro_mask{}; ///< Subchannels holding a deferred macro call
+    u32 back_pending_macro_mask{}; ///< The same for engines whose macros run on the back
+
 
     Engines::Puller puller;
+    Engines::Puller back_puller; ///< Runs puller actions on the back of a split GPU thread
     std::mutex sync_mutex;
     std::condition_variable sync_cv;
 
