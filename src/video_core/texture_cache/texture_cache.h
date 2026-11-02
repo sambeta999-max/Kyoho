@@ -2658,55 +2658,58 @@ void TextureCache<P>::CopyImage(ImageId dst_id, ImageId src_id, std::vector<Imag
         return runtime.ReinterpretImage(dst, src, copies);
     }
     for (const ImageCopy& copy : copies) {
-        UNIMPLEMENTED_IF(copy.dst_subresource.num_layers != 1);
-        UNIMPLEMENTED_IF(copy.src_subresource.num_layers != 1);
+        UNIMPLEMENTED_IF(copy.dst_subresource.num_layers != copy.src_subresource.num_layers);
         UNIMPLEMENTED_IF(copy.src_offset != Offset3D{});
         UNIMPLEMENTED_IF(copy.dst_offset != Offset3D{});
-
-        const SubresourceBase dst_base{
-            .level = copy.dst_subresource.base_level,
-            .layer = copy.dst_subresource.base_layer,
-        };
-        const SubresourceBase src_base{
-            .level = copy.src_subresource.base_level,
-            .layer = copy.src_subresource.base_layer,
-        };
-        const SubresourceExtent dst_extent{.levels = 1, .layers = 1};
-        const SubresourceExtent src_extent{.levels = 1, .layers = 1};
-        const SubresourceRange dst_range{.base = dst_base, .extent = dst_extent};
-        const SubresourceRange src_range{.base = src_base, .extent = src_extent};
-        PixelFormat dst_format = dst.info.format;
-        if (GetFormatType(src.info.format) == SurfaceType::DepthStencil &&
-            GetFormatType(dst_format) == SurfaceType::ColorTexture &&
-            BytesPerBlock(dst_format) == 4) {
-            dst_format = PixelFormat::A8B8G8R8_UNORM;
-        }
-        const ImageViewInfo dst_view_info(ImageViewType::e2D, dst_format, dst_range);
-        const ImageViewInfo src_view_info(ImageViewType::e2D, src.info.format, src_range);
-        const auto [dst_framebuffer_id, dst_view_id] = RenderTargetFromImage(dst_id, dst_view_info);
-        Framebuffer* const dst_framebuffer = &slot_framebuffers[dst_framebuffer_id];
-        const ImageViewId src_view_id = FindOrEmplaceImageView(src_id, src_view_info);
-        ImageView& dst_view = slot_image_views[dst_view_id];
-        ImageView& src_view = slot_image_views[src_view_id];
-        [[maybe_unused]] const Extent3D expected_size{
-            .width = (std::min)(dst_view.size.width, src_view.size.width),
-            .height = (std::min)(dst_view.size.height, src_view.size.height),
-            .depth = (std::min)(dst_view.size.depth, src_view.size.depth),
-        };
-        const Extent3D scaled_extent = [is_rescaled, expected_size]() {
-            if (!is_rescaled) {
-                return expected_size;
-            }
-            const auto& resolution = Settings::values.resolution_info;
-            return Extent3D{
-                .width = resolution.ScaleUp(expected_size.width),
-                .height = resolution.ScaleUp(expected_size.height),
-                .depth = expected_size.depth,
+        // The conversion renders one layer at a time
+        const s32 num_layers = (std::min)(copy.dst_subresource.num_layers,
+                                          copy.src_subresource.num_layers);
+        for (s32 layer = 0; layer < num_layers; ++layer) {
+            const SubresourceBase dst_base{
+                .level = copy.dst_subresource.base_level,
+                .layer = copy.dst_subresource.base_layer + layer,
             };
-        }();
-        UNIMPLEMENTED_IF(copy.extent != scaled_extent);
+            const SubresourceBase src_base{
+                .level = copy.src_subresource.base_level,
+                .layer = copy.src_subresource.base_layer + layer,
+            };
+            const SubresourceExtent dst_extent{.levels = 1, .layers = 1};
+            const SubresourceExtent src_extent{.levels = 1, .layers = 1};
+            const SubresourceRange dst_range{.base = dst_base, .extent = dst_extent};
+            const SubresourceRange src_range{.base = src_base, .extent = src_extent};
+            PixelFormat dst_format = dst.info.format;
+            if (GetFormatType(src.info.format) == SurfaceType::DepthStencil &&
+                GetFormatType(dst_format) == SurfaceType::ColorTexture &&
+                BytesPerBlock(dst_format) == 4) {
+                dst_format = PixelFormat::A8B8G8R8_UNORM;
+            }
+            const ImageViewInfo dst_view_info(ImageViewType::e2D, dst_format, dst_range);
+            const ImageViewInfo src_view_info(ImageViewType::e2D, src.info.format, src_range);
+            const auto [dst_framebuffer_id, dst_view_id] = RenderTargetFromImage(dst_id, dst_view_info);
+            Framebuffer* const dst_framebuffer = &slot_framebuffers[dst_framebuffer_id];
+            const ImageViewId src_view_id = FindOrEmplaceImageView(src_id, src_view_info);
+            ImageView& dst_view = slot_image_views[dst_view_id];
+            ImageView& src_view = slot_image_views[src_view_id];
+            [[maybe_unused]] const Extent3D expected_size{
+                .width = (std::min)(dst_view.size.width, src_view.size.width),
+                .height = (std::min)(dst_view.size.height, src_view.size.height),
+                .depth = (std::min)(dst_view.size.depth, src_view.size.depth),
+            };
+            const Extent3D scaled_extent = [is_rescaled, expected_size]() {
+                if (!is_rescaled) {
+                    return expected_size;
+                }
+                const auto& resolution = Settings::values.resolution_info;
+                return Extent3D{
+                    .width = resolution.ScaleUp(expected_size.width),
+                    .height = resolution.ScaleUp(expected_size.height),
+                    .depth = expected_size.depth,
+                };
+            }();
+            UNIMPLEMENTED_IF(copy.extent != scaled_extent);
 
-        runtime.ConvertImage(dst_framebuffer, dst_view, src_view);
+            runtime.ConvertImage(dst_framebuffer, dst_view, src_view);
+        }
     }
 }
 
