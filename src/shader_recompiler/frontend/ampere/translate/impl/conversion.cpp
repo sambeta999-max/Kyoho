@@ -171,6 +171,80 @@ void TranslatorVisitor::I2F(Instruction insn) {
     F(Reg(insn.Dest()), IR::F32{ir.ConvertIToF(32, 32, is_signed, src, control)});
 }
 
+// F2I with a 64-bit source or destination: an F32 or F64 in, a register or a pair out. Computed in
+// F64, which holds every F32 exactly. Out of range values saturate and NaN follows .NTZ as for F2I.
+void TranslatorVisitor::F2I_F64(Instruction insn) {
+    const u32 bits{DestBits(insn)};
+    const u32 src_bits{SrcBits(insn)};
+    if ((bits != 32 && bits != 64) || (src_bits != 32 && src_bits != 64) ||
+        insn.Form() != AluForm::RegReg) {
+        throw NotImplementedException("F2I.F64 sizes {} {} form {}", bits, src_bits,
+                                      static_cast<u32>(insn.Form()));
+    }
+    const bool is_signed{insn.Bit(72)};
+    const IR::FpControl control{.no_contraction = true, .fmz_mode = Ftz(insn)};
+    const IR::Reg src_reg{Reg(insn.Bits(32, 8))};
+    IR::F64 value;
+    if (src_bits == 64) {
+        value = ir.PackDouble2x32(ir.CompositeConstruct(X(src_reg), X(src_reg + 1)));
+    } else {
+        value = IR::F64{ir.FPConvert(64, F(src_reg))};
+    }
+    value = IR::F64{ir.FPAbsNeg(value, insn.Bit(62), insn.Bit(63))};
+    IR::F64 rounded;
+    switch (insn.Bits(78, 2)) {
+    case 0:
+        rounded = IR::F64{ir.FPRoundEven(value, control)};
+        break;
+    case 1:
+        rounded = IR::F64{ir.FPFloor(value, control)};
+        break;
+    case 2:
+        rounded = IR::F64{ir.FPCeil(value, control)};
+        break;
+    default:
+        rounded = IR::F64{ir.FPTrunc(value, control)};
+        break;
+    }
+    const u32 value_bits{is_signed ? bits - 1 : bits};
+    const f64 limit{std::ldexp(1.0, static_cast<int>(value_bits))};
+    const u64 max_int{value_bits == 64 ? ~u64{0} : (u64{1} << value_bits) - 1};
+    const IR::F64 clamped{ir.FPClamp(rounded, ir.Imm64(is_signed ? -limit : 0.0),
+                                     ir.Imm64(std::nextafter(limit, 0.0)))};
+    IR::U64 result{ir.ConvertFToI(64, is_signed, clamped)};
+    result = IR::U64{ir.Select(ir.FPGreaterThanEqual(rounded, ir.Imm64(limit)), ir.Imm64(max_int),
+                               result)};
+    const IR::U64 nan_value{ir.Imm64(insn.Bit(77) ? u64{0} : u64{1} << (bits - 1))};
+    result = IR::U64{ir.Select(ir.FPIsNan(value), nan_value, result)};
+    const IR::Value words{ir.UnpackUint2x32(result)};
+    const IR::Reg dest{Reg(insn.Dest())};
+    X(dest, IR::U32{ir.CompositeExtract(words, 0)});
+    if (bits == 64) {
+        X(dest + 1, IR::U32{ir.CompositeExtract(words, 1)});
+    }
+}
+
+// I2F from a 64-bit integer in a register pair, to an F32 or an F64 in a pair
+void TranslatorVisitor::I2F_64(Instruction insn) {
+    const u32 bits{DestBits(insn)};
+    if ((bits != 32 && bits != 64) || SrcBits(insn) != 64 || insn.Form() != AluForm::RegReg) {
+        throw NotImplementedException("I2F.64 sizes {} {} form {}", bits, SrcBits(insn),
+                                      static_cast<u32>(insn.Form()));
+    }
+    const IR::Reg src_reg{Reg(insn.Bits(32, 8))};
+    const IR::U64 src{ir.PackUint2x32(ir.CompositeConstruct(X(src_reg), X(src_reg + 1)))};
+    const IR::FpControl control{.no_contraction = true, .rounding = Rounding(insn)};
+    const IR::F16F32F64 result{ir.ConvertIToF(bits, 64, insn.Bit(74), src, control)};
+    const IR::Reg dest{Reg(insn.Dest())};
+    if (bits == 32) {
+        F(dest, IR::F32{result});
+        return;
+    }
+    const IR::Value words{ir.UnpackDouble2x32(IR::F64{result})};
+    X(dest, IR::U32{ir.CompositeExtract(words, 0)});
+    X(dest + 1, IR::U32{ir.CompositeExtract(words, 1)});
+}
+
 void TranslatorVisitor::I2FP(Instruction insn) {
     if (DestBits(insn) != 32 || SrcBits(insn) != 32) {
         throw NotImplementedException("I2FP format");

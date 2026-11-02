@@ -93,6 +93,12 @@ void Dispatch(TranslatorVisitor& v, Opcode opcode, Instruction insn) {
         return v.FRND(insn);
     case Opcode::F2I:
         return v.F2I(insn);
+    case Opcode::F2I_F64:
+        return v.F2I_F64(insn);
+    case Opcode::I2F_64:
+        return v.I2F_64(insn);
+    case Opcode::BPT:
+        return v.BPT(insn);
     case Opcode::I2F:
         return v.I2F(insn);
     case Opcode::I2FP:

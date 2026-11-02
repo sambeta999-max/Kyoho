@@ -162,15 +162,41 @@ void Shf(TranslatorVisitor& v, Instruction insn, bool uniform) {
     v.X(uniform ? UReg(insn.Bits(16, 6)) : Reg(insn.Dest()), result);
 }
 
-void Isetp(TranslatorVisitor& v, Instruction insn, bool uniform) {
-    if (insn.Bit(72)) {
-        throw NotImplementedException("ISETP.EX");
+// ISETP.EX compares the upper words of a 64-bit comparison: the predicate at [68..71] (negated by
+// bit 71) holds the same comparison of the lower words and decides when the upper words are equal.
+IR::U1 ExtendedCompare(TranslatorVisitor& v, Instruction insn, bool uniform, const IR::U32& a,
+                       const IR::U32& b, Maxwell::CompareOp compare_op, bool is_signed) {
+    const IR::U1 low{uniform ? v.UP(insn.Bits(68, 3), insn.Bit(71))
+                             : v.P(insn.Bits(68, 3), insn.Bit(71))};
+    const IR::U1 equal_and_low{v.ir.LogicalAnd(v.ir.IEqual(a, b), low)};
+    const auto strict{[&](Maxwell::CompareOp op) {
+        return v.ir.LogicalOr(Maxwell::IntegerCompare(v.ir, a, b, op, is_signed), equal_and_low);
+    }};
+    switch (compare_op) {
+    case Maxwell::CompareOp::LessThan:
+    case Maxwell::CompareOp::LessThanEqual:
+        return strict(Maxwell::CompareOp::LessThan);
+    case Maxwell::CompareOp::GreaterThan:
+    case Maxwell::CompareOp::GreaterThanEqual:
+        return strict(Maxwell::CompareOp::GreaterThan);
+    case Maxwell::CompareOp::Equal:
+        return equal_and_low;
+    case Maxwell::CompareOp::NotEqual:
+        return v.ir.LogicalOr(v.ir.INotEqual(a, b), low);
+    default:
+        return Maxwell::IntegerCompare(v.ir, a, b, compare_op, is_signed);
     }
+}
+
+void Isetp(TranslatorVisitor& v, Instruction insn, bool uniform) {
     const auto compare_op{static_cast<Maxwell::CompareOp>(insn.Bits(76, 3))};
     const auto bop{static_cast<Maxwell::BooleanOp>(insn.Bits(74, 2))};
-    const IR::U1 comparison{Maxwell::IntegerCompare(v.ir, v.SrcA(insn, uniform),
-                                                    v.SrcB(insn, uniform), compare_op,
-                                                    insn.Bit(73))};
+    const IR::U32 src_a{v.SrcA(insn, uniform)};
+    const IR::U32 src_b{v.SrcB(insn, uniform)};
+    const IR::U1 comparison{insn.Bit(72) ? ExtendedCompare(v, insn, uniform, src_a, src_b,
+                                                           compare_op, insn.Bit(73))
+                                         : Maxwell::IntegerCompare(v.ir, src_a, src_b, compare_op,
+                                                                   insn.Bit(73))};
     const IR::U1 accumulator{uniform ? v.UP(insn.Bits(87, 3), insn.Bit(90))
                                      : v.P(insn.Bits(87, 3), insn.Bit(90))};
     const IR::U1 first{Maxwell::PredicateCombine(v.ir, comparison, accumulator, bop)};
@@ -219,12 +245,12 @@ void Imad(TranslatorVisitor& v, Instruction insn, bool uniform) {
     // .X (bit 74) adds the carry predicate at bits 87-89, negated by bit 90, as in IADD3.
     // The compiler pairs it with an IADD3 carry output for the high word of 64-bit sums.
     const bool extended{insn.Bit(74)};
-    if (extended && v.NegC(insn)) {
-        throw NotImplementedException("IMAD.X with a negated addend");
-    }
     const IR::U32 product{v.ir.IMul(v.SrcA(insn, uniform), v.SrcB(insn, uniform))};
     const IR::U32 src_c{v.SrcC(insn, uniform)};
-    const IR::U32 addend{v.NegC(insn) ? IR::U32{v.ir.INeg(src_c)} : src_c};
+    // A negated addend is its one's complement when the carry input completes the negation
+    const IR::U32 addend{!v.NegC(insn) ? src_c
+                         : extended    ? IR::U32{v.ir.BitwiseNot(src_c)}
+                                       : IR::U32{v.ir.INeg(src_c)}};
     IR::U32 result{v.ir.IAdd(product, addend)};
     if (extended) {
         const IR::U1 carry{uniform ? v.UP(insn.Bits(87, 3), insn.Bit(90))
@@ -234,15 +260,42 @@ void Imad(TranslatorVisitor& v, Instruction insn, bool uniform) {
     v.X(uniform ? UReg(insn.Bits(16, 6)) : Reg(insn.Dest()), result);
 }
 
+// Adds a 64-bit addend to a 64-bit product for IMAD.WIDE and IMAD.HI. A negated addend (bit 75) is
+// its one's complement plus one, or plus the carry input of the .X form (bit 74, predicate at
+// [87..90)). The carry out of the 64-bit sum goes to the predicate at [81..84).
+std::pair<IR::U32, IR::U32> AddWide(TranslatorVisitor& v, Instruction insn, bool uniform,
+                                    const IR::U32& lo, const IR::U32& hi, IR::U32 c_lo,
+                                    IR::U32 c_hi, bool negate) {
+    if (negate) {
+        c_lo = v.ir.BitwiseNot(c_lo);
+        c_hi = v.ir.BitwiseNot(c_hi);
+    }
+    IR::U32 sum_lo{v.ir.IAdd(lo, c_lo)};
+    IR::U32 carry{CarryOf(v.ir, sum_lo, c_lo)};
+    if (insn.Bit(74) || negate) {
+        IR::U32 carry_in{v.ir.Imm32(1)};
+        if (insn.Bit(74)) {
+            carry_in = PredicateBit(v.ir, uniform ? v.UP(insn.Bits(87, 3), insn.Bit(90))
+                                                  : v.P(insn.Bits(87, 3), insn.Bit(90)));
+        }
+        const IR::U32 next{v.ir.IAdd(sum_lo, carry_in)};
+        carry = v.ir.IAdd(carry, CarryOf(v.ir, next, carry_in));
+        sum_lo = next;
+    }
+    const IR::U32 partial{v.ir.IAdd(hi, c_hi)};
+    const IR::U32 sum_hi{v.ir.IAdd(partial, carry)};
+    if (insn.Bits(81, 3) != PT) {
+        const IR::U32 carries{
+            v.ir.IAdd(CarryOf(v.ir, partial, c_hi), CarryOf(v.ir, sum_hi, carry))};
+        const IR::U1 carry_out{v.ir.INotEqual(carries, v.ir.Imm32(0))};
+        uniform ? v.SetUP(insn.Bits(81, 3), carry_out) : v.SetP(insn.Bits(81, 3), carry_out);
+    }
+    return {sum_lo, sum_hi};
+}
+
 // 64-bit result of a 32x32 product plus a 64-bit addend, into a register pair. Bit 73 selects
 // the signed product. The addend is a register pair or a pair of constant buffer words.
 void ImadWide(TranslatorVisitor& v, Instruction insn, bool uniform) {
-    if (insn.Bit(74) || insn.Bits(81, 3) != PT) {
-        throw NotImplementedException("IMAD.WIDE with carry");
-    }
-    if (v.NegC(insn)) {
-        throw NotImplementedException("IMAD.WIDE with a negated addend");
-    }
     IR::U32 c_lo;
     IR::U32 c_hi;
     if (v.BIsWide(insn)) {
@@ -258,8 +311,7 @@ void ImadWide(TranslatorVisitor& v, Instruction insn, bool uniform) {
     }
     const auto [lo, hi]{
         MulWide(v.ir, v.SrcA(insn, uniform), v.SrcB(insn, uniform), insn.Bit(73))};
-    const IR::U32 sum_lo{v.ir.IAdd(lo, c_lo)};
-    const IR::U32 sum_hi{v.ir.IAdd(v.ir.IAdd(hi, c_hi), CarryOf(v.ir, sum_lo, c_lo))};
+    const auto [sum_lo, sum_hi]{AddWide(v, insn, uniform, lo, hi, c_lo, c_hi, v.NegC(insn))};
     const IR::Reg dest{uniform ? UReg(insn.Bits(16, 6)) : Reg(insn.Dest())};
     v.X(dest, sum_lo);
     v.X(dest + 1, sum_hi);
@@ -341,24 +393,17 @@ void TranslatorVisitor::UIMAD_WIDE(Instruction insn) {
 // register pair added to the 64-bit product before taking its upper word, so compilers write the
 // common "hi(a * b) + q" (inlined division) as IMAD.HI Rd, Ra, Rb, {0, q}.
 void TranslatorVisitor::IMAD_HI(Instruction insn) {
-    if (insn.Bit(74) || insn.Bits(81, 3) != PT) {
-        throw NotImplementedException("IMAD.HI with carry");
-    }
-    if (!BIsWide(insn) || NegC(insn)) {
+    if (!BIsWide(insn)) {
         throw NotImplementedException("IMAD.HI addend form {}", static_cast<u32>(insn.Form()));
     }
     const auto [lo, hi]{MulWide(ir, SrcA(insn), SrcB(insn), insn.Bit(73))};
     const IR::Reg addend{Reg(insn.Bits(64, 8))};
-    IR::U32 result{hi};
-    if (!IR::IsZero(addend)) {
-        if (!IR::IsAligned(addend, 2)) {
-            throw NotImplementedException("Unaligned IMAD.HI addend {}", addend);
-        }
-        const IR::U32 addend_lo{X(addend)};
-        const IR::U32 carry{CarryOf(ir, ir.IAdd(lo, addend_lo), addend_lo)};
-        result = ir.IAdd(ir.IAdd(hi, X(addend + 1)), carry);
+    if (!IR::IsZero(addend) && !IR::IsAligned(addend, 2)) {
+        throw NotImplementedException("Unaligned IMAD.HI addend {}", addend);
     }
-    X(Reg(insn.Dest()), result);
+    const IR::U32 c_lo{X(addend)};
+    const IR::U32 c_hi{IR::IsZero(addend) ? ir.Imm32(0) : X(addend + 1)};
+    X(Reg(insn.Dest()), AddWide(*this, insn, false, lo, hi, c_lo, c_hi, NegC(insn)).second);
 }
 
 void TranslatorVisitor::IMNMX(Instruction insn) {

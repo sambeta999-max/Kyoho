@@ -37,6 +37,9 @@ void TranslatorVisitor::EXIT(Instruction) {
     }
 }
 
+// BPT raises a debug trap, which nothing handles here: execution goes on as without a debugger
+void TranslatorVisitor::BPT(Instruction) {}
+
 void TranslatorVisitor::BAR(Instruction insn) {
     // Only BAR.SYNC over the whole workgroup with an immediate barrier id
     const bool immediate_id{insn.Opcode() == 0xb1d};

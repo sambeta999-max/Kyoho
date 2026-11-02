@@ -153,6 +153,15 @@ void TranslatorVisitor::MUFU(Instruction insn) {
     case 3:
         result = ir.FPLog2(src);
         break;
+    case 9: {
+        // TANH, from exp(2x) = 2^(2x / ln 2). Beyond |x| = 9 the F32 result is +-1 and the
+        // exponential could overflow.
+        const IR::F32 clamped{ir.FPClamp(src, ir.Imm32(-9.0f), ir.Imm32(9.0f))};
+        const IR::F32 e2x{ir.FPExp2(IR::F32{ir.FPMul(clamped, ir.Imm32(2.88539008f))})};
+        result = IR::F32{ir.FPMul(IR::F32{ir.FPAdd(e2x, ir.Imm32(-1.0f))},
+                                  IR::F32{ir.FPRecip(IR::F32{ir.FPAdd(e2x, ir.Imm32(1.0f))})})};
+        break;
+    }
     case 4:
         result = IR::F32{ir.FPRecip(src)};
         break;
