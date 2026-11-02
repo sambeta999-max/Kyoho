@@ -13,9 +13,13 @@ namespace Service::Nvidia::Devices {
 
 inline constexpr size_t NativeGpuCharacteristicsSize = 0xd0;
 
-inline std::array<u8, NativeGpuCharacteristicsSize> MakeNativeGpuCharacteristics(
+// Newer SDKs (Fire Emblem: Fortune's Weave) ask for this size with ioctl 0xc0e84705
+inline constexpr size_t ExtendedNativeGpuCharacteristicsSize = 0xd8;
+
+template <size_t Size = NativeGpuCharacteristicsSize>
+inline std::array<u8, Size> MakeNativeGpuCharacteristics(
     std::span<const u8, 0xa0> legacy) {
-    std::array<u8, NativeGpuCharacteristicsSize> result{};
+    std::array<u8, Size> result{};
     // The GPU description and engine classes share the legacy prefix. The native
     // SDK consumes signed ioctl interface levels where the legacy ABI has topology.
     std::memcpy(result.data(), legacy.data(), 0x70);

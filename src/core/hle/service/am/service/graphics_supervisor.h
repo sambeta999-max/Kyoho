@@ -42,6 +42,7 @@ private:
     void Initialize(HLERequestContext& ctx);
     void BindProcess(HLERequestContext& ctx);
     void CompleteBootstrap(HLERequestContext& ctx);
+    void QueryMemoryMode(HLERequestContext& ctx);
     void InitializeImageContext(HLERequestContext& ctx);
     void GetNvidiaDriver(HLERequestContext& ctx);
     void CalculateImageRequirements(HLERequestContext& ctx);

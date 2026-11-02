@@ -1272,6 +1272,7 @@ IGraphicsSupervisor::IGraphicsSupervisor(Core::System& system, Kernel::KProcess*
         {4, &IGraphicsSupervisor::Initialize, "Initialize"},
         {11, &IGraphicsSupervisor::BindProcess, "BindProcess"},
         {101, &IGraphicsSupervisor::CompleteBootstrap, "CompleteBootstrap"},
+        {126, &IGraphicsSupervisor::QueryMemoryMode, "QueryMemoryMode"},
         {115, &IGraphicsSupervisor::ConfigureNativeMemory, "ConfigureNativeMemory"},
         {111, &IGraphicsSupervisor::CreateNativeMemory, "CreateNativeMemory"},
         {112, &IGraphicsSupervisor::DestroyNativeMemory, "DestroyNativeMemory"},
@@ -1378,13 +1379,14 @@ void IGraphicsSupervisor::Initialize(HLERequestContext& ctx) {
             result = Kernel::ResultInvalidArgument;
         } else if ((request->flags != 0x8000000000000001ULL &&
                     request->flags != 0x8000000000000005ULL &&
-                    request->flags != 0x8000000000000006ULL) ||
+                    request->flags != 0x8000000000000006ULL &&
+                    request->flags != 0x8000000000000007ULL) ||
                    !empty_remote_memory) {
             result = Kernel::ResultNotImplemented;
         } else {
             m_phase = Phase::Initialized;
             // The SDK sends a constant per version: 1 (Donkey Kong Bananza), 5 (Welcome Tour,
-            // Drag x Drive) or 6 (Raiders, nn::gsv::BootWithRemoteMemory at sdk+0x489760). Bit 2
+            // Drag x Drive), 6 (Raiders, nn::gsv::BootWithRemoteMemory at sdk+0x489760) or 7. Bit 2
             // (0x4) selects explicit inter-module image context initialization (commands
             // 1501/1502). Older SDKs (nn::gsv::BootWithRemoteMemory without MemoryRegion) omit
             // bit 2 and do not send commands 1501/1502 before GetNvidiaDriver/CreateNativeMemory.
@@ -1399,6 +1401,19 @@ void IGraphicsSupervisor::Initialize(HLERequestContext& ctx) {
     }
     IPC::ResponseBuilder rb{ctx, 2};
     rb.Push(result.raw);
+}
+
+// Fire Emblem: Fortune's Weave asks this right after the bootstrap (found in eden-fefw). There is no
+// remote memory here, so the mode is always 0.
+void IGraphicsSupervisor::QueryMemoryMode(HLERequestContext& ctx) {
+    const auto* packet = ctx.CommandBuffer();
+    Result result = Kernel::ResultInvalidCombination;
+    if (packet[0] == 0x8e && packet[1] == 0) {
+        result = m_phase == Phase::Ready ? ResultSuccess : Kernel::ResultInvalidState;
+    }
+    IPC::ResponseBuilder rb{ctx, 3};
+    rb.Push(result.raw);
+    rb.Push<u32>(0);
 }
 
 void IGraphicsSupervisor::BindProcess(HLERequestContext& ctx) {
