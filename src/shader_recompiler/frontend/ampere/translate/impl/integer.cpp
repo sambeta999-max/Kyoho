@@ -337,14 +337,28 @@ void TranslatorVisitor::UIMAD_WIDE(Instruction insn) {
 }
 
 // IMAD.HI Rd, Ra, Rb, Rc: the high word of the 64-bit product plus Rc. nvcc -arch=sm_86 emits it
-// for __umulhi(a, b) + c (.U32) and __mulhi(a, b) + c; bit 73 selects the signed product.
+// for __umulhi(a, b) (.U32) and __mulhi(a, b); bit 73 selects the signed product. The addend is a
+// register pair added to the 64-bit product before taking its upper word, so compilers write the
+// common "hi(a * b) + q" (inlined division) as IMAD.HI Rd, Ra, Rb, {0, q}.
 void TranslatorVisitor::IMAD_HI(Instruction insn) {
     if (insn.Bit(74) || insn.Bits(81, 3) != PT) {
         throw NotImplementedException("IMAD.HI with carry");
     }
-    const IR::U32 hi{MulWide(ir, SrcA(insn), SrcB(insn), insn.Bit(73)).second};
-    const IR::U32 src_c{SrcC(insn)};
-    X(Reg(insn.Dest()), ir.IAdd(hi, NegC(insn) ? IR::U32{ir.INeg(src_c)} : src_c));
+    if (!BIsWide(insn) || NegC(insn)) {
+        throw NotImplementedException("IMAD.HI addend form {}", static_cast<u32>(insn.Form()));
+    }
+    const auto [lo, hi]{MulWide(ir, SrcA(insn), SrcB(insn), insn.Bit(73))};
+    const IR::Reg addend{Reg(insn.Bits(64, 8))};
+    IR::U32 result{hi};
+    if (!IR::IsZero(addend)) {
+        if (!IR::IsAligned(addend, 2)) {
+            throw NotImplementedException("Unaligned IMAD.HI addend {}", addend);
+        }
+        const IR::U32 addend_lo{X(addend)};
+        const IR::U32 carry{CarryOf(ir, ir.IAdd(lo, addend_lo), addend_lo)};
+        result = ir.IAdd(ir.IAdd(hi, X(addend + 1)), carry);
+    }
+    X(Reg(insn.Dest()), result);
 }
 
 void TranslatorVisitor::IMNMX(Instruction insn) {

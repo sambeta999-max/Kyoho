@@ -560,6 +560,26 @@ TEST_CASE("Ampere translate: LEA with a negated addend", "[shader][ampere]") {
     REQUIRE(colors[3] == 0x10000006u);
 }
 
+TEST_CASE("Ampere translate: IMAD.HI adds a register pair", "[shader][ampere]") {
+    Translation t;
+    Translate(t, {
+        MovImm(4, 0x10000),
+        MovImm(5, 0x10001),
+        MovImm(6, 0xffffffff),
+        MovImm(7, 2),
+        // IMAD.HI.U32 R0, R4, R5, R6
+        Encoding{0x227}.Set(16, 8, 0).Set(24, 8, 4).Set(32, 8, 5).Set(64, 8, 6).Set(81, 3, PT),
+        // IMAD.HI.U32 R1, R4, R5, RZ
+        Encoding{0x227}.Set(16, 8, 1).Set(24, 8, 4).Set(32, 8, 5).Set(64, 8, RZ).Set(81, 3, PT),
+        MovImm(2, 0),
+        MovImm(3, 0),
+        Exit(),
+    });
+    const auto colors{FragColors(t.program)};
+    REQUIRE(colors[0] == 4u);
+    REQUIRE(colors[1] == 1u);
+}
+
 TEST_CASE("Ampere translate: floating point", "[shader][ampere]") {
     Translation t;
     Translate(t, {
