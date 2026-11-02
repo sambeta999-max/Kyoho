@@ -239,7 +239,7 @@ private:
     struct GpuOnlyRegion {
         u64 size;
         DAddr device;
-        std::vector<std::unique_ptr<Kernel::KPageGroup>> blocks;
+        std::vector<u64> blocks; ///< Offsets in device memory of the backed blocks, or 0
     };
     std::map<u64, GpuOnlyRegion> m_native_sparse;
     std::mutex m_gpu_only_mutex; //!< Locks the blocks of m_native_sparse

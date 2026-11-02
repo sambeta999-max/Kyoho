@@ -17,6 +17,7 @@
 #include "core/core.h"
 #include "common/div_ceil.h"
 #include "core/device_memory.h"
+#include "core/hle/kernel/board/nintendo/nx/k_system_control.h"
 #include "core/hle/kernel/k_memory_manager.h"
 #include "core/hle/kernel/k_page_group.h"
 #include "core/hle/kernel/k_process.h"
@@ -54,6 +55,43 @@ GpuOnlyRanges& GetGpuOnlyRanges() {
     return ranges;
 }
 constexpr u64 GpuOnlyBlockSize = 4ULL << 20;
+
+// Blocks of the device memory after the guest's DRAM (GpuOnlyMemorySize), shared by all address
+// spaces
+struct GpuOnlyPool {
+    std::mutex mutex;
+    u64 next = Kernel::Board::Nintendo::Nx::KSystemControl::Init::GetIntendedMemorySize();
+    std::vector<u64> free;
+};
+GpuOnlyPool& GetGpuOnlyPool() {
+    static GpuOnlyPool pool;
+    return pool;
+}
+
+/// Offset in device memory of a free block, or 0 when there is none
+u64 AllocateGpuOnlyBlock() {
+    auto& pool = GetGpuOnlyPool();
+    const std::scoped_lock lock{pool.mutex};
+    if (!pool.free.empty()) {
+        const u64 offset = pool.free.back();
+        pool.free.pop_back();
+        return offset;
+    }
+    const u64 end = Kernel::Board::Nintendo::Nx::KSystemControl::Init::GetIntendedMemorySize() +
+                    Core::GpuOnlyMemorySize;
+    if (pool.next + GpuOnlyBlockSize > end) {
+        return 0;
+    }
+    const u64 offset = pool.next;
+    pool.next += GpuOnlyBlockSize;
+    return offset;
+}
+
+void FreeGpuOnlyBlock(u64 offset) {
+    auto& pool = GetGpuOnlyPool();
+    const std::scoped_lock lock{pool.mutex};
+    pool.free.push_back(offset);
+}
 
 bool BackGpuOnlyWrite(DAddr address, size_t size) {
     auto& gpu_only = GetGpuOnlyRanges();
@@ -97,12 +135,11 @@ nvhost_as_gpu::~nvhost_as_gpu() {
 }
 
 // Gives memory to the blocks of a GPU-only region that [address, +size) reaches, cleared, from
-// the system pool (the application pool once that is exhausted). Runs before a write lands there,
-// usually on the GPU thread.
+// the device memory after the guest's DRAM. Runs before a write lands there, usually on the GPU
+// thread.
 bool nvhost_as_gpu::BackGpuOnly(DAddr address, size_t size) {
     const std::scoped_lock lock{m_gpu_only_mutex};
     auto& smmu = system.Host1x().MemoryManager();
-    auto& memory_manager = system.Kernel().MemoryManager();
     bool backed = false;
     for (auto& [gpu_address, region] : m_native_sparse) {
         if (region.device == 0 || address + size <= region.device ||
@@ -119,20 +156,8 @@ bool nvhost_as_gpu::BackGpuOnly(DAddr address, size_t size) {
             }
             const u64 offset = block * GpuOnlyBlockSize;
             const u64 block_size = (std::min)(GpuOnlyBlockSize, region.size - offset);
-            auto pages = std::make_unique<Kernel::KPageGroup>(
-                system.Kernel(), system.Kernel().GetSystemSystemResource().GetBlockInfoManagerPointer());
-            Result result = ResultUnknown;
-            for (const auto pool : {Kernel::KMemoryManager::Pool::SystemNonSecure,
-                                    Kernel::KMemoryManager::Pool::Application}) {
-                result = memory_manager.AllocateAndOpen(
-                    pages.get(), block_size / Kernel::PageSize,
-                    Kernel::KMemoryManager::EncodeOption(pool,
-                                                         Kernel::KMemoryManager::Direction::FromBack));
-                if (result.IsSuccess()) {
-                    break;
-                }
-            }
-            if (result.IsError()) {
+            const u64 memory = AllocateGpuOnlyBlock();
+            if (memory == 0) {
                 static bool warned{};
                 if (!std::exchange(warned, true)) {
                     LOG_WARNING(Service_NVDRV,
@@ -141,15 +166,9 @@ bool nvhost_as_gpu::BackGpuOnly(DAddr address, size_t size) {
                 }
                 return backed;
             }
-            u64 device = region.device + offset;
-            for (const auto& run : *pages) {
-                const u64 dram_offset = GetInteger(run.GetAddress()) - Core::DramMemoryMap::Base;
-                std::memset(system.DeviceMemory().GetPointer<u8>(run.GetAddress()), 0,
-                            run.GetSize());
-                smmu.MapPhysical(device, dram_offset, run.GetSize());
-                device += run.GetSize();
-            }
-            region.blocks[block] = std::move(pages);
+            std::memset(system.DeviceMemory().GetPointerFromRaw<u8>(memory), 0, block_size);
+            smmu.MapPhysical(region.device + offset, memory, block_size);
+            region.blocks[block] = memory;
             m_gpu_only_bytes += block_size;
             backed = true;
             LOG_DEBUG(Service_NVDRV, "GPU-only region {:#x}: block {:#x} has memory, {} MiB in use",
@@ -161,11 +180,11 @@ bool nvhost_as_gpu::BackGpuOnly(DAddr address, size_t size) {
 
 void nvhost_as_gpu::ReleaseGpuOnly(GpuOnlyRegion& region) {
     const std::scoped_lock lock{m_gpu_only_mutex};
-    for (auto& block : region.blocks) {
-        if (block) {
-            m_gpu_only_bytes -= block->GetNumPages() * Kernel::PageSize;
-            block->Close(system.Kernel());
-            block.reset();
+    for (u64 block = 0; block < region.blocks.size(); ++block) {
+        if (region.blocks[block] != 0) {
+            m_gpu_only_bytes -= (std::min)(GpuOnlyBlockSize, region.size - block * GpuOnlyBlockSize);
+            FreeGpuOnlyBlock(region.blocks[block]);
+            region.blocks[block] = 0;
         }
     }
 }

@@ -13,7 +13,8 @@ constexpr size_t VirtualReserveSize = 1ULL << 39;
 #endif
 
 DeviceMemory::DeviceMemory()
-    : buffer{Kernel::Board::Nintendo::Nx::KSystemControl::Init::GetIntendedMemorySize(),
+    : buffer{Kernel::Board::Nintendo::Nx::KSystemControl::Init::GetIntendedMemorySize() +
+                 GpuOnlyMemorySize,
              VirtualReserveSize} {}
 
 DeviceMemory::~DeviceMemory() = default;

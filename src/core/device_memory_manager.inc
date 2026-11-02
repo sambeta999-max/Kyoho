@@ -175,7 +175,7 @@ DeviceMemoryManager<Traits>::DeviceMemoryManager(const DeviceMemory& device_memo
     : physical_base{uintptr_t(device_memory_.buffer.BackingBasePointer())},
       physical_size{device_memory_.buffer.BackingSize()}
     , device_inter{nullptr}
-    , compressed_device_addr(Kernel::Board::Nintendo::Nx::KSystemControl::Init::GetIntendedMemorySize() >> Memory::YUZU_PAGEBITS)
+    , compressed_device_addr(physical_size >> Memory::YUZU_PAGEBITS)
     , tracked_entries(device_as_size >> Memory::YUZU_PAGEBITS)
 {
     impl = std::make_unique<DeviceMemoryManagerAllocator<Traits>>();

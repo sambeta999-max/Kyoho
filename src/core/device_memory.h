@@ -19,6 +19,11 @@ enum : u64 {
 };
 }; // namespace DramMemoryMap
 
+/// Memory after the guest's DRAM that only the emulated GPU reaches. It backs the GPU-only regions
+/// of sparse address spaces, which the guest's CPU never maps, so the guest's memory pools never
+/// see it.
+constexpr u64 GpuOnlyMemorySize = 6ULL << 30;
+
 class DeviceMemory {
 public:
     explicit DeviceMemory();
