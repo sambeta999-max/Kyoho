@@ -25,6 +25,12 @@ void Scheduler::Push(GPU& gpu, s32 channel, CommandList&& entries) {
         channel_state = it->second;
         gpu.BindChannel(channel_state->bind_id);
     }
+    // Switch 2 titles split the GPU thread, starting with their first submission
+    if (channel_state->native_abi && VideoCommon::GpuSplit::Active() == nullptr) {
+        if (auto* const split = VideoCommon::GpuSplit::Created()) {
+            split->Activate();
+        }
+    }
     // Process commands outside the lock to reduce contention.
     // Multiple channels can prepare their commands in parallel.
     channel_state->payload->dma_pusher.Push(std::move(entries));

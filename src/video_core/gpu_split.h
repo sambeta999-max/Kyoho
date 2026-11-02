@@ -25,7 +25,9 @@ class EngineInterface;
 
 namespace VideoCommon {
 
-/// Splits the GPU thread in two (EDEN_GPU_SPLIT=1, Vulkan only). The front (the GPU thread)
+/// Splits the GPU thread in two for Switch 2 titles (Vulkan only; EDEN_GPU_SPLIT=0 keeps one
+/// thread). The back starts with the GPU and the split takes effect at the first submission of
+/// a native-ABI channel, on the GPU thread between two command lists. The front (the GPU thread)
 /// parses command lists and runs the 3D macros of AMPERE_B channels against a copy of the 3D
 /// registers; the back executes the method writes this produces in order: engine state, draws,
 /// dispatches, queries, fences and everything else that reaches the rasterizer. Only the back
@@ -40,11 +42,18 @@ public:
     [[nodiscard]] static GpuSplit* Active() noexcept {
         return active;
     }
-    /// Whether EDEN_GPU_SPLIT asks for it
+    /// On unless EDEN_GPU_SPLIT=0
     [[nodiscard]] static bool Requested();
 
     void Start();
     void Stop();
+
+    /// The split created at GPU start, active or not
+    [[nodiscard]] static GpuSplit* Created() noexcept {
+        return created;
+    }
+    /// Routes the GPU thread's work through the back from now on; on the GPU thread only
+    void Activate();
 
     /// A method from a command list, executed as DmaPusher would on one thread
     void PushMethod(Tegra::DmaPusher& pusher, u32 subchannel, u32 method, u32 argument,
@@ -115,6 +124,7 @@ private:
     void Execute(Entry& entry);
 
     static inline GpuSplit* active{};
+    static inline GpuSplit* created{};
 
     Core::System& system;
     std::vector<Entry> entries;

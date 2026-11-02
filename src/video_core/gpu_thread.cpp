@@ -101,8 +101,9 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                     state.cv.notify_all();
                 }
             };
-            if (split) {
-                split->PushTask(signal);
+            // The first Switch 2 submission may have started the split
+            if (auto* const active_split = GpuSplit::Active()) {
+                active_split->PushTask(signal);
             } else {
                 signal();
             }

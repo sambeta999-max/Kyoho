@@ -188,7 +188,6 @@ struct GPU::Impl {
         Settings::UpdateGPUAccuracy();
         if (VideoCommon::GpuSplit::Requested() &&
             Settings::values.renderer_backend.GetValue() == Settings::RendererBackend::Vulkan) {
-            LOG_INFO(HW_GPU, "The GPU thread is split in two (EDEN_GPU_SPLIT)");
             split = std::make_unique<VideoCommon::GpuSplit>(system);
             split->Start();
         }
