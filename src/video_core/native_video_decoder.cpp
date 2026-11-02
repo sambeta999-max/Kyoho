@@ -19,6 +19,8 @@ extern "C" {
 #endif
 }
 
+#include "gav1/decoder.h"
+
 namespace VideoCommon {
 namespace {
 
@@ -188,11 +190,136 @@ private:
     NativeVideoOutput output_format;
 };
 
+/// AV1 through libgav1: the bundled FFmpeg of some platforms has no AV1 decoder, and Fire Emblem:
+/// Fortune's Weave aborts when its movies cannot be decoded.
+class Gav1NativeVideoDecoder final : public NativeVideoDecoder {
+public:
+    explicit Gav1NativeVideoDecoder(NativeVideoOutput output_) : output_format{output_} {}
+
+    ~Gav1NativeVideoDecoder() override {
+        sws_freeContext(scaler);
+        av_frame_free(&converted);
+    }
+
+    bool Open() {
+        libgav1::DecoderSettings settings;
+        settings.threads = 4;
+        converted = av_frame_alloc();
+        return converted && decoder.Init(&settings) == libgav1::kStatusOk;
+    }
+
+    bool Decode(std::span<const u8> data, s64 pts, std::vector<DecodedVideoFrame>& frames) override {
+        const auto enqueued = decoder.EnqueueFrame(data.data(), data.size(), pts, nullptr);
+        if (enqueued != libgav1::kStatusOk) {
+            LOG_WARNING(HW_GPU, "AV1 packet of {} bytes was rejected: {}", data.size(),
+                        libgav1::GetErrorString(enqueued));
+            return false;
+        }
+        return Dequeue(frames) != libgav1::kStatusNothingToDequeue;
+    }
+
+    void Drain(std::vector<DecodedVideoFrame>& frames) override {
+        decoder.SignalEOS();
+        while (Dequeue(frames) == libgav1::kStatusOk && has_output) {
+        }
+    }
+
+    void Flush() override {
+        decoder.SignalEOS();
+    }
+
+private:
+    libgav1::StatusCode Dequeue(std::vector<DecodedVideoFrame>& frames) {
+        const libgav1::DecoderBuffer* buffer{};
+        const auto status = decoder.DequeueFrame(&buffer);
+        has_output = status == libgav1::kStatusOk && buffer != nullptr;
+        if (has_output) {
+            DecodedVideoFrame output;
+            if (Convert(*buffer, output)) {
+                frames.push_back(std::move(output));
+            }
+        }
+        return status;
+    }
+
+    bool Convert(const libgav1::DecoderBuffer& buffer, DecodedVideoFrame& output) {
+        if (buffer.image_format != kLibgav1ImageFormatYuv420 ||
+            (buffer.bitdepth != 8 && buffer.bitdepth != 10)) {
+            LOG_ERROR(HW_GPU, "Unsupported AV1 picture: format {}, {} bits",
+                      static_cast<int>(buffer.image_format), buffer.bitdepth);
+            return false;
+        }
+        const int width = buffer.displayed_width[0];
+        const int height = buffer.displayed_height[0];
+        output.width = static_cast<u32>(width);
+        output.height = static_cast<u32>(height);
+        output.pts = buffer.user_private_data;
+        const bool rgba = output_format == NativeVideoOutput::Rgba;
+        const AVPixelFormat target = rgba ? AV_PIX_FMT_RGBA : AV_PIX_FMT_NV12;
+        const AVPixelFormat source =
+            buffer.bitdepth == 10 ? AV_PIX_FMT_YUV420P10LE : AV_PIX_FMT_YUV420P;
+        scaler = sws_getCachedContext(scaler, width, height, source, width, height, target,
+                                      SWS_BILINEAR, nullptr, nullptr, nullptr);
+        if (!scaler) {
+            return false;
+        }
+        // Follow the stream's matrix and range; unspecified streams are BT.709 video. The AV1
+        // matrix coefficients use the same numbers as FFmpeg's color spaces.
+        const int space = buffer.matrix_coefficients == kLibgav1MatrixCoefficientsUnspecified
+                              ? AVCOL_SPC_BT709
+                              : static_cast<int>(buffer.matrix_coefficients);
+        const int full_range = buffer.color_range == kLibgav1ColorRangeFull ? 1 : 0;
+        sws_setColorspaceDetails(scaler, sws_getCoefficients(space), full_range,
+                                 sws_getCoefficients(AVCOL_SPC_BT709), rgba ? 1 : full_range, 0,
+                                 1 << 16, 1 << 16);
+        if (converted->width != width || converted->height != height) {
+            av_frame_unref(converted);
+            converted->format = target;
+            converted->width = width;
+            converted->height = height;
+            if (av_frame_get_buffer(converted, 0) < 0) {
+                return false;
+            }
+        }
+        const std::array<const u8*, 4> planes{buffer.plane[0], buffer.plane[1], buffer.plane[2],
+                                              nullptr};
+        const std::array<int, 4> strides{buffer.stride[0], buffer.stride[1], buffer.stride[2], 0};
+        sws_scale(scaler, planes.data(), strides.data(), 0, height, converted->data,
+                  converted->linesize);
+        const auto copy_plane = [](std::vector<u8>& plane, const u8* data, int pitch, int row,
+                                   int rows) {
+            plane.resize(static_cast<size_t>(row) * rows);
+            for (int y = 0; y < rows; ++y) {
+                std::memcpy(plane.data() + static_cast<size_t>(row) * y, data + pitch * y, row);
+            }
+        };
+        if (rgba) {
+            copy_plane(output.luma, converted->data[0], converted->linesize[0], width * 4, height);
+            output.chroma.clear();
+            return true;
+        }
+        copy_plane(output.luma, converted->data[0], converted->linesize[0], width, height);
+        copy_plane(output.chroma, converted->data[1], converted->linesize[1], (width + 1) & ~1,
+                   (height + 1) / 2);
+        return true;
+    }
+
+    libgav1::Decoder decoder;
+    AVFrame* converted{};
+    SwsContext* scaler{};
+    NativeVideoOutput output_format;
+    bool has_output{};
+};
+
 } // Anonymous namespace
 
 std::unique_ptr<NativeVideoDecoder> NativeVideoDecoder::Create(NativeVideoCodec codec,
                                                                std::span<const u8> extradata,
                                                                NativeVideoOutput output) {
+    if (codec == NativeVideoCodec::Av1) {
+        auto decoder = std::make_unique<Gav1NativeVideoDecoder>(output);
+        return decoder->Open() ? std::move(decoder) : nullptr;
+    }
     auto decoder = std::make_unique<FFmpegNativeVideoDecoder>(output);
     if (!decoder->Open(codec, extradata)) {
         return nullptr;

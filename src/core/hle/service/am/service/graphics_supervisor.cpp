@@ -1309,6 +1309,7 @@ IGraphicsSupervisor::IGraphicsSupervisor(Core::System& system, Kernel::KProcess*
         {961, &IGraphicsSupervisor::GetDecoderImageDescriptor, "GetDecoderImageDescriptor"},
         {902, &IGraphicsSupervisor::OpenVideoDecoderSession, "OpenVideoDecoderSession"},
         {903, &IGraphicsSupervisor::FinalizeVideoDecoderContext, "FinalizeVideoDecoderContext"},
+        {906, &IGraphicsSupervisor::OpenVideoDecoderSession, "OpenVideoDecoderSessionWithVersion"},
         {905, &IGraphicsSupervisor::OpenVideoDecoderSession, "OpenVideoDecoderSessionWithMode"},
         {1001, &IGraphicsSupervisor::InitializeVideoEncoderContext, "InitializeVideoEncoderContext"},
         {1002, &IGraphicsSupervisor::OpenVideoEncoderSession, "OpenVideoEncoderSession"},
@@ -1931,7 +1932,8 @@ void IGraphicsSupervisor::InitializeVideoDecoderContext(HLERequestContext& ctx) 
 
 void IGraphicsSupervisor::OpenVideoDecoderSession(HLERequestContext& ctx) {
     OpenSubsystemSession(ctx, m_video_decoder_context_initialized,
-                         ctx.GetCommand() == 905 ? 1 : 0,
+                         // 905 carries a mode, 906 a remote memory flag and the library version
+                         ctx.GetCommand() == 906 ? 3 : ctx.GetCommand() == 905 ? 1 : 0,
                          MakeVideoCodecRootSession(system, VideoCodecKind::Decoder, m_process,
                                                    m_nv_module, m_video_image_pools));
 }
