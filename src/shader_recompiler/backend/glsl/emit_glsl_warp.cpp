@@ -8,6 +8,7 @@
 
 #include "shader_recompiler/backend/glsl/emit_glsl_instructions.h"
 #include "shader_recompiler/backend/glsl/glsl_emit_context.h"
+#include "shader_recompiler/exception.h"
 #include "shader_recompiler/frontend/ir/value.h"
 #include "shader_recompiler/profile.h"
 
@@ -60,6 +61,19 @@ std::string GetMask(EmitContext& ctx, std::string_view mask) {
     return fmt::format("uint(uvec2({}){})", mask, ballot_index);
 }
 } // Anonymous namespace
+
+void EmitSubgroupBarrier(EmitContext& ctx) {
+    ctx.Add("subgroupBarrier();");
+}
+
+void EmitHmmaF16(EmitContext&, IR::Inst&, std::string_view, std::string_view, std::string_view) {
+    throw LogicError("HmmaF16 must be lowered");
+}
+
+void EmitCooperativeMatrixMulAddF16(EmitContext&, IR::Inst&, std::string_view, std::string_view,
+                                    std::string_view) {
+    throw NotImplementedException("GLSL cooperative matrices");
+}
 
 void EmitLaneId(EmitContext& ctx, IR::Inst& inst) {
     ctx.AddU32("{}={}&31u;", inst, THREAD_ID);

@@ -564,6 +564,7 @@ std::vector<u32> EmitSPIRV(const Profile& profile, const RuntimeInfo& runtime_in
     PatchPhiNodes(program, ctx);
     std::vector<u32> code{ctx.Assemble()};
     RewriteOpcodes(code, ctx.opcode_rewrites);
+    RewriteCooperativeMatrices(code, ctx);
     return code;
 }
 

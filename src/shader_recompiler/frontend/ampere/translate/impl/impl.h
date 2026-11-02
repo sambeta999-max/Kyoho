@@ -29,12 +29,6 @@ struct TranslatorVisitor {
     Environment& env;
     IR::IREmitter ir;
 
-    // Writes to each register so far in this block. HMMA reuses the fragments it gathered from
-    // registers that have not been written since, as consecutive HMMAs often share an operand.
-    std::unordered_map<u32, u32> register_writes;
-    std::map<std::array<u32, 7>, std::array<IR::F32, 32>> hmma_fragments;
-    std::optional<std::array<IR::U32, 3>> hmma_lanes;
-
     // Integer
     void IABS(Instruction insn);
     void IADD3(Instruction insn);

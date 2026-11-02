@@ -6,9 +6,9 @@
 #include "shader_recompiler/exception.h"
 #include "shader_recompiler/frontend/ampere/translate/impl/impl.h"
 
-// Tensor core instructions, emulated with warp shuffles. Matrix fragments are spread over the 32
-// lanes of a warp as PTX documents for ldmatrix, movmatrix and mma.m16n8k16: lane t holds row
-// t / 4 ("group") and the column pair 2 * (t % 4) of each 8x8 block of 16-bit elements. Every
+// Tensor core instructions. LDSM and MOVM are emulated with warp shuffles; matrix fragments are
+// spread over the 32 lanes of a warp as PTX documents for ldmatrix, movmatrix and mma.m16n8k16:
+// lane t holds row t / 4 ("group") and the column pair 2 * (t % 4) of each 8x8 block of 16-bit elements. Every
 // lane of the warp must execute these instructions together, as on hardware.
 namespace Shader::Ampere {
 namespace {
@@ -33,17 +33,6 @@ IR::U32 ShuffleFrom(IR::IREmitter& ir, const IR::U32& value, const IR::U32& lane
 // Lane holding row `row` and column pair `column_pair` of an 8x8 block
 IR::U32 FragmentLane(IR::IREmitter& ir, const IR::U32& row, const IR::U32& column_pair) {
     return ir.IAdd(ir.ShiftLeftLogical(row, ir.Imm32(2)), column_pair);
-}
-
-std::array<IR::F32, 2> Unpack(IR::IREmitter& ir, const IR::U32& value, bool negate) {
-    const IR::Value halves{ir.UnpackHalf2x16(value)};
-    IR::F32 low{ir.CompositeExtract(halves, 0)};
-    IR::F32 high{ir.CompositeExtract(halves, 1)};
-    if (negate) {
-        low = IR::F32{ir.FPNeg(low)};
-        high = IR::F32{ir.FPNeg(high)};
-    }
-    return {low, high};
 }
 
 } // Anonymous namespace
@@ -113,15 +102,11 @@ void TranslatorVisitor::MOVM(Instruction insn) {
 }
 
 // HMMA.16816.F16 Rd, Ra, Rb, Rc: D (16x8) = A (16x16) * B (16x8) + C with F16 elements, as
-// mma.m16n8k16.row.col.f16.f16.f16.f16. Lane t (group g, thread t % 4 = q) holds
-//   A: Ra (g, 2q..2q+1), Ra+1 (g+8, 2q..), Ra+2 (g, 2q+8..), Ra+3 (g+8, 2q+8..)
-//   B: Rb rows 2q..2q+1 and Rb+1 rows 2q+8..2q+9 of column g
-//   C and D: Rc (g, 2q..2q+1) and Rc+1 (g+8, 2q..2q+1)
-// HMMA.1688.F16 (bit 75 clear) is mma.m16n8k8: A is Ra (g, 2q..2q+1) and Ra+1 (g+8, 2q..), B is
-// Rb rows 2q..2q+1 of column g, C and D as above.
-// Products are summed in F32 and rounded to F16 once. Negation of A and B is at bits 72 and 63;
-// the sparse (73), F32 accumulator (76) and BF16/TF32 (82..84) forms and a uniform predicate at
-// [87..91) (stored XOR 7, so 0 is UPT) are not implemented.
+// mma.m16n8k16.row.col.f16.f16.f16.f16; HMMA.1688.F16 (bit 75 clear) is mma.m16n8k8 and reads
+// only Ra, Ra+1 and Rb. LowerHmmaPass documents the fragments and lowers the product.
+// Negation of A and B is at bits 72 and 63; the sparse (73), F32 accumulator (76) and BF16/TF32
+// (82..84) forms and a uniform predicate at [87..91) (stored XOR 7, so 0 is UPT) are not
+// implemented.
 void TranslatorVisitor::HMMA(Instruction insn) {
     if (insn.Bit(73) || insn.Bit(76) || insn.Bits(82, 2) != 0 ||
         insn.Bits(87, 3) != 0 || insn.Bit(90)) {
@@ -130,90 +115,24 @@ void TranslatorVisitor::HMMA(Instruction insn) {
     const IR::Reg a{Reg(insn.SrcA())};
     const IR::Reg b{Reg(insn.SrcBReg())};
     const u32 c_index{static_cast<u32>(insn.Bits(64, 8))};
-    const bool negate_a{insn.Bit(72)};
-    const bool negate_b{insn.Bit(63)};
-    const u32 k_count{insn.Bit(75) ? 16U : 8U};
-    if (!hmma_lanes) {
-        const Lanes made{MakeLanes(ir)};
-        hmma_lanes = {made.lane, made.group, made.thread_in_group};
-    }
-    const Lanes lanes{(*hmma_lanes)[0], (*hmma_lanes)[1], (*hmma_lanes)[2]};
-    const auto writes{[&](IR::Reg reg) { return register_writes[static_cast<u32>(reg)]; }};
-
-    // Rows g and g + 8 of A, k = 0..15, from lanes 4g..4g+3: rows[r][k] is element 16r + k
-    const std::array<u32, 7> a_key{k_count, static_cast<u32>(a), writes(a), writes(a + 1),
-                                   k_count == 16 ? writes(a + 2) : 0,
-                                   k_count == 16 ? writes(a + 3) : 0, negate_a};
-    auto a_it{hmma_fragments.find(a_key)};
-    if (a_it == hmma_fragments.end()) {
-        std::array<IR::F32, 32> rows;
-        std::array<IR::U32, 4> a_regs{X(a), X(a + 1)};
-        if (k_count == 16) {
-            a_regs[2] = X(a + 2);
-            a_regs[3] = X(a + 3);
-        }
-        for (u32 q = 0; q < 4; ++q) {
-            const IR::U32 source{FragmentLane(ir, lanes.group, ir.Imm32(q))};
-            for (u32 half_row = 0; half_row < 2; ++half_row) {
-                const auto low_k{Unpack(ir, ShuffleFrom(ir, a_regs[half_row], source), negate_a)};
-                rows[16 * half_row + 2 * q] = low_k[0];
-                rows[16 * half_row + 2 * q + 1] = low_k[1];
-                if (k_count == 16) {
-                    const auto high_k{
-                        Unpack(ir, ShuffleFrom(ir, a_regs[half_row + 2], source), negate_a)};
-                    rows[16 * half_row + 2 * q + 8] = high_k[0];
-                    rows[16 * half_row + 2 * q + 9] = high_k[1];
-                }
-            }
-        }
-        a_it = hmma_fragments.emplace(a_key, rows).first;
-    }
-    // Columns 2q and 2q + 1 of B, k = 0..15, from lanes 4c..4c+3: element 16c + k
-    const std::array<u32, 7> b_key{k_count + 1, static_cast<u32>(b), writes(b),
-                                   k_count == 16 ? writes(b + 1) : 0, 0, 0, negate_b};
-    auto b_it{hmma_fragments.find(b_key)};
-    if (b_it == hmma_fragments.end()) {
-        std::array<IR::F32, 32> columns;
-        const std::array<IR::U32, 2> b_regs{X(b), k_count == 16 ? X(b + 1) : X(b)};
-        for (u32 column = 0; column < 2; ++column) {
-            const IR::U32 n{ir.IAdd(ir.ShiftLeftLogical(lanes.thread_in_group, ir.Imm32(1)),
-                                    ir.Imm32(column))};
-            for (u32 q = 0; q < 4; ++q) {
-                const IR::U32 source{FragmentLane(ir, n, ir.Imm32(q))};
-                const auto low_k{Unpack(ir, ShuffleFrom(ir, b_regs[0], source), negate_b)};
-                columns[16 * column + 2 * q] = low_k[0];
-                columns[16 * column + 2 * q + 1] = low_k[1];
-                if (k_count == 16) {
-                    const auto high_k{
-                        Unpack(ir, ShuffleFrom(ir, b_regs[1], source), negate_b)};
-                    columns[16 * column + 2 * q + 8] = high_k[0];
-                    columns[16 * column + 2 * q + 9] = high_k[1];
-                }
-            }
-        }
-        b_it = hmma_fragments.emplace(b_key, columns).first;
-    }
-    const std::array<IR::F32, 32>& rows{a_it->second};
-    const std::array<IR::F32, 32>& columns{b_it->second};
-    std::array<IR::U32, 2> results;
-    for (u32 half_row = 0; half_row < 2; ++half_row) {
-        std::array<IR::F32, 2> sums;
-        if (c_index == RZ) {
-            sums = {ir.Imm32(0.0f), ir.Imm32(0.0f)};
-        } else {
-            sums = Unpack(ir, X(Reg(c_index) + static_cast<int>(half_row)), false);
-        }
-        for (u32 column = 0; column < 2; ++column) {
-            for (u32 k = 0; k < k_count; ++k) {
-                sums[column] = IR::F32{
-                    ir.FPFma(rows[16 * half_row + k], columns[16 * column + k], sums[column])};
-            }
-        }
-        results[half_row] = ir.PackHalf2x16(ir.CompositeConstruct(sums[0], sums[1]));
-    }
+    const bool k16{insn.Bit(75)};
+    IR::HmmaInfo info{};
+    info.k16.Assign(k16 ? 1 : 0);
+    info.negate_a.Assign(insn.Bit(72) ? 1 : 0);
+    info.negate_b.Assign(insn.Bit(63) ? 1 : 0);
+    const IR::U32 a0{X(a)};
+    const IR::U32 a1{X(a + 1)};
+    const IR::Value a_words{k16 ? ir.CompositeConstruct(a0, a1, X(a + 2), X(a + 3))
+                                : ir.CompositeConstruct(a0, a1, a0, a1)};
+    const IR::U32 b0{X(b)};
+    const IR::Value b_words{ir.CompositeConstruct(b0, k16 ? X(b + 1) : b0)};
+    const IR::Value c_words{c_index == RZ
+                                ? ir.CompositeConstruct(ir.Imm32(0), ir.Imm32(0))
+                                : ir.CompositeConstruct(X(Reg(c_index)), X(Reg(c_index) + 1))};
+    const IR::Value d_words{ir.HmmaF16(a_words, b_words, c_words, info)};
     const IR::Reg dest{Reg(insn.Dest())};
-    X(dest, results[0]);
-    X(dest + 1, results[1]);
+    X(dest, IR::U32{ir.CompositeExtract(d_words, 0)});
+    X(dest + 1, IR::U32{ir.CompositeExtract(d_words, 1)});
 }
 
 } // namespace Shader::Ampere

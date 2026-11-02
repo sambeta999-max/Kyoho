@@ -22,7 +22,6 @@ IR::U64 TranslatorVisitor::L(IR::Reg reg) {
 }
 
 void TranslatorVisitor::X(IR::Reg dest_reg, const IR::U32& value) {
-    ++register_writes[static_cast<u32>(dest_reg)];
     ir.SetReg(dest_reg, value);
 }
 

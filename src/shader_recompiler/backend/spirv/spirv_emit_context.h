@@ -380,6 +380,21 @@ public:
     std::vector<Id> interfaces;
     std::vector<std::pair<u32, spv::Op>> opcode_rewrites;
 
+    /// Placeholders of SPV_KHR_cooperative_matrix, see RewriteCooperativeMatrices
+    struct CooperativeMatrixType {
+        Id id;
+        u32 rows;
+        u32 columns;
+        u32 use;
+        std::array<u32, 5> operands; ///< component type, scope, rows, columns, use
+    };
+    struct {
+        Id load{};
+        Id store{};
+        Id mul_add{};
+        std::vector<CooperativeMatrixType> types;
+    } cooperative_matrix;
+
     Id load_const_func_u8{};
     Id load_const_func_u16{};
     Id load_const_func_u32{};

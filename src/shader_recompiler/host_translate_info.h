@@ -40,6 +40,10 @@ struct HostTranslateInfo {
     bool support_conditional_barrier{}; ///< True when the device supports barriers in conditional
                                         ///< control flow
     bool single_lane_geometry_subgroups{};
+    /// Compute shaders can run HMMA.1688.F16 / HMMA.16816.F16 as subgroup cooperative matrices
+    bool support_cooperative_matrix_f16_k8{};
+    bool support_cooperative_matrix_f16_k16{};
+    u32 max_compute_shared_memory_size{}; ///< Shared memory a compute shader can declare
 
     void ApplyDescriptorLimitPolicy() noexcept {
         if (min_ssbo_alignment == 0) {

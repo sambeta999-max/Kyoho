@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <cstdlib>
 #include <bitset>
 #include <chrono>
 #include <filesystem>
@@ -586,7 +587,11 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
         const auto arch = GetNvidiaArch();
         if (arch >= NvidiaArchitecture::Arch_AmpereOrNewer) {
             LOG_WARNING(Render_Vulkan, "Ampere and newer have broken float16 math");
-            features.shader_float16_int8.shaderFloat16 = false;
+            // Shaders do no F16 math, but cooperative matrices still need F16 types
+            has_broken_float16_math = true;
+            if (!extensions.cooperative_matrix) {
+                features.shader_float16_int8.shaderFloat16 = false;
+            }
         }
 
         // Use hardware depth/stencil blits instead when available
@@ -1533,6 +1538,30 @@ void Device::RemoveUnsuitableExtensions() {
     RemoveExtensionFeatureIfUnsuitable(extensions.workgroup_memory_explicit_layout,
                                        features.workgroup_memory_explicit_layout,
                                        VK_KHR_WORKGROUP_MEMORY_EXPLICIT_LAYOUT_EXTENSION_NAME);
+
+    // VK_KHR_cooperative_matrix: only the shapes of HMMA.F16 are used (EDEN_COOPERATIVE_MATRIX=0
+    // keeps the warp shuffle emulation, for comparisons)
+    const char* const cooperative_matrix_env{std::getenv("EDEN_COOPERATIVE_MATRIX")};
+    if (features.cooperative_matrix.cooperativeMatrix &&
+        (cooperative_matrix_env == nullptr || cooperative_matrix_env[0] != '0')) {
+        for (const VkCooperativeMatrixPropertiesKHR& shape :
+             physical.GetCooperativeMatrixPropertiesKHR()) {
+            const bool f16{shape.AType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
+                           shape.BType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
+                           shape.CType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
+                           shape.ResultType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
+                           shape.scope == VK_SCOPE_SUBGROUP_KHR && !shape.saturatingAccumulation};
+            if (f16 && shape.MSize == 16 && shape.NSize == 8) {
+                cooperative_matrix_f16_k8 |= shape.KSize == 8;
+                cooperative_matrix_f16_k16 |= shape.KSize == 16;
+            }
+        }
+    }
+    extensions.cooperative_matrix = cooperative_matrix_f16_k8 || cooperative_matrix_f16_k16;
+    LOG_INFO(Render_Vulkan, "F16 cooperative matrices: 16x8x8 {}, 16x8x16 {}",
+             cooperative_matrix_f16_k8, cooperative_matrix_f16_k16);
+    RemoveExtensionFeatureIfUnsuitable(extensions.cooperative_matrix, features.cooperative_matrix,
+                                       VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
 
     // VK_KHR_maintenance1
     extensions.maintenance1 = loaded_extensions.contains(VK_KHR_MAINTENANCE_1_EXTENSION_NAME);

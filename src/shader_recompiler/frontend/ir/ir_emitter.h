@@ -115,6 +115,12 @@ public:
     [[nodiscard]] F32 RenderAreaHeight();
 
     [[nodiscard]] U32 LaneId();
+    void SubgroupBarrier();
+    /// One warp-wide HMMA.F16: a holds the lane's 4 A words, b its 2 B words and c its 2 C words
+    [[nodiscard]] Value HmmaF16(const Value& a, const Value& b, const Value& c, HmmaInfo info);
+    /// Multiplies the A, B and C matrices the subgroup staged in shared memory at these byte
+    /// offsets and stores D over C (see LowerHmmaPass for the layouts)
+    void CooperativeMatrixMulAddF16(const U32& a, const U32& b, const U32& c, HmmaInfo info);
 
     [[nodiscard]] U32 LoadGlobalU8(const U64& address);
     [[nodiscard]] U32 LoadGlobalS8(const U64& address);

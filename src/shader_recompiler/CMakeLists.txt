@@ -14,6 +14,7 @@ add_library(shader_recompiler STATIC
     backend/spirv/emit_spirv_composite.cpp
     backend/spirv/emit_spirv_context_get_set.cpp
     backend/spirv/emit_spirv_control_flow.cpp
+    backend/spirv/emit_spirv_cooperative_matrix.cpp
     backend/spirv/emit_spirv_convert.cpp
     backend/spirv/emit_spirv_floating_point.cpp
     backend/spirv/emit_spirv_image.cpp
@@ -202,6 +203,7 @@ add_library(shader_recompiler STATIC
     ir_opt/identity_removal_pass.cpp
     ir_opt/layer_pass.cpp
     ir_opt/lower_fp16_to_fp32.cpp
+    ir_opt/lower_hmma_pass.cpp
     ir_opt/lower_fp64_to_fp32.cpp
     ir_opt/lower_int64_to_int32.cpp
     ir_opt/passes.h

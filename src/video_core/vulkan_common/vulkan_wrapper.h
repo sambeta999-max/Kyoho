@@ -186,6 +186,8 @@ struct InstanceDispatch {
     PFN_vkGetPhysicalDeviceProperties vkGetPhysicalDeviceProperties{};
     PFN_vkGetPhysicalDeviceProperties2 vkGetPhysicalDeviceProperties2{};
     PFN_vkGetPhysicalDeviceToolProperties vkGetPhysicalDeviceToolProperties{};
+    PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR
+        vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR{};
     PFN_vkGetPhysicalDeviceQueueFamilyProperties vkGetPhysicalDeviceQueueFamilyProperties{};
     PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR vkGetPhysicalDeviceSurfaceCapabilitiesKHR{};
     PFN_vkGetPhysicalDeviceSurfaceFormatsKHR vkGetPhysicalDeviceSurfaceFormatsKHR{};
@@ -1199,6 +1201,8 @@ public:
     std::vector<VkQueueFamilyProperties> GetQueueFamilyProperties() const;
 
     std::vector<VkPhysicalDeviceToolProperties> GetPhysicalDeviceToolProperties() const;
+
+    std::vector<VkCooperativeMatrixPropertiesKHR> GetCooperativeMatrixPropertiesKHR() const;
 
     bool GetSurfaceSupportKHR(u32 queue_family_index, VkSurfaceKHR) const;
 

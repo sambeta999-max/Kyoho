@@ -605,6 +605,9 @@ Id EmitImageAtomicXor32(EmitContext& ctx, IR::Inst* inst, const IR::Value& index
 Id EmitImageAtomicExchange32(EmitContext& ctx, IR::Inst* inst, const IR::Value& index, Id coords,
                              Id value);
 Id EmitLaneId(EmitContext& ctx);
+void EmitSubgroupBarrier(EmitContext& ctx);
+Id EmitHmmaF16(EmitContext& ctx, Id a, Id b, Id c);
+void EmitCooperativeMatrixMulAddF16(EmitContext& ctx, IR::Inst* inst, Id a, Id b, Id c);
 Id EmitVoteAll(EmitContext& ctx, Id pred);
 Id EmitVoteAny(EmitContext& ctx, Id pred);
 Id EmitVoteEqual(EmitContext& ctx, Id pred);

@@ -387,6 +387,7 @@ IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Blo
         Optimization::ConditionalBarrierPass(program);
     }
     Optimization::SsaRewritePass(program);
+    Optimization::LowerHmmaPass(program, normalized_host_info);
 
     Optimization::BlitConstantsPass(env, program);
     Optimization::ConstantPropagationPass(env, program);

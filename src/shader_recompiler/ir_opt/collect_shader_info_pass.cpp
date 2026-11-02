@@ -180,6 +180,7 @@ void VisitUsages(Info& info, IR::Inst& inst) {
     case IR::Opcode::StorageAtomicAddF16x2:
     case IR::Opcode::StorageAtomicMinF16x2:
     case IR::Opcode::StorageAtomicMaxF16x2:
+    case IR::Opcode::CooperativeMatrixMulAddF16:
         info.uses_fp16 = true;
         break;
     case IR::Opcode::CompositeConstructF64x2:

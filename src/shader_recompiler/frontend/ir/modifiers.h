@@ -53,4 +53,13 @@ union TextureInstInfo {
 };
 static_assert(sizeof(TextureInstInfo) <= sizeof(u32));
 
+/// Form of HmmaF16 and CooperativeMatrixMulAddF16
+union HmmaInfo {
+    u32 raw;
+    BitField<0, 1, u32> k16;      ///< K is 16 (HMMA.16816), otherwise 8 (HMMA.1688)
+    BitField<1, 1, u32> negate_a;
+    BitField<2, 1, u32> negate_b;
+};
+static_assert(sizeof(HmmaInfo) <= sizeof(u32));
+
 } // namespace Shader::IR

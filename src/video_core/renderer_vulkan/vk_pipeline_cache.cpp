@@ -493,6 +493,9 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
         .support_geometry_shader_passthrough = device.IsNvGeometryShaderPassthroughSupported(),
         .support_conditional_barrier = device.SupportsConditionalBarriers(),
         .single_lane_geometry_subgroups = !profile.SupportsSubgroupStage(Shader::Stage::Geometry),
+        .support_cooperative_matrix_f16_k8 = device.IsCooperativeMatrixF16Supported(8),
+        .support_cooperative_matrix_f16_k16 = device.IsCooperativeMatrixF16Supported(16),
+        .max_compute_shared_memory_size = device.GetMaxComputeSharedMemorySize(),
     };
     host_info.ApplyDescriptorLimitPolicy();
 

@@ -418,6 +418,19 @@ U32 IREmitter::LaneId() {
     return Inst<U32>(Opcode::LaneId);
 }
 
+void IREmitter::SubgroupBarrier() {
+    Inst(Opcode::SubgroupBarrier);
+}
+
+Value IREmitter::HmmaF16(const Value& a, const Value& b, const Value& c, HmmaInfo info) {
+    return Inst(Opcode::HmmaF16, Flags{info}, a, b, c);
+}
+
+void IREmitter::CooperativeMatrixMulAddF16(const U32& a, const U32& b, const U32& c,
+                                           HmmaInfo info) {
+    Inst(Opcode::CooperativeMatrixMulAddF16, Flags{info}, a, b, c);
+}
+
 U32 IREmitter::LoadGlobalU8(const U64& address) {
     return Inst<U32>(Opcode::LoadGlobalU8, address);
 }

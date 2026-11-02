@@ -6,10 +6,23 @@
 
 #include "shader_recompiler/backend/glasm/emit_glasm_instructions.h"
 #include "shader_recompiler/backend/glasm/glasm_emit_context.h"
+#include "shader_recompiler/exception.h"
 #include "shader_recompiler/frontend/ir/value.h"
 #include "shader_recompiler/profile.h"
 
 namespace Shader::Backend::GLASM {
+
+void EmitSubgroupBarrier(EmitContext&) {
+    throw NotImplementedException("GLASM subgroup barriers");
+}
+
+void EmitHmmaF16(EmitContext&, IR::Inst&, Register, Register, Register) {
+    throw LogicError("HmmaF16 must be lowered");
+}
+
+void EmitCooperativeMatrixMulAddF16(EmitContext&, IR::Inst&, ScalarU32, ScalarU32, ScalarU32) {
+    throw NotImplementedException("GLASM cooperative matrices");
+}
 
 void EmitLaneId(EmitContext& ctx, IR::Inst& inst) {
     ctx.Add("MOV.S {}.x,{}.threadid;", inst, ctx.stage_name);

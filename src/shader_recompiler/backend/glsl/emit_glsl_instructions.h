@@ -723,6 +723,11 @@ void EmitImageAtomicXor32(EmitContext& ctx, IR::Inst& inst, const IR::Value& ind
 void EmitImageAtomicExchange32(EmitContext& ctx, IR::Inst& inst, const IR::Value& index,
                                std::string_view coords, std::string_view value);
 void EmitLaneId(EmitContext& ctx, IR::Inst& inst);
+void EmitSubgroupBarrier(EmitContext& ctx);
+void EmitHmmaF16(EmitContext& ctx, IR::Inst& inst, std::string_view a, std::string_view b,
+                 std::string_view c);
+void EmitCooperativeMatrixMulAddF16(EmitContext& ctx, IR::Inst& inst, std::string_view a,
+                                    std::string_view b, std::string_view c);
 void EmitVoteAll(EmitContext& ctx, IR::Inst& inst, std::string_view pred);
 void EmitVoteAny(EmitContext& ctx, IR::Inst& inst, std::string_view pred);
 void EmitVoteEqual(EmitContext& ctx, IR::Inst& inst, std::string_view pred);
