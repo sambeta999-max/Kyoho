@@ -148,8 +148,8 @@ IHidServer::IHidServer(Core::System& system_, std::shared_ptr<ResourceManager> r
         {308, nullptr, "SetSevenSixAxisSensorFusionStrength"},
         {309, nullptr, "GetSevenSixAxisSensorFusionStrength"},
         {310, C<&IHidServer::ResetSevenSixAxisSensorTimestamp>, "ResetSevenSixAxisSensorTimestamp"},
-        {320, nullptr, "EnableNpadImu"}, //21.0.0+
-        {321, nullptr, "DisableNpadImu"}, //21.0.0+
+        {320, C<&IHidServer::EnableNpadImu>, "EnableNpadImu"}, //21.0.0+
+        {321, C<&IHidServer::DisableNpadImu>, "DisableNpadImu"}, //21.0.0+
         {400, C<&IHidServer::IsUsbFullKeyControllerEnabled>, "IsUsbFullKeyControllerEnabled"},
         {401, nullptr, "EnableUsbFullKeyController"},
         {402, nullptr, "IsUsbFullKeyControllerConnected"},
@@ -1178,6 +1178,20 @@ Result IHidServer::StartSevenSixAxisSensor(ClientAppletResourceUserId aruid) {
 
 Result IHidServer::StopSevenSixAxisSensor(ClientAppletResourceUserId aruid) {
     LOG_WARNING(Service_HID, "(STUBBED) called, applet_resource_user_id={}", aruid.pid);
+    R_SUCCEED();
+}
+
+// nn::hid::EnableNpadImu(void*, size_t) hands the server a transfer memory for its IMU sample
+// rings (aruid, the size, the handle). No samples are written, so the rings stay empty.
+Result IHidServer::EnableNpadImu(ClientAppletResourceUserId aruid, u64 size,
+                                 InCopyHandle<Kernel::KTransferMemory> t_mem) {
+    LOG_WARNING(Service_HID, "(STUBBED) called, size={:#x}, aruid={}", size, aruid.pid);
+    R_UNLESS(t_mem.Get() != nullptr, ResultUnknown);
+    R_SUCCEED();
+}
+
+Result IHidServer::DisableNpadImu(ClientAppletResourceUserId aruid) {
+    LOG_WARNING(Service_HID, "(STUBBED) called, aruid={}", aruid.pid);
     R_SUCCEED();
 }
 

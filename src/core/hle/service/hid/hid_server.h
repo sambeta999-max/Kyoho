@@ -211,6 +211,9 @@ private:
                                         InCopyHandle<Kernel::KTransferMemory> t_mem_2);
     Result FinalizeSevenSixAxisSensor(ClientAppletResourceUserId aruid);
     Result ResetSevenSixAxisSensorTimestamp(ClientAppletResourceUserId aruid);
+    Result EnableNpadImu(ClientAppletResourceUserId aruid, u64 size,
+                         InCopyHandle<Kernel::KTransferMemory> t_mem);
+    Result DisableNpadImu(ClientAppletResourceUserId aruid);
     Result IsUsbFullKeyControllerEnabled(Out<bool> out_is_enabled,
                                          ClientAppletResourceUserId aruid);
     Result GetPalmaConnectionHandle(Out<Palma::PalmaConnectionHandle> out_handle,
