@@ -212,7 +212,6 @@ public:
     /// Split GPU thread: the suspended acquire is checked once the back has executed this many
     /// entries
     u64 split_acquire_position{};
-    bool split_acquire_fenced{}; ///< The back has waited for the host GPU since the acquire held
     /// The segment a split GPU thread's channel was suspended in, as fetched
     std::vector<CommandHeader> split_saved_commands;
     GPUVAddr split_saved_address{};
