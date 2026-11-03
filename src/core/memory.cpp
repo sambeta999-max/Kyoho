@@ -961,6 +961,17 @@ void Memory::MarkRegionDebug(Common::ProcessAddress vaddr, u64 size, bool debug)
     impl->MarkRegionDebug(GetInteger(vaddr), size, debug);
 }
 
+void Memory::InvalidateGpuCopies(Common::ProcessAddress vaddr, size_t size) {
+    for (u64 page = GetInteger(vaddr) & ~u64{YUZU_PAGEMASK}; page < GetInteger(vaddr) + size;
+         page += YUZU_PAGESIZE) {
+        const u64 begin = (std::max)(page, GetInteger(vaddr));
+        const u64 end = (std::min)(page + YUZU_PAGESIZE, GetInteger(vaddr) + size);
+        if (u8* const ptr = impl->GetPointerImpl(begin, [] {}, [] {})) {
+            impl->InvalidateGPUMemory(ptr, end - begin);
+        }
+    }
+}
+
 bool Memory::InvalidateNCE(Common::ProcessAddress vaddr, size_t size) {
     [[maybe_unused]] bool mapped = true;
     [[maybe_unused]] bool rasterizer = false;

@@ -2,15 +2,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
-#include <optional>
 #include <chrono>
-#include <thread>
+#include <condition_variable>
 #include <cstring>
 #include <deque>
+#include <mutex>
+#include <optional>
 #include <span>
+#include <thread>
 
 #include "common/alignment.h"
 #include "common/logging.h"
+#include "common/thread.h"
 #include "core/core.h"
 #include "core/hle/kernel/k_client_session.h"
 #include "core/hle/kernel/k_event.h"
@@ -136,10 +139,11 @@ public:
     }
 };
 
-/// nn::codec::video::detail::ipc::VideoDecService: one decoder instance. Pictures are decoded
-/// when their input is submitted and written into the registered pool images in the order the
-/// images were registered and released. The fence returned for an image is a syncpoint value
-/// reached when the next picture has been written into it.
+/// nn::codec::video::detail::ipc::VideoDecService: one decoder instance. Submitted input is
+/// decoded on a thread of the service, as the console's decoder works apart from its client, and
+/// pictures are written into the registered pool images in the order the images were registered
+/// and released. The fence returned for an image is a syncpoint value reached when the next
+/// picture has been written into it.
 class IVideoDecService final : public LoggingTipcSession<IVideoDecService> {
     struct Fence {
         u32 syncpoint{};
@@ -150,6 +154,11 @@ class IVideoDecService final : public LoggingTipcSession<IVideoDecService> {
         u32 width{};
         u32 height{};
         u64 pts{};
+        bool end_of_stream{};
+    };
+    struct Input {
+        std::vector<u8> data;
+        s64 pts{};
         bool end_of_stream{};
     };
 
@@ -179,9 +188,16 @@ public:
         RegisterHandlersTipc(functions);
         submission_ready = service_context.CreateEvent("VideoDecSubmissionReady");
         submission_ready->Signal(kernel);
+        worker = std::thread([this] { DecodeLoop(); });
     }
 
     ~IVideoDecService() override {
+        {
+            const std::scoped_lock lock{mutex};
+            quit = true;
+        }
+        input_ready.notify_all();
+        worker.join();
         service_context.CloseEvent(submission_ready);
         if (syncpoint) {
             nv_module->GetContainer().GetSyncpointManager().FreeSyncpoint(*syncpoint);
@@ -251,6 +267,8 @@ private:
             // nn::movie reads output format 2 as RGBA and 3 and 6 as NV12
             const auto output = output_format == 2 ? VideoCommon::NativeVideoOutput::Rgba
                                                    : VideoCommon::NativeVideoOutput::Nv12;
+            std::unique_lock lock{mutex};
+            DiscardInput(lock);
             decoder = VideoCommon::NativeVideoDecoder::Create(codec, config, output);
             result = decoder ? ResultSuccess : Kernel::ResultNotImplemented;
             LOG_INFO(Service_AM, "video decoder configure {}x{}, config={} bytes, result={:#x}",
@@ -266,6 +284,7 @@ private:
     }
 
     void Start(HLERequestContext& ctx) {
+        const std::scoped_lock lock{mutex};
         started = true;
         end_of_stream_queued = false;
         // The decoder accepts input once started; a client that cleared the event when it
@@ -279,7 +298,12 @@ private:
         ReplyResult(ctx, ResultSuccess);
     }
 
+    // Input not decoded yet and pictures not written yet are dropped. A client that flushes right
+    // after its first submission (Yoshi's movie player) does not get that picture, as on the
+    // console; delivered anyway, its size change reached the player while it was still flushing.
     void Flush(HLERequestContext& ctx) {
+        std::unique_lock lock{mutex};
+        DiscardInput(lock);
         if (decoder) {
             decoder->Flush();
         }
@@ -290,8 +314,18 @@ private:
     }
 
     void Finalize(HLERequestContext& ctx) {
+        std::unique_lock lock{mutex};
+        DiscardInput(lock);
         decoder.reset();
         ReplyResult(ctx, ResultSuccess);
+    }
+
+    /// Drops queued input and waits until the input being decoded is done; its pictures are
+    /// dropped too
+    void DiscardInput(std::unique_lock<std::mutex>& lock) {
+        inputs.clear();
+        ++generation;
+        decoder_idle.wait(lock, [this] { return !decoding; });
     }
 
     void PushFence(HLERequestContext& ctx, Result result, const Fence& fence) {
@@ -320,6 +354,7 @@ private:
         if (packet[0] == 0x147 && (packet[1] & 0x3ff) == 4 && syncpoint) {
             result = pools->Find(packet[2]) ? ResultSuccess : Kernel::ResultNotFound;
             if (result.IsSuccess()) {
+                const std::scoped_lock lock{mutex};
                 fence = Enqueue(packet[2]);
             }
         }
@@ -330,6 +365,7 @@ private:
 
     void UnregisterBuffer(HLERequestContext& ctx) {
         const auto* packet = ctx.CommandBuffer();
+        const std::scoped_lock lock{mutex};
         std::erase_if(free_images, [&](const auto& entry) { return entry.first == packet[2]; });
         ReplyResult(ctx, ResultSuccess);
     }
@@ -343,6 +379,7 @@ private:
             result = pools->Find(packet[2]) ? ResultSuccess : Kernel::ResultNotFound;
             if (result.IsSuccess()) {
                 const Fence release{~packet[4], u64{packet[6]} | (u64{packet[7]} << 32)};
+                const std::scoped_lock lock{mutex};
                 fence = Enqueue(packet[2], release);
             }
         }
@@ -358,55 +395,31 @@ private:
         const auto* packet = ctx.CommandBuffer();
         Result result = Kernel::ResultInvalidCombination;
         if (packet[0] == 0x0010'007d && (packet[1] & 0x3ff) == 3) {
+            const std::scoped_lock lock{mutex};
             result = Kernel::ResultInvalidState;
-            if (decoder && pending.size() >= MaxPendingPictures) {
+            if (decoder && Backlog() >= MaxPendingPictures) {
                 // The input queue is full: the console's decoder answers with this result and
                 // nn::codec clients (Donkey Kong Bananza) submit again after the submission-ready
                 // event, instead of having the server buffer the whole stream.
                 result = ResultInputQueueFull;
             } else if (decoder) {
-                const s64 pts = static_cast<s64>(u64{packet[5]} | (u64{packet[6]} << 32));
-                const bool end_of_stream = (packet[7] & 0xff) != 0;
+                Input input;
+                input.pts = static_cast<s64>(u64{packet[5]} | (u64{packet[6]} << 32));
+                input.end_of_stream = (packet[7] & 0xff) != 0;
                 // Submissions that only signal the end of the stream carry no input
-                const auto data = ctx.CanReadBuffer() ? ctx.ReadBuffer() : std::span<const u8>{};
-                std::vector<VideoCommon::DecodedVideoFrame> frames;
-                if (!data.empty()) {
-                    decoder->Decode(data, pts, frames);
+                if (ctx.CanReadBuffer()) {
+                    const auto data = ctx.ReadBuffer();
+                    input.data.assign(data.begin(), data.end());
                 }
-                if (end_of_stream) {
-                    decoder->Drain(frames);
-                }
-                if (!frames.empty()) {
-                    last_pts = frames.back().pts;
-                }
-                // Clients wait for the record that ends the stream (Fire Emblem: Fortune's Weave
-                // submits again until it comes), so it takes an image like a picture
-                if (end_of_stream && !end_of_stream_queued) {
-                    end_of_stream_queued = true;
-                    VideoCommon::DecodedVideoFrame end{};
-                    end.pts = last_pts;
-                    end.end_of_stream = true;
-                    frames.push_back(std::move(end));
-                }
-                for (auto& frame : frames) {
-                    pending.push_back(std::move(frame));
-                }
-                decoded += frames.size();
-                WritePending();
-                // A client that submits without waiting for the event and never hands images
-                // back (Kirby Air Riders' background video) would grow this without bound; the
-                // oldest pictures are dropped instead.
-                while (pending.size() > MaxBufferedPictures) {
-                    if (dropped++ == 0) {
-                        LOG_WARNING(Service_AM, "video decoder output is not consumed, dropping pictures");
-                    }
-                    pending.pop_front();
-                }
+                const size_t size = input.data.size();
+                const s64 pts = input.pts;
+                inputs.push_back(std::move(input));
+                input_ready.notify_one();
                 ++submitted;
                 SignalSubmissionReady();
                 if (submitted % 500 == 1) {
                     LOG_DEBUG(Service_AM, "video decoder submit #{}: {} bytes, pts={}, decoded={}, pending={}, free={}, ready={}",
-                              submitted, data.size(), pts, decoded, pending.size(), free_images.size(),
+                              submitted, size, pts, decoded, pending.size(), free_images.size(),
                               properties.size());
                 }
                 result = ResultSuccess;
@@ -415,6 +428,62 @@ private:
         IPC::ResponseBuilder rb{ctx, 4};
         rb.Push(result.raw);
         rb.Push<u64>(submitted);
+    }
+
+    void DecodeLoop() {
+        Common::SetCurrentThreadName("VideoDecService");
+        std::unique_lock lock{mutex};
+        while (true) {
+            input_ready.wait(lock, [this] { return quit || !inputs.empty(); });
+            if (quit) {
+                return;
+            }
+            Input input = std::move(inputs.front());
+            inputs.pop_front();
+            const u64 input_generation = generation;
+            decoding = true;
+            lock.unlock();
+            std::vector<VideoCommon::DecodedVideoFrame> frames;
+            if (!input.data.empty()) {
+                decoder->Decode(input.data, input.pts, frames);
+            }
+            if (input.end_of_stream) {
+                decoder->Drain(frames);
+            }
+            lock.lock();
+            decoding = false;
+            decoder_idle.notify_all();
+            if (input_generation != generation) {
+                continue;
+            }
+            if (!frames.empty()) {
+                last_pts = frames.back().pts;
+            }
+            // Clients wait for the record that ends the stream (Fire Emblem: Fortune's Weave
+            // submits again until it comes), so it takes an image like a picture
+            if (input.end_of_stream && !end_of_stream_queued) {
+                end_of_stream_queued = true;
+                VideoCommon::DecodedVideoFrame end{};
+                end.pts = last_pts;
+                end.end_of_stream = true;
+                frames.push_back(std::move(end));
+            }
+            for (auto& frame : frames) {
+                pending.push_back(std::move(frame));
+            }
+            decoded += frames.size();
+            WritePending();
+            // A client that submits without waiting for the event and never hands images
+            // back (Kirby Air Riders' background video) would grow this without bound; the
+            // oldest pictures are dropped instead.
+            while (pending.size() > MaxBufferedPictures) {
+                if (dropped++ == 0) {
+                    LOG_WARNING(Service_AM, "video decoder output is not consumed, dropping pictures");
+                }
+                pending.pop_front();
+            }
+            SignalSubmissionReady();
+        }
     }
 
     /// Waits until the GPU work that samples a released image has been processed, so a picture is
@@ -443,10 +512,17 @@ private:
     static constexpr size_t MaxPendingPictures = 2;
     // Module 111 (codec), description 3603: the result nn::codec clients treat as "try again"
     static constexpr Result ResultInputQueueFull{static_cast<ErrorModule>(111), 3603};
+    // Description 3604: no picture is finished yet, the result nn::codec's own output ring gives
+    static constexpr Result ResultOutputQueueEmpty{static_cast<ErrorModule>(111), 3604};
     static constexpr size_t MaxBufferedPictures = 16;
 
+    /// Input not decoded yet and pictures not written yet
+    size_t Backlog() const {
+        return inputs.size() + pending.size();
+    }
+
     void SignalSubmissionReady() {
-        if (pending.size() < MaxPendingPictures) {
+        if (Backlog() < MaxPendingPictures) {
             submission_ready->Signal(kernel);
         }
     }
@@ -505,6 +581,16 @@ private:
                         target->address + layout.chroma_offset + layout.chroma_pitch * y,
                         frame.chroma.data() + size_t{(frame.width + 1) & ~1U} * y, chroma_row);
                 }
+                // The guest samples the image on the GPU: drop the copy of the previous frame
+                const u64 written_end =
+                    rgba ? (target->block_linear
+                                ? layout.luma_offset +
+                                      Tegra::Texture::CalculateSize(
+                                          true, 4, target->width, target->height, 1,
+                                          VideoImageBlockHeight(target->height), 0)
+                                : layout.luma_offset + u64{layout.luma_pitch} * rows)
+                         : layout.chroma_offset + u64{layout.chroma_pitch} * ((rows + 1) / 2);
+                memory.InvalidateGpuCopies(target->address, written_end);
                 properties.push_back({image, frame.width, frame.height, u64(frame.pts), false});
             }
             pending.pop_front();
@@ -516,17 +602,20 @@ private:
         }
     }
 
-    // One record per written picture: the image handle, four u16 sizes as words, a reserved word,
-    // the presentation time and a flag byte
+    // One 0x40 byte record per written picture: the image handle, four u16 sizes as words, a
+    // reserved word, the presentation time, a flag byte and reserved words
     void PopOutputProperties(HLERequestContext& ctx) {
-        Result result = Kernel::ResultNotFound;
+        Result result = ResultOutputQueueEmpty;
         Properties record{};
-        if (!properties.empty()) {
-            record = properties.front();
-            properties.pop_front();
-            result = ResultSuccess;
+        {
+            const std::scoped_lock lock{mutex};
+            if (!properties.empty()) {
+                record = properties.front();
+                properties.pop_front();
+                result = ResultSuccess;
+            }
         }
-        IPC::ResponseBuilder rb{ctx, 11};
+        IPC::ResponseBuilder rb{ctx, 18};
         rb.Push(result.raw);
         rb.Push<u32>(record.image);
         rb.Push<u32>(record.width);
@@ -536,6 +625,10 @@ private:
         rb.Push<u32>(0);
         rb.Push<u64>(record.pts * 1000);
         rb.Push<u32>(record.end_of_stream ? 1 : 0);
+        // The rest of the 0x40 byte record
+        for (int word = 0; word < 7; ++word) {
+            rb.Push<u32>(0);
+        }
     }
 
     Kernel::KProcess* process;
@@ -563,6 +656,17 @@ private:
     std::deque<std::pair<u32, std::optional<Fence>>> free_images;
     std::deque<VideoCommon::DecodedVideoFrame> pending;
     std::deque<Properties> properties;
+
+    /// Guards the decoder state above against the decoding thread
+    std::mutex mutex;
+    std::condition_variable input_ready;
+    std::condition_variable decoder_idle;
+    std::deque<Input> inputs;
+    /// Counts flushes, so that pictures of input decoded across one are dropped
+    u64 generation{};
+    bool decoding{};
+    bool quit{};
+    std::thread worker;
 };
 
 class IVideoEncService final : public LoggingTipcSession<IVideoEncService> {

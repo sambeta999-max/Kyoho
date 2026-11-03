@@ -495,6 +495,10 @@ public:
 
     bool InvalidateNCE(Common::ProcessAddress vaddr, size_t size);
 
+    /// Drops the GPU's copies of memory an HLE service wrote, whether or not the GPU caches its
+    /// pages yet (decoded video frames the guest samples as textures)
+    void InvalidateGpuCopies(Common::ProcessAddress vaddr, size_t size);
+
     bool InvalidateSeparateHeap(void* fault_address);
 
 private:
