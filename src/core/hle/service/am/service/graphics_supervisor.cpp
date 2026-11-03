@@ -547,7 +547,9 @@ private:
         // The native display token is an eight-byte name; command 101 returns
         // only a result. Retain the real VI display ID for later operations.
         R_UNLESS(name == 0x00746c7561666564ULL, Kernel::ResultNotFound);
-        R_UNLESS(flags == 1, Kernel::ResultNotImplemented);
+        // The second word is the notification signalled when the display retires, as for the
+        // player displays (Hyrule Warriors: Age of Imprisonment opens "default" with 4)
+        R_UNLESS(flags < m_notifications.size() * 32, Kernel::ResultInvalidCombination);
         R_UNLESS(m_display_references < 1024, Kernel::ResultOutOfResource);
         if (!m_display_service) {
             const auto root = system.ServiceManager().GetService<VI::IManagerRootService>("vi:m", true);
