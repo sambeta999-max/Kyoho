@@ -839,7 +839,13 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     std::array<Shader::IR::Program, Maxwell::MaxShaderProgram> programs;
     const bool uses_vertex_a{key.unique_hashes[0] != 0};
     const bool uses_vertex_b{key.unique_hashes[1] != 0};
-    if ((key.unique_hashes[2] != 0) != (key.unique_hashes[3] != 0)) {
+    // Tessellation needs both programs; a mesh pipeline puts its mesh program in the evaluation
+    // slot after a task program and leaves the control slot empty
+    const bool mesh_slots{std::ranges::any_of(envs, [](const Shader::Environment* env) {
+        return env->ShaderStage() == Shader::Stage::Mesh;
+    })};
+    if (!mesh_slots && (key.unique_hashes[2] != 0) != (key.unique_hashes[3] != 0)) {
+        LOG_ERROR(Render_Vulkan, "Pipeline with only one tessellation program");
         return nullptr;
     }
 
