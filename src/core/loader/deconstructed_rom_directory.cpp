@@ -274,8 +274,10 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
     is_loaded = true;
     if (standalone) {
         title_id = metadata.GetTitleID();
+        // The save data of a loose ExeFS belongs to its program: an empty id leaves saves that
+        // name the program explicitly unfound (Nintendo Switch Sports Resort, 2002-1002)
         system.GetFileSystemController().RegisterProcess(
-            process.GetProcessId(), {},
+            process.GetProcessId(), title_id,
             std::make_shared<FileSys::RomFSFactory>(*this, system.GetContentProvider(),
                                                     system.GetFileSystemController()));
     }

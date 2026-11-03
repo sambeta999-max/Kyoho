@@ -270,10 +270,15 @@ Result FSP_SRV::IsExFatSupported(Out<bool> out_is_supported) {
 Result FSP_SRV::OpenSaveDataFileSystem(OutInterface<IFileSystem> out_interface,
                                        FileSys::SaveDataSpaceId space_id,
                                        FileSys::SaveDataAttribute attribute) {
-    LOG_INFO(Service_FS, "called.");
+    LOG_INFO(Service_FS, "called, space={}, {}", space_id, attribute.DebugInfo());
 
     FileSys::VirtualDir dir{};
-    R_TRY(save_data_controller->OpenSaveData(&dir, space_id, attribute));
+    const Result open_result{save_data_controller->OpenSaveData(&dir, space_id, attribute)};
+    if (open_result.IsError()) {
+        LOG_WARNING(Service_FS, "save data not found, space={}, {}", space_id,
+                    attribute.DebugInfo());
+    }
+    R_TRY(open_result);
 
     FileSys::StorageId id{};
     switch (space_id) {
@@ -356,7 +361,8 @@ Result FSP_SRV::OpenSaveDataFileSystemBySystemSaveDataId(OutInterface<IFileSyste
 Result FSP_SRV::OpenReadOnlySaveDataFileSystem(OutInterface<IFileSystem> out_interface,
                                                FileSys::SaveDataSpaceId space_id,
                                                FileSys::SaveDataAttribute attribute) {
-    LOG_WARNING(Service_FS, "(STUBBED) called, delegating to 51 OpenSaveDataFilesystem");
+    LOG_WARNING(Service_FS, "(STUBBED) called, delegating to 51 OpenSaveDataFilesystem, space={}, {}",
+                space_id, attribute.DebugInfo());
     R_RETURN(OpenSaveDataFileSystem(out_interface, space_id, attribute));
 }
 

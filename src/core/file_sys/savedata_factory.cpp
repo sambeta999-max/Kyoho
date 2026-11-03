@@ -16,11 +16,15 @@ namespace FileSys {
 
 namespace {
 
-bool ShouldSaveDataBeAutomaticallyCreated(SaveDataSpaceId space, const SaveDataAttribute& attr) {
+// The save data of the running program is created on first use; a program may name itself
+// instead of passing 0 (Nintendo Switch Sports Resort opens its account save read-only that way)
+bool ShouldSaveDataBeAutomaticallyCreated(SaveDataSpaceId space, const SaveDataAttribute& attr,
+                                          u64 current_program) {
     return attr.type == SaveDataType::Cache || attr.type == SaveDataType::Temporary ||
            (space == SaveDataSpaceId::User && ///< Normal Save Data -- Current Title & User
             (attr.type == SaveDataType::Account || attr.type == SaveDataType::Device) &&
-            attr.program_id == 0 && attr.system_save_data_id == 0);
+            (attr.program_id == 0 || attr.program_id == current_program) &&
+            attr.system_save_data_id == 0);
 }
 
 std::string GetFutureSaveDataPath(SaveDataSpaceId space_id, SaveDataType type, u64 title_id,
@@ -75,7 +79,8 @@ VirtualDir SaveDataFactory::Open(SaveDataSpaceId space, const SaveDataAttribute&
 
     auto out = dir->GetDirectoryRelative(save_directory);
 
-    if (out == nullptr && (ShouldSaveDataBeAutomaticallyCreated(space, meta) && auto_create)) {
+    if (out == nullptr &&
+        (ShouldSaveDataBeAutomaticallyCreated(space, meta, program_id) && auto_create)) {
         return Create(space, meta);
     }
 
