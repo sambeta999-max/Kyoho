@@ -82,7 +82,7 @@ GpuSplit::~GpuSplit() {
 bool GpuSplit::Requested() {
     static const bool requested = [] {
         const char* const value = std::getenv("EDEN_GPU_SPLIT");
-        return value != nullptr && value[0] == '1';
+        return value == nullptr || value[0] != '0';
     }();
     return requested;
 }
@@ -97,7 +97,7 @@ void GpuSplit::Start() {
 
 void GpuSplit::Activate() {
     if (active == nullptr) {
-        LOG_INFO(HW_GPU, "The GPU thread is split in two (EDEN_GPU_SPLIT=1)");
+        LOG_INFO(HW_GPU, "The GPU thread is split in two (EDEN_GPU_SPLIT=0 keeps one thread)");
         active = this;
     }
 }
