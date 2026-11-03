@@ -131,9 +131,22 @@ public:
         return is_ampere ? 0x80 : static_cast<u32>(sizeof(ProgramHeader));
     }
 
+    /// Task and mesh programs: SET_MESH_SHADER_A, SET_MESH_SHADER_B and SET_MESH_INIT_SHADER.
+    [[nodiscard]] const std::array<u32, 3>& MeshRegisters() const noexcept {
+        return mesh_registers;
+    }
+
+    /// Mesh programs: the header of the pass-through geometry program bound with them, whose
+    /// output map lists the per-primitive outputs.
+    [[nodiscard]] const ProgramHeader& MeshPrimitiveHeader() const noexcept {
+        return mesh_primitive_header;
+    }
+
 protected:
     ProgramHeader sph{};
     std::array<u32, 8> gp_passthrough_mask{};
+    std::array<u32, 3> mesh_registers{};
+    ProgramHeader mesh_primitive_header{};
     Stage stage{};
     u32 start_address{};
     bool is_proprietary_driver{};

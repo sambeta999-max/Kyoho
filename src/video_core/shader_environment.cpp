@@ -356,6 +356,24 @@ GraphicsEnvironment::GraphicsEnvironment(Tegra::Engines::Maxwell3D& maxwell3d_,
         ASSERT_MSG(false, "Invalid program={}", program);
         break;
     }
+    // Task and mesh programs: the task in the vertex slot, its mesh program in the tessellation
+    // slot (without a task, the mesh program is in the vertex slot)
+    const auto& regs{maxwell3d->regs};
+    if (is_ampere && regs.IsMeshEnabled() &&
+        (program == Maxwell::ShaderType::VertexB || program == Maxwell::ShaderType::Tessellation)) {
+        const bool has_task{regs.IsShaderConfigEnabled(Maxwell::ShaderType::Tessellation)};
+        stage = program == Maxwell::ShaderType::VertexB && has_task ? Shader::Stage::Task
+                                                                    : Shader::Stage::Mesh;
+        mesh_registers = {regs.reg_array[Maxwell::MeshShaderA], regs.reg_array[Maxwell::MeshShaderB],
+                          regs.reg_array[Maxwell::MeshInitShader]};
+        if (stage == Shader::Stage::Mesh &&
+            regs.IsShaderConfigEnabled(Maxwell::ShaderType::Geometry)) {
+            const auto [geometry_base, geometry_start]{maxwell3d_.ShaderProgramLocation(
+                static_cast<size_t>(Maxwell::ShaderType::Geometry))};
+            gpu_memory->ReadBlock(geometry_base + geometry_start, &mesh_primitive_header,
+                                  sizeof(mesh_primitive_header));
+        }
+    }
     const u64 local_size{sph.LocalMemorySize()};
     ASSERT(local_size <= (std::numeric_limits<u32>::max)());
     local_memory_size = static_cast<u32>(local_size) + sph.common3.shader_local_memory_crs_size;

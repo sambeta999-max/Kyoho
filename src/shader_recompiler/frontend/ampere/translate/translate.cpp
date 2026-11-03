@@ -119,6 +119,8 @@ void Dispatch(TranslatorVisitor& v, Opcode opcode, Instruction insn) {
         return v.ALD(insn);
     case Opcode::ISBERD:
         return v.ISBERD(insn);
+    case Opcode::ISBEWR:
+        return v.ISBEWR(insn);
     case Opcode::HMMA:
         return v.HMMA(insn);
     case Opcode::LDSM:
@@ -281,7 +283,8 @@ void Translate(Environment& env, IR::Block* block, Maxwell::Location begin,
             continue;
         }
         const Opcode opcode{Decode(insn)};
-        if (opcode == Opcode::ISBEWR) {
+        if (opcode == Opcode::ISBEWR && env.ShaderStage() != Stage::Task &&
+            env.ShaderStage() != Stage::Mesh) {
             throw NotImplementedException("Task/Mesh shader instruction {}", opcode);
         }
         if (opcode == Opcode::IMMA || opcode == Opcode::DMMA || opcode == Opcode::BMMA) {

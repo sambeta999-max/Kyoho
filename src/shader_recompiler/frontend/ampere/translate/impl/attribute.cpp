@@ -70,12 +70,53 @@ void TranslatorVisitor::AST(Instruction insn) {
 // indices directly, so the entry is the index itself, as on Maxwell. Sizes and the patch,
 // primitive, skew and output modes are at [74..80).
 void TranslatorVisitor::ISBERD(Instruction insn) {
+    if (env.ShaderStage() == Stage::Task || env.ShaderStage() == Stage::Mesh) {
+        IsbeAccess(insn, false);
+        return;
+    }
     if (insn.Bits(74, 6) != 0) {
         throw NotImplementedException("ISBERD mode {:#x}", insn.Bits(74, 6));
     }
     const u32 offset{static_cast<u32>(insn.Bits(40, 16))};
     const IR::U32 index{X(Reg(insn.SrcA()))};
     X(Reg(insn.Dest()), offset == 0 ? index : IR::U32{ir.IAdd(index, ir.Imm32(offset))});
+}
+
+// ISBEWR [Ra + imm], Rb: task and mesh programs' stage buffer writes (see IsbeAccess)
+void TranslatorVisitor::ISBEWR(Instruction insn) {
+    IsbeAccess(insn, true);
+}
+
+// ISBERD/ISBEWR in task and mesh programs. The stage buffer holds a task program's workgroup index
+// and its payload, and a mesh program's index, the payload it reads and its outputs: Ra at
+// [24..32), the byte offset at [40..64), ISBERD's Rd at [16..24), ISBEWR's data at [32..40), .32
+// at 75 (U8 otherwise), the region at [76..78) (3 attributes, 0 the primitive map), .SKEW at 78
+// and .O (the output buffer) at 79. Addresses are linear bytes in the region.
+void TranslatorVisitor::IsbeAccess(Instruction insn, bool write) {
+    const u64 region{insn.Bits(76, 2)};
+    const bool output{insn.Bits(79, 1) != 0};
+    if (insn.Bits(64, 11) != 0 || (region != 0 && region != 3) || write != output ||
+        (!write && region != 3)) {
+        throw NotImplementedException("Stage buffer access mode {:#x}", insn.Bits(64, 16));
+    }
+    const u32 offset{static_cast<u32>(insn.Bits(40, 24))};
+    const IR::U32 address{ir.IAdd(X(Reg(insn.Bits(24, 8))), ir.Imm32(offset))};
+    if (!write) {
+        X(Reg(insn.Dest()), ir.IsbeRead(address));
+        return;
+    }
+    const IR::U32 value{X(Reg(insn.Bits(32, 8)))};
+    const bool is_32{insn.Bits(75, 1) != 0};
+    if (region == 3) {
+        if (!is_32) {
+            throw NotImplementedException("U8 stage buffer attribute write");
+        }
+        ir.IsbeWriteAttribute(address, value);
+    } else if (is_32) {
+        ir.IsbeWriteMapU32(address, value);
+    } else {
+        ir.IsbeWriteMapU8(address, value);
+    }
 }
 
 // OUT.{FINAL,EMIT,CUT,EMIT_THEN_CUT} Rd, Ra, Rb: [78..80) selects the operation, Ra is the

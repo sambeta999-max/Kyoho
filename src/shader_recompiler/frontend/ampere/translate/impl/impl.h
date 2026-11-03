@@ -99,6 +99,8 @@ struct TranslatorVisitor {
     void ALD(Instruction insn);
     void AST(Instruction insn);
     void ISBERD(Instruction insn);
+    void ISBEWR(Instruction insn);
+    void IsbeAccess(Instruction insn, bool write);
     void OUT(Instruction insn);
     void LEPC(Instruction insn);
     void IPA(Instruction insn);
