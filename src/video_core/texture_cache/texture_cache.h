@@ -1188,6 +1188,22 @@ void TextureCache<P>::UploadImageContents(Image& image, StagingBuffer& staging) 
         auto uploads = FullUploadSwizzles(image.info);
         const size_t skipped = uploads[image.host_level_offset].buffer_offset;
         const size_t tail = image.info.layer_stride - skipped;
+        if (False(image.flags & ImageFlagBits::AcceleratedUpload)) {
+            // Formats the host keeps as they are: unswizzle the packed tails on the CPU
+            const size_t tails_size = tail * image.info.resources.layers;
+            swizzle_data_buffer.resize_destructive(tails_size);
+            for (s32 layer = 0; layer < image.info.resources.layers; ++layer) {
+                gpu_memory->ReadBlock(gpu_addr + layer * image.info.layer_stride + skipped,
+                                      swizzle_data_buffer.data() + layer * tail, tail,
+                                      VideoCommon::CacheType::NoTextureCache);
+            }
+            const auto copies = UnswizzleImage(
+                *gpu_memory, gpu_addr, image.info,
+                std::span<const u8>{swizzle_data_buffer.data(), tails_size}, mapped_span,
+                static_cast<s32>(image.host_level_offset));
+            image.UploadMemory(staging, copies);
+            return;
+        }
         for (s32 layer = 0; layer < image.info.resources.layers; ++layer) {
             gpu_memory->ReadBlock(gpu_addr + layer * image.info.layer_stride + skipped,
                                   mapped_span.data() + layer * tail, tail,

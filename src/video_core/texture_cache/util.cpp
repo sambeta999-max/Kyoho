@@ -849,7 +849,8 @@ boost::container::small_vector<BufferImageCopy, 16> UnswizzleImage(Tegra::Memory
                                                                    GPUVAddr gpu_addr,
                                                                    const ImageInfo& info,
                                                                    std::span<const u8> input,
-                                                                   std::span<u8> output) {
+                                                                   std::span<u8> output,
+                                                                   s32 first_level) {
     const size_t guest_size_bytes = input.size_bytes();
     const u32 bpp_log2 = BytesPerBlockLog2(info.format);
     const Extent2D tile_size = DefaultBlockSize(info.format);
@@ -881,24 +882,26 @@ boost::container::small_vector<BufferImageCopy, 16> UnswizzleImage(Tegra::Memory
     const std::array level_sizes = CalculateLevelSizes(level_info, num_levels);
     const Extent2D gob = GobSize(bpp_log2, info.block.height, info.tile_width_spacing);
     const u32 layer_size = CalculateLevelBytes(level_sizes, num_levels);
-    const u32 layer_stride = AlignLayerSize(layer_size, size, level_info.block, tile_size.height,
-                                            info.tile_width_spacing);
+    u32 layer_stride = AlignLayerSize(layer_size, size, level_info.block, tile_size.height,
+                                      info.tile_width_spacing);
+    // The input of a trimmed image starts at first_level in each layer
+    layer_stride -= CalculateLevelBytes(level_sizes, first_level);
     size_t guest_offset = 0;
     u32 host_offset = 0;
-    boost::container::small_vector<BufferImageCopy, 16> copies(num_levels);
+    boost::container::small_vector<BufferImageCopy, 16> copies(num_levels - first_level);
 
-    for (s32 level = 0; level < num_levels; ++level) {
+    for (s32 level = first_level; level < num_levels; ++level) {
         const Extent3D level_size = AdjustMipSize(size, level);
         const u32 num_blocks_per_layer = NumBlocks(level_size, tile_size);
         const u32 host_bytes_per_layer = num_blocks_per_layer << bpp_log2;
-        copies[level] = BufferImageCopy{
+        copies[level - first_level] = BufferImageCopy{
             .buffer_offset = host_offset,
             .buffer_size = static_cast<size_t>(host_bytes_per_layer) * num_layers,
             .buffer_row_length = Common::AlignUp(level_size.width, tile_size.width),
             .buffer_image_height = Common::AlignUp(level_size.height, tile_size.height),
             .image_subresource =
                 {
-                    .base_level = level,
+                    .base_level = level - first_level,
                     .base_layer = 0,
                     .num_layers = info.resources.layers,
                 },
@@ -928,6 +931,16 @@ boost::container::small_vector<BufferImageCopy, 16> UnswizzleImage(Tegra::Memory
         guest_offset += level_sizes[level];
     }
     return copies;
+}
+
+u32 UnswizzledSizeBytes(const ImageInfo& info, s32 first_level) {
+    const u32 bpp_log2 = BytesPerBlockLog2(info.format);
+    const Extent2D tile_size = DefaultBlockSize(info.format);
+    u32 bytes = 0;
+    for (s32 level = first_level; level < info.resources.levels; ++level) {
+        bytes += NumBlocks(AdjustMipSize(info.size, level), tile_size) << bpp_log2;
+    }
+    return bytes * info.resources.layers;
 }
 
 void ConvertImage(std::span<const u8> input, const ImageInfo& info, std::span<u8> output,
@@ -1306,6 +1319,10 @@ void DeduceBlitImages(ImageInfo& dst_info, ImageInfo& src_info, const ImageBase*
 }
 
 u32 MapSizeBytes(const ImageBase& image) {
+    if (True(image.flags & ImageFlagBits::TrimmedLevels) &&
+        False(image.flags & ImageFlagBits::AcceleratedUpload)) {
+        return UnswizzledSizeBytes(image.info, static_cast<s32>(image.host_level_offset));
+    }
     if (True(image.flags & ImageFlagBits::TrimmedLevels)) {
         // Each layer's mip chain from the first level the host keeps (see UploadImageContents)
         const u32 skipped = static_cast<u32>(

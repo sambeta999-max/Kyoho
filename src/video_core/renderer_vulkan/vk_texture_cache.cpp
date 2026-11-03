@@ -209,21 +209,41 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
     }
 }
 
-// The first guest level an image keeps on the host. Hosts without ASTC decode it to RGBA8, which
-// can be far larger than on the console: Mario Kart World's road textures are 8192x8192 ASTC 8x8
-// arrays of 68 layers, 1.5 GiB on the console and 24 GiB decoded. Normalized coordinates and
-// derivative LOD still address the reduced image; explicit levels sample that many levels lower.
-// The budget follows device memory, so larger GPUs lose less detail.
+// Bytes of an array kept in its guest format, from level `first_level` on
+[[nodiscard]] u64 NativeArrayBytes(const ImageInfo& info, u32 first_level) {
+    const u64 block_width = VideoCore::Surface::DefaultBlockWidth(info.format);
+    const u64 block_height = VideoCore::Surface::DefaultBlockHeight(info.format);
+    u64 bytes = 0;
+    for (s32 level = static_cast<s32>(first_level); level < info.resources.levels; ++level) {
+        bytes += Common::DivCeil(u64{(std::max)(info.size.width >> level, 1U)}, block_width) *
+                 Common::DivCeil(u64{(std::max)(info.size.height >> level, 1U)}, block_height) *
+                 VideoCore::Surface::BytesPerBlock(info.format);
+    }
+    return bytes * info.resources.layers;
+}
+
+// The first guest level an image keeps on the host. Switch 2 games use sparse array textures
+// that describe more memory than a host image can have, and hosts without ASTC decode it to
+// larger formats: Mario Kart World has 8192x8192 arrays of 68 layers in ASTC 8x8 (1.5 GiB on the
+// console, 24 GiB as RGBA8) and in BC6H (4.3 GiB for the first level alone). Normalized
+// coordinates and derivative LOD still address the reduced image; explicit levels sample that
+// many levels lower. The budget follows device memory, so larger GPUs lose less detail.
 [[nodiscard]] u32 FirstHostLevel(const Device& device, const ImageInfo& info) {
-    if (!WillUseAcceleratedAstcDecode(device, info) || info.type != ImageType::e2D ||
-        info.resources.layers <= 1) {
+    if (info.type != ImageType::e2D || info.resources.layers <= 1) {
+        return 0;
+    }
+    const bool astc = WillUseAcceleratedAstcDecode(device, info);
+    if (!astc && (IsPixelFormatASTC(info.format) ||
+                  (IsPixelFormatBCn(info.format) && !device.IsOptimalBcnSupported()))) {
+        // Converted on the CPU, which has no trimmed path
         return 0;
     }
     const u64 budget = std::clamp<u64>(device.GetDeviceLocalMemory() / 12, u64{512} << 20,
                                        u64{2} << 30);
     u32 first_level = 0;
     while (first_level + 1 < static_cast<u32>(info.resources.levels) &&
-           DecodedAstcBytes(device, info, first_level) > budget) {
+           (astc ? DecodedAstcBytes(device, info, first_level)
+                 : NativeArrayBytes(info, first_level)) > budget) {
         ++first_level;
     }
     return first_level;
