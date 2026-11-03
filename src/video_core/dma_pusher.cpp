@@ -332,7 +332,17 @@ bool DmaPusher::CanResumeNativeAcquire() {
         return false;
     }
     if (puller.IsPendingAcquireMet(*this)) {
-        return true;
+        if (split_acquire_fenced) {
+            split_acquire_fenced = false;
+            return true;
+        }
+        // The release may only be executed, not finished by the host GPU. As on one thread,
+        // the channel goes on once the host has finished it and the memory it wrote is back in
+        // guest memory (texture descriptors, for one)
+        split->PushTask([this] { rasterizer->ReleaseFences(); });
+        split_acquire_position = split->Pushed();
+        split_acquire_fenced = true;
+        return false;
     }
     // Usually the release is work the back has not executed yet: check again later. Once the
     // back is idle, only the host GPU can still release it; waiting for that is expensive, so
@@ -383,6 +393,7 @@ void DmaPusher::SplitPullerMethod(VideoCommon::GpuSplit& split,
             // back has executed everything before it
             puller.SetPendingAcquire(*semaphore);
             split_acquire_position = split.Pushed();
+            split_acquire_fenced = false;
             split.Drain();
             if (!puller.IsPendingAcquireMet(*this)) {
                 rasterizer->ReleaseFences();

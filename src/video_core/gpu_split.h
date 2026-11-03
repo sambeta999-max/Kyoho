@@ -25,8 +25,9 @@ class EngineInterface;
 
 namespace VideoCommon {
 
-/// Splits the GPU thread in two for Switch 2 titles (Vulkan only; EDEN_GPU_SPLIT=0 keeps one
-/// thread). The back starts with the GPU and the split takes effect at the first submission of
+/// Splits the GPU thread in two for Switch 2 titles (EDEN_GPU_SPLIT=1, Vulkan only). Off by
+/// default: suspended acquires that resume without draining the back lose the device now and
+/// then (Welcome Tour, MKW). The back starts with the GPU and the split takes effect at the first submission of
 /// a native-ABI channel, on the GPU thread between two command lists. The front (the GPU thread)
 /// parses command lists and runs the 3D macros of AMPERE_B channels against a copy of the 3D
 /// registers; the back executes the method writes this produces in order: engine state, draws,
@@ -42,7 +43,7 @@ public:
     [[nodiscard]] static GpuSplit* Active() noexcept {
         return active;
     }
-    /// On unless EDEN_GPU_SPLIT=0
+    /// Whether EDEN_GPU_SPLIT=1 asks for it
     [[nodiscard]] static bool Requested();
 
     void Start();
