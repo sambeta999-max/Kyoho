@@ -30,6 +30,13 @@ VirtualDir MiiModel() {
     out->AddFile(MakeArrayFile(MiiModelData::TEXTURE_LOW_SRGB, "NXTextureLowSRGB.dat"));
     out->AddFile(MakeArrayFile(MiiModelData::TEXTURE_MID_LINEAR, "NXTextureMidLinear.dat"));
     out->AddFile(MakeArrayFile(MiiModelData::TEXTURE_MID_SRGB, "NXTextureMidSRGB.dat"));
+    // Switch 2 applications also read the Ounce (Switch 2) textures, from archive 0x849
+    out->AddFile(MakeArrayFile(MiiModelData::TEXTURE_LOW_LINEAR, "OunceTextureLowLinear.dat"));
+    out->AddFile(MakeArrayFile(MiiModelData::TEXTURE_LOW_SRGB, "OunceTextureLowSRGB.dat"));
+    out->AddFile(MakeArrayFile(MiiModelData::TEXTURE_MID_LINEAR, "OunceTextureMidLinear.dat"));
+    out->AddFile(MakeArrayFile(MiiModelData::TEXTURE_MID_SRGB, "OunceTextureMidSRGB.dat"));
+    out->AddFile(MakeArrayFile(MiiModelData::TEXTURE_MID_LINEAR, "OunceTextureHighLinear.dat"));
+    out->AddFile(MakeArrayFile(MiiModelData::TEXTURE_MID_SRGB, "OunceTextureHighSRGB.dat"));
     out->AddFile(MakeArrayFile(MiiModelData::SHAPE_HIGH, "ShapeHigh.dat"));
     out->AddFile(MakeArrayFile(MiiModelData::SHAPE_MID, "ShapeMid.dat"));
 

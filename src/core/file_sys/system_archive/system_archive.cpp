@@ -74,7 +74,13 @@ constexpr inline SystemArchiveDescriptor GetSystemArchive(u64 title_id) {
     }
 }
 
-VirtualFile SynthesizeSystemArchive(const u64 title_id) {
+VirtualFile SynthesizeSystemArchive(u64 title_id) {
+    // Switch 2 system data keeps the Switch numbering under 0x04 (0x0400000000000802 is
+    // MiiModel); 0x0400000000000849, its Mii resource with the Switch 2 textures, is MiiModel too
+    if ((title_id >> 56) == 0x04) {
+        title_id = title_id == 0x0400000000000849 ? 0x0100000000000802
+                                                  : (title_id & 0x00FFFFFFFFFFFFFF) | (u64{1} << 56);
+    }
     auto const desc = GetSystemArchive(title_id);
     LOG_INFO(Service_FS, "Synthesizing system archive '{}' ({:#016x}).", desc.name, title_id);
     if (desc.supplier != nullptr) {
