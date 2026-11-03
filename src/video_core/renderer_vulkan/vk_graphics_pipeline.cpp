@@ -20,6 +20,7 @@
 #include "video_core/renderer_vulkan/pipeline_statistics.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
+#include "video_core/draw_capture.h"
 #include "video_core/renderer_vulkan/vk_render_pass_cache.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
@@ -372,9 +373,27 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
 
     const auto& regs{maxwell3d->regs};
     const bool via_header_index{regs.sampler_binding == Maxwell::SamplerBinding::ViaHeaderBinding};
+    auto& capture{VideoCommon::DrawCapture::Get()};
+    boost::container::small_vector<u8, 64> capture_view_stages;
     const auto config_stage{[&](size_t stage) LAMBDA_FORCEINLINE {
         const Shader::Info& info{stage_infos[stage]};
         buffer_cache.UnbindGraphicsStorageBuffers(stage);
+        if (capture.Active()) {
+            const size_t first_view{views.size()};
+            const size_t count{Shader::NumDescriptors(info.texture_buffer_descriptors) +
+                               Shader::NumDescriptors(info.image_buffer_descriptors) +
+                               Shader::NumDescriptors(info.texture_descriptors) +
+                               Shader::NumDescriptors(info.image_descriptors)};
+            capture_view_stages.resize(first_view + count, static_cast<u8>(stage));
+            const auto& stage_cbufs{maxwell3d->state.shader_stages[stage].const_buffers};
+            for (const auto& desc : info.storage_buffers_descriptors) {
+                const GPUVAddr ssbo_addr{stage_cbufs[desc.cbuf_index].address + desc.cbuf_offset};
+                capture.bindings.push_back(fmt::format(
+                    "  s{} ssbo c{}[{:#x}] = {:#x} size {:#x}{}", stage, desc.cbuf_index,
+                    desc.cbuf_offset, gpu_memory->Read<u64>(ssbo_addr),
+                    gpu_memory->Read<u32>(ssbo_addr + 8), desc.is_written ? " written" : ""));
+            }
+        }
         if constexpr (Spec::has_storage_buffers) {
             size_t ssbo_index{};
             for (const auto& desc : info.storage_buffers_descriptors) {
@@ -461,6 +480,13 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
     ASSERT(views.size() == num_image_elements);
     ASSERT(samplers.size() == num_textures);
     texture_cache.FillImageViews(std::span(views.data(), views.size()), false, Spec::has_images);
+    if (capture.Active()) {
+        for (size_t index = 0; index < views.size(); ++index) {
+            capture.bindings.push_back(fmt::format(
+                "  s{} tex{} handle={:#x} {}", index < capture_view_stages.size() ? capture_view_stages[index] : 9,
+                index, views[index].index, texture_cache.CaptureDescribe(views[index].id)));
+        }
+    }
 
     VideoCommon::ImageViewInOut* texture_buffer_it{views.data()};
     const auto bind_stage_info{[&](size_t stage) LAMBDA_FORCEINLINE {

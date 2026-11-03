@@ -48,6 +48,10 @@ public:
     ComputePipeline& operator=(const ComputePipeline&) = delete;
     ComputePipeline(const ComputePipeline&) = delete;
 
+    [[nodiscard]] u64 ShaderHash() const noexcept {
+        return shader_hash;
+    }
+
     [[nodiscard]] bool Configure(Tegra::Engines::KeplerCompute& kepler_compute,
                                  Tegra::MemoryManager& gpu_memory, Scheduler& scheduler,
                                  BufferCache& buffer_cache, TextureCache& texture_cache);

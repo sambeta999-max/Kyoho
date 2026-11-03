@@ -45,6 +45,7 @@
 #include "video_core/renderer_base.h"
 #include "network/network.h"
 #include "sdl_config.h"
+#include "video_core/draw_capture.h"
 #include "video_core/gpu.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_base.h"
@@ -226,6 +227,14 @@ void RunScript(std::stop_token stop, SdlState* state, std::string script, std::s
             return;
         }
         LOG_INFO(Frontend, "script: {}", action);
+        if (kind == 'c') {
+            // Draw capture from the next frame on (video_core/draw_capture.h); EDEN_DRAW_FRAMES
+            // sets how many frames
+            const char* frames = std::getenv("EDEN_DRAW_FRAMES");
+            VideoCommon::DrawCapture::Get().Request(
+                frames ? static_cast<u32>((std::max)(1, std::atoi(frames))) : 1U);
+            continue;
+        }
         if (kind == 's') {
             const auto layout = Layout::DefaultFrameLayout(1280, 720);
             auto pixels = std::make_shared<std::vector<u8>>(size_t{layout.width} * layout.height * 4);

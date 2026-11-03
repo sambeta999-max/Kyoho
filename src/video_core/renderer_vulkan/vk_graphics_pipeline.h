@@ -100,6 +100,10 @@ public:
     }
 
     /// Switch 2 task/mesh pipeline: drawn with vkCmdDrawMeshTasksEXT.
+    [[nodiscard]] const std::array<u64, 6>& UniqueHashes() const noexcept {
+        return key.unique_hashes;
+    }
+
     [[nodiscard]] bool IsMeshPipeline() const noexcept {
         return stage_infos[0].is_task || stage_infos[0].is_mesh;
     }

@@ -174,6 +174,21 @@ public:
     /// Fill image_view_ids with the graphics/compute images in indices
     void FillImageViews(std::span<ImageViewInOut> views, bool compute, bool blacklist = true);
 
+    /// Draw capture (video_core/draw_capture.h): a view and its image as text
+    [[nodiscard]] std::string CaptureDescribe(ImageViewId id);
+
+    /// Draw capture: the render targets of the current draw
+    [[nodiscard]] const RenderTargets& CaptureRenderTargets() const noexcept {
+        return render_targets;
+    }
+
+    /// Draw capture: downloads the level and layer an uncompressed color view starts at
+    bool CaptureDownload(ImageViewId id, std::vector<u8>& out, u32& width, u32& height,
+                         u32 x = 0, u32 y = 0, u32 region = 0);
+
+    /// Draw capture: the image of a view
+    [[nodiscard]] u64 CaptureImageIndex(ImageViewId id) const noexcept;
+
     /// Handle feedback loops during draws.
     void CheckFeedbackLoop(std::span<const ImageViewInOut> views);
 

@@ -14,6 +14,7 @@
 #include "video_core/renderer_vulkan/pipeline_statistics.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
 #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
+#include "video_core/draw_capture.h"
 #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -219,6 +220,20 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
         add_image(desc, desc.is_written);
     }
     texture_cache.FillImageViews(std::span(views.data(), views.size()), true);
+    if (auto& capture{VideoCommon::DrawCapture::Get()}; capture.Active()) {
+        for (const auto& desc : info.storage_buffers_descriptors) {
+            const GPUVAddr ssbo_addr{cbufs[desc.cbuf_index].Address() + desc.cbuf_offset};
+            capture.bindings.push_back(fmt::format(
+                "  ssbo c{}[{:#x}] = {:#x} size {:#x}{}", desc.cbuf_index, desc.cbuf_offset,
+                gpu_memory.Read<u64>(ssbo_addr), gpu_memory.Read<u32>(ssbo_addr + 8),
+                desc.is_written ? " written" : ""));
+        }
+        for (size_t index = 0; index < views.size(); ++index) {
+            capture.bindings.push_back(fmt::format("  tex{} handle={:#x} {}", index,
+                                                   views[index].index,
+                                                   texture_cache.CaptureDescribe(views[index].id)));
+        }
+    }
 
     buffer_cache.UnbindComputeTextureBuffers();
     size_t index{};

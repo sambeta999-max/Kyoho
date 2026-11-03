@@ -231,6 +231,14 @@ private:
 
     u32 draw_counter = 0;
     bool mesh_draw{}; ///< the draw being prepared uses a task/mesh pipeline
+    std::string capture_params; ///< draw capture: the parameters of the draw being prepared
+
+    /// Draw capture: describes the draw being prepared and its state
+    void CaptureDraw(u32 event, const GraphicsPipeline& pipeline);
+    /// Draw capture: writes the color render targets after an event
+    void CaptureDumpTargets(u32 event, const char* suffix = "");
+    /// Draw capture: writes the programs of the bound stages
+    void CaptureDumpPrograms(const GraphicsPipeline& pipeline);
 };
 
 } // namespace Vulkan

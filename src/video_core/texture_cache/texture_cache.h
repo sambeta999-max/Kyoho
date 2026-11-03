@@ -238,6 +238,85 @@ void TextureCache<P>::FillImageViews(std::span<ImageViewInOut> views, bool compu
 }
 
 template <class P>
+std::string TextureCache<P>::CaptureDescribe(ImageViewId id) {
+    if (!id) {
+        return "null";
+    }
+    const ImageViewBase& view{slot_image_views[id]};
+    if (!view.image_id) {
+        return fmt::format("view fmt={} (no image)", static_cast<u32>(view.format));
+    }
+    const ImageBase& image{slot_images[view.image_id]};
+    return fmt::format("img{} gpu={:#x} {}x{}x{} fmt={} view_fmt={} layers={} levels={} "
+                       "base={}/{} flags={:#x} mod={}",
+                       view.image_id.index, image.gpu_addr, image.info.size.width,
+                       image.info.size.height, image.info.size.depth,
+                       static_cast<u32>(image.info.format), static_cast<u32>(view.format),
+                       image.info.resources.layers, image.info.resources.levels,
+                       view.range.base.layer, view.range.base.level,
+                       static_cast<u32>(image.flags), image.modification_tick);
+}
+
+template <class P>
+u64 TextureCache<P>::CaptureImageIndex(ImageViewId id) const noexcept {
+    return id ? slot_image_views[id].image_id.index : ~u64{};
+}
+
+template <class P>
+bool TextureCache<P>::CaptureDownload(ImageViewId id, std::vector<u8>& out, u32& width,
+                                      u32& height, u32 x, u32 y, u32 region) {
+    if (!id) {
+        return false;
+    }
+    const ImageViewBase& view{slot_image_views[id]};
+    if (!view.image_id) {
+        return false;
+    }
+    Image& image{slot_images[view.image_id]};
+    const PixelFormat format{image.info.format};
+    if (VideoCore::Surface::GetFormatType(format) != VideoCore::Surface::SurfaceType::ColorTexture ||
+        VideoCore::Surface::IsPixelFormatASTC(format) || VideoCore::Surface::IsPixelFormatBCn(format) ||
+        image.info.num_samples != 1 || image.info.type == ImageType::Buffer) {
+        return false;
+    }
+    const s32 level{view.range.base.level - static_cast<s32>(image.host_level_offset)};
+    if (level < 0) {
+        return false;
+    }
+    width = (std::max)(image.info.size.width >> view.range.base.level, 1U);
+    height = (std::max)(image.info.size.height >> view.range.base.level, 1U);
+    Offset3D offset{0, 0, 0};
+    if (region != 0) {
+        // A region x, y of region x region texels instead of the whole level
+        if (x + region > width || y + region > height) {
+            return false;
+        }
+        offset = {static_cast<s32>(x), static_cast<s32>(y), 0};
+        width = region;
+        height = region;
+    }
+    const size_t size{size_t{width} * height * VideoCore::Surface::BytesPerBlock(format)};
+    const std::array copies{BufferImageCopy{
+        .buffer_offset = 0,
+        .buffer_size = size,
+        .buffer_row_length = width,
+        .buffer_image_height = height,
+        .image_subresource{
+            .base_level = level,
+            .base_layer = view.range.base.layer,
+            .num_layers = 1,
+        },
+        .image_offset = offset,
+        .image_extent{width, height, 1},
+    }};
+    auto map{runtime.DownloadStagingBuffer(size)};
+    image.DownloadMemory(map, copies);
+    runtime.Finish();
+    out.assign(map.mapped_span.begin(), map.mapped_span.begin() + size);
+    return true;
+}
+
+template <class P>
 void TextureCache<P>::CheckFeedbackLoop(std::span<const ImageViewInOut> views) {
     if (!Settings::values.barrier_feedback_loops.GetValue()) {
         return;
