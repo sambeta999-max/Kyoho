@@ -563,8 +563,10 @@ struct Values {
                                                                true,
                                                                true};
 
+    // BC3 keeps ASTC textures at a quarter of their RGBA8 size on GPUs without ASTC; Switch 2
+    // games such as Mario Kart World need more than 16 GiB of device memory as RGBA8
     SwitchableSetting<AstcRecompression, true> astc_recompression{linkage,
-                                                                  AstcRecompression::Uncompressed,
+                                                                  AstcRecompression::Bc3,
                                                                   "astc_recompression",
                                                                   Category::RendererAdvanced};
 

@@ -206,6 +206,21 @@ foreach(VARIANT IN ITEMS ${SHADER_TYPE_VARIANTS})
     set(SHADER_HEADERS ${SHADER_HEADERS} ${VARIANT_HEADER_FILE})
 endforeach()
 
+# ASTC decoder that writes BC1/BC3 blocks instead of RGBA8 texels
+set(ASTC_BC_SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/astc_decoder.comp)
+set(ASTC_BC_HEADER_FILE ${SHADER_DIR}/astc_decoder_bc_comp_spv.h)
+add_custom_command(
+    OUTPUT
+        ${ASTC_BC_HEADER_FILE}
+    COMMAND
+        ${GLSLANGVALIDATOR} -V ${QUIET_FLAG} ${GLSL_FLAGS} -DASTC_BC_OUTPUT
+        --variable-name ASTC_DECODER_BC_COMP_SPV -o ${ASTC_BC_HEADER_FILE} ${ASTC_BC_SOURCE}
+        --target-env ${SPIR_V_VERSION}
+    MAIN_DEPENDENCY
+        ${ASTC_BC_SOURCE}
+)
+set(SHADER_HEADERS ${SHADER_HEADERS} ${ASTC_BC_HEADER_FILE})
+
 foreach(FILEPATH IN ITEMS ${FIDELITYFX_FILES})
     get_filename_component(FILENAME ${FILEPATH} NAME)
     string(REPLACE "." "_" HEADER_NAME ${FILENAME})

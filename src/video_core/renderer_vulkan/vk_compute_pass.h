@@ -135,6 +135,8 @@ private:
     StagingBufferPool& staging_buffer_pool;
     ComputePassDescriptorQueue& compute_pass_descriptor_queue;
     MemoryAllocator& memory_allocator;
+    vk::ShaderModule bc_module;
+    vk::Pipeline bc_pipeline; ///< Decodes to BC1/BC3 blocks
 };
 
 class BlockLinearUnswizzle3DPass final : public ComputePass {

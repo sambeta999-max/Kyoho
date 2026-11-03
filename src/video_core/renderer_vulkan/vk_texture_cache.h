@@ -366,6 +366,12 @@ public:
 
     u64 allocation_tick;
 
+    /// BC format the ASTC decoder pass encodes this image to: 0 (RGBA8), 1 (BC1) or 3 (BC3)
+    u32 astc_bc_mode = 0;
+
+    /// Storage view of one layer of a level whose texels are the image's BC blocks
+    [[nodiscard]] VkImageView BcStorageImageView(s32 level, s32 layer) noexcept;
+
     friend class BlockLinearUnswizzle3DPass;
 
 private:
@@ -390,6 +396,7 @@ private:
     vk::Image Image::*current_image{};
 
     std::vector<vk::ImageView> storage_image_views;
+    std::vector<vk::ImageView> bc_storage_image_views;
     VkImageAspectFlags aspect_mask = 0;
     bool initialized = false;
 

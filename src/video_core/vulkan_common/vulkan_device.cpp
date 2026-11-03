@@ -757,9 +757,9 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
             .flags = flags,
             .physicalDevice = physical,
             .device = *logical,
-            .preferredLargeHeapBlockSize = is_integrated
-                                           ? (64u * 1024u * 1024u)
-                                           : (256u * 1024u * 1024u),
+            // Smaller blocks leave less free space stranded in blocks that a few live
+            // images keep allocated after the texture cache evicts the rest
+            .preferredLargeHeapBlockSize = 64u * 1024u * 1024u,
             .pAllocationCallbacks = nullptr,
             .pDeviceMemoryCallbacks = nullptr,
             .pHeapSizeLimit = nullptr,
@@ -1668,9 +1668,19 @@ u64 Device::GetDeviceMemoryUsage() const {
     budget.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
     budget.pNext = nullptr;
     physical.GetMemoryProperties(&budget);
+    // Space free inside VMA's blocks is reported as used by the driver. Without discounting it,
+    // the caches' collectors keep evicting once usage passes their limits, as freed images leave
+    // their blocks allocated (after Mario Kart World's collector deleted 4000 images, 7 GiB of
+    // its 22 GiB of blocks were free).
+    std::array<VmaBudget, VK_MAX_MEMORY_HEAPS> vma_budgets{};
+    if (allocator) {
+        vmaGetHeapBudgets(allocator, vma_budgets.data());
+    }
     u64 result{};
     for (const size_t heap : valid_heap_memory) {
-        result += budget.heapUsage[heap];
+        const auto& stats = vma_budgets[heap].statistics;
+        const u64 slack = stats.blockBytes - stats.allocationBytes;
+        result += budget.heapUsage[heap] - (std::min<u64>)(slack, budget.heapUsage[heap]);
     }
     return result;
 }
@@ -1714,7 +1724,12 @@ void Device::CollectPhysicalMemoryInfo() {
             // Account for resolution scaling in memory limits
             const size_t normal_memory = 6_GiB;
             const size_t scaler_memory = 1_GiB * Settings::values.resolution_info.ScaleUp(1);
-            device_access_memory = std::min<u64>(device_access_memory, normal_memory + scaler_memory);
+            // Half of larger budgets: a Switch 2 game's textures and render targets can take
+            // more than 7 GiB (Mario Kart World's races), and a lower cap makes the texture
+            // cache delete and recreate images while they are still in use
+            device_access_memory = std::min<u64>(
+                device_access_memory,
+                (std::max<u64>)(normal_memory + scaler_memory, device_access_memory / 2));
         }
     }
 }

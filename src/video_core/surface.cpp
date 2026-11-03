@@ -473,7 +473,7 @@ u64 TranscodedAstcSize(u64 base_size, PixelFormat format) {
                                 static_cast<u64>(DefaultBlockHeight(format)) * RGBA8_PIXEL_SIZE;
     const u64 uncompressed_size = (base_size * base_block_size) / BytesPerBlock(format);
 
-    switch (Settings::values.astc_recompression.GetValue()) {
+    switch (AstcRecompressionFor(format)) {
     case Settings::AstcRecompression::Bc1:
         return uncompressed_size / 8;
     case Settings::AstcRecompression::Bc3:
@@ -481,6 +481,16 @@ u64 TranscodedAstcSize(u64 base_size, PixelFormat format) {
     default:
         return uncompressed_size;
     }
+}
+
+Settings::AstcRecompression AstcRecompressionFor(PixelFormat format) {
+    const auto recompression = Settings::values.astc_recompression.GetValue();
+    if (recompression != Settings::AstcRecompression::Uncompressed &&
+        Settings::values.accelerate_astc.GetValue() == Settings::AstcDecodeMode::Gpu &&
+        (DefaultBlockWidth(format) % 4 != 0 || DefaultBlockHeight(format) % 4 != 0)) {
+        return Settings::AstcRecompression::Uncompressed;
+    }
+    return recompression;
 }
 
 } // namespace VideoCore::Surface

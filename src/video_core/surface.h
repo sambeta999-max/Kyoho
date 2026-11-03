@@ -12,6 +12,7 @@
 #include "common/assert.h"
 #include "common/common_types.h"
 #include "common/logging.h"
+#include "common/settings_enums.h"
 #include "video_core/gpu.h"
 #include "video_core/textures/texture.h"
 
@@ -222,5 +223,10 @@ bool IsPixelFormatSignedInteger(PixelFormat format);
 size_t PixelComponentSizeBitsInteger(PixelFormat format);
 std::pair<u32, u32> GetASTCBlockSize(PixelFormat format);
 u64 TranscodedAstcSize(u64 base_size, PixelFormat format);
+
+/// The recompression an ASTC format gets on hosts without ASTC. The GPU decoder encodes BC blocks
+/// inside each ASTC block, so with GPU decoding, block sizes that are not multiples of four stay
+/// RGBA8 rather than going through the much slower CPU encoder.
+Settings::AstcRecompression AstcRecompressionFor(PixelFormat format);
 
 } // namespace VideoCore::Surface

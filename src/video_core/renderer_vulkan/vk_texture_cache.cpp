@@ -148,26 +148,65 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
     return usage;
 }
 
+// BC format the GPU decoder re-encodes an ASTC format to on hosts without ASTC: 1 (BC1), 3 (BC3) or
+// 0 when it decodes to RGBA8 (see VideoCore::Surface::AstcRecompressionFor)
+[[nodiscard]] u32 AstcBcMode(const Device& device, PixelFormat format) {
+    if (!IsPixelFormatASTC(format) || device.IsOptimalAstcSupported() ||
+        Settings::values.accelerate_astc.GetValue() != Settings::AstcDecodeMode::Gpu) {
+        return 0;
+    }
+    switch (VideoCore::Surface::AstcRecompressionFor(format)) {
+    case Settings::AstcRecompression::Bc1:
+        return 1;
+    case Settings::AstcRecompression::Bc3:
+        return 3;
+    default:
+        return 0;
+    }
+}
+
 [[nodiscard]] bool WillUseAcceleratedAstcDecode(const Device& device, const ImageInfo& info) {
     if (!IsPixelFormatASTC(info.format) || device.IsOptimalAstcSupported()) {
         return false;
     }
-    if (Settings::values.accelerate_astc.GetValue() != Settings::AstcDecodeMode::Gpu) {
+    if (Settings::values.accelerate_astc.GetValue() != Settings::AstcDecodeMode::Gpu ||
+        info.size.depth != 1) {
         return false;
     }
-    return Settings::values.astc_recompression.GetValue() ==
-              Settings::AstcRecompression::Uncompressed &&
-          info.size.depth == 1;
+    return VideoCore::Surface::AstcRecompressionFor(info.format) ==
+               Settings::AstcRecompression::Uncompressed ||
+           AstcBcMode(device, info.format) != 0;
 }
 
-// Bytes of an ASTC array decoded to RGBA8, from level `first_level` on
-[[nodiscard]] u64 DecodedAstcBytes(const ImageInfo& info, u32 first_level) {
+// Bytes of a decoded ASTC array (RGBA8, BC1 or BC3), from level `first_level` on
+[[nodiscard]] u64 DecodedAstcBytes(const Device& device, const ImageInfo& info, u32 first_level) {
     u64 bytes = 0;
     for (s32 level = static_cast<s32>(first_level); level < info.resources.levels; ++level) {
         bytes += u64{(std::max)(info.size.width >> level, 1U)} *
                  (std::max)(info.size.height >> level, 1U) * 4;
     }
+    switch (AstcBcMode(device, info.format)) {
+    case 1:
+        bytes /= 8;
+        break;
+    case 3:
+        bytes /= 4;
+        break;
+    default:
+        break;
+    }
     return bytes * info.resources.layers;
+}
+
+[[nodiscard]] VkFormat AstcStorageViewFormat(const Device& device, PixelFormat format) {
+    switch (AstcBcMode(device, format)) {
+    case 1:
+        return VK_FORMAT_R32G32_UINT;
+    case 3:
+        return VK_FORMAT_R32G32B32A32_UINT;
+    default:
+        return VK_FORMAT_A8B8G8R8_UNORM_PACK32;
+    }
 }
 
 // The first guest level an image keeps on the host. Hosts without ASTC decode it to RGBA8, which
@@ -184,7 +223,7 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
                                        u64{2} << 30);
     u32 first_level = 0;
     while (first_level + 1 < static_cast<u32>(info.resources.levels) &&
-           DecodedAstcBytes(info, first_level) > budget) {
+           DecodedAstcBytes(device, info, first_level) > budget) {
         ++first_level;
     }
     return first_level;
@@ -269,6 +308,10 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
     if (view_formats.size() > 1) {
         image_ci.flags |=
             VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
+        if (AstcBcMode(device, info.format) != 0) {
+            // The ASTC decoder writes whole BC blocks through an uncompressed view
+            image_ci.flags |= VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT;
+        }
 
         const bool has_storage_compatible_view =
             std::any_of(view_formats.begin(), view_formats.end(), [&device](VkFormat view_format) {
@@ -287,7 +330,8 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
 }
 
 [[nodiscard]] vk::ImageView MakeStorageView(const vk::Device& device, u32 level, VkImage image,
-                                            VkFormat format) {
+                                            VkFormat format, u32 base_layer = 0,
+                                            u32 num_layers = VK_REMAINING_ARRAY_LAYERS) {
     static constexpr VkImageViewUsageCreateInfo storage_image_view_usage_create_info{
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,
         .pNext = nullptr,
@@ -310,8 +354,8 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
             .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
             .baseMipLevel = level,
             .levelCount = 1,
-            .baseArrayLayer = 0,
-            .layerCount = VK_REMAINING_ARRAY_LAYERS,
+            .baseArrayLayer = base_layer,
+            .layerCount = num_layers,
         },
     });
 }
@@ -990,7 +1034,7 @@ TextureCacheRuntime::TextureCacheRuntime(const Device& device_, Scheduler& sched
     for (size_t index_a = 0; index_a < VideoCore::Surface::MaxPixelFormat; index_a++) {
         const auto image_format = static_cast<PixelFormat>(index_a);
         if (IsPixelFormatASTC(image_format) && !device.IsOptimalAstcSupported()) {
-            view_formats[index_a].push_back(VK_FORMAT_A8B8G8R8_UNORM_PACK32);
+            view_formats[index_a].push_back(AstcStorageViewFormat(device, image_format));
         }
         for (size_t index_b = 0; index_b < VideoCore::Surface::MaxPixelFormat; index_b++) {
             const auto view_format = static_cast<PixelFormat>(index_b);
@@ -1936,7 +1980,11 @@ Image::Image(TextureCacheRuntime& runtime_, const ImageInfo& info_, GPUVAddr gpu
             break;
         }
         flags |= VideoCommon::ImageFlagBits::Converted;
-        flags |= VideoCommon::ImageFlagBits::CostlyLoad;
+        // Decoding on the GPU costs about as much as any upload; protecting those images from
+        // the collector kept every ASTC texture a game ever used (9 GiB in Mario Kart World)
+        if (False(flags & VideoCommon::ImageFlagBits::AcceleratedUpload)) {
+            flags |= VideoCommon::ImageFlagBits::CostlyLoad;
+        }
     }
     if (IsPixelFormatBCn(info.format) && !runtime->device.IsOptimalBcnSupported()) {
         flags |= VideoCommon::ImageFlagBits::Converted;
@@ -1949,8 +1997,15 @@ Image::Image(TextureCacheRuntime& runtime_, const ImageInfo& info_, GPUVAddr gpu
     const s32 host_levels = info.resources.levels - static_cast<s32>(host_level_offset);
     storage_image_views.resize(host_levels);
     if (WillUseAcceleratedAstcDecode(runtime->device, info)) {
+        astc_bc_mode = AstcBcMode(runtime->device, info.format);
+    }
+    if (astc_bc_mode != 0) {
+        // Views of a compressed image in an uncompressed format may only span one layer unless
+        // the device reports blockTexelViewCompatibleMultipleLayers (VK_KHR_maintenance6)
+        bc_storage_image_views.resize(static_cast<size_t>(host_levels) * info.resources.layers);
+    } else if (WillUseAcceleratedAstcDecode(runtime->device, info)) {
         const auto& device = runtime->device.GetLogical();
-        const VkFormat storage_format = VK_FORMAT_A8B8G8R8_UNORM_PACK32;
+        const VkFormat storage_format = AstcStorageViewFormat(runtime->device, info.format);
         for (s32 level = 0; level < host_levels; ++level) {
             storage_image_views[level] =
                 MakeStorageView(device, level, *original_image, storage_format);
@@ -2365,13 +2420,23 @@ void Image::DownloadMemory(const StagingBufferRef& map, std::span<const BufferIm
     DownloadMemory(buffers, offsets, copies);
 }
 
+VkImageView Image::BcStorageImageView(s32 level, s32 layer) noexcept {
+    auto& view = bc_storage_image_views[static_cast<size_t>(level) * info.resources.layers + layer];
+    if (!view) {
+        view = MakeStorageView(runtime->device.GetLogical(), level, *(this->*current_image),
+                               AstcStorageViewFormat(runtime->device, info.format),
+                               static_cast<u32>(layer), 1);
+    }
+    return *view;
+}
+
 VkImageView Image::StorageImageView(s32 level) noexcept {
     auto& view = storage_image_views[level];
     if (!view) {
         auto format_info =
             MaxwellToVK::SurfaceFormat(runtime->device, FormatType::Optimal, true, info.format);
         if (WillUseAcceleratedAstcDecode(runtime->device, info)) {
-            format_info.format = VK_FORMAT_A8B8G8R8_UNORM_PACK32;
+            format_info.format = AstcStorageViewFormat(runtime->device, info.format);
         }
         view = MakeStorageView(runtime->device.GetLogical(), level, *(this->*current_image),
                                format_info.format);

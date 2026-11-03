@@ -34,6 +34,8 @@ UNIFORM(4) uint x_shift;
 UNIFORM(5) uint block_height;
 UNIFORM(6) uint block_height_mask;
 UNIFORM(7) uint native_tiling;
+UNIFORM(8) uint bc1_output;
+UNIFORM(9) uint first_layer;
 END_PUSH_CONSTANTS
 
 struct EncodingData {
@@ -44,11 +46,25 @@ layout(binding = BINDING_INPUT_BUFFER, std430) readonly restrict buffer InputBuf
     uvec4 astc_data[];
 };
 
-#ifdef VULKAN
+#if defined(ASTC_BC_OUTPUT)
+// Hosts without ASTC keep the texture as BC1 or BC3 instead of RGBA8 (an eighth or a quarter of
+// the memory). Each invocation decodes its ASTC block into block_texels and encodes the BC blocks
+// it covers; the image is written through a view whose texels are whole BC blocks.
+layout(binding = BINDING_OUTPUT_IMAGE) uniform writeonly restrict uimage2DArray dest_image;
+uint block_texels[144];
+#elif defined(VULKAN)
 layout(binding = BINDING_OUTPUT_IMAGE) uniform writeonly restrict image2DArray dest_image;
 #else
 layout(binding = BINDING_OUTPUT_IMAGE, rgba8) uniform writeonly restrict image2DArray dest_image;
 #endif
+
+void WriteTexel(ivec3 coord, uint i, uint j, vec4 color) {
+#ifdef ASTC_BC_OUTPUT
+    block_texels[j * block_dims.x + i] = packUnorm4x8(color);
+#else
+    imageStore(dest_image, coord + ivec3(i, j, 0), color);
+#endif
+}
 
 const uint GOB_SIZE_X_SHIFT = 6;
 const uint GOB_SIZE_Y_SHIFT = 3;
@@ -1098,7 +1114,7 @@ int FindLayout(uint mode) {
 void FillError(ivec3 coord) {
     for (uint j = 0; j < block_dims.y; j++) {
         for (uint i = 0; i < block_dims.x; i++) {
-            imageStore(dest_image, coord + ivec3(i, j, 0), vec4(0.0, 0.0, 0.0, 0.0));
+            WriteTexel(coord, i, j, vec4(0.0, 0.0, 0.0, 0.0));
         }
     }
 }
@@ -1115,7 +1131,7 @@ void FillVoidExtentLDR(ivec3 coord) {
     const float b = float(b_u) / 65535.0f;
     for (uint j = 0; j < block_dims.y; j++) {
         for (uint i = 0; i < block_dims.x; i++) {
-            imageStore(dest_image, coord + ivec3(i, j, 0), vec4(r, g, b, a));
+            WriteTexel(coord, i, j, vec4(r, g, b, a));
         }
     }
 }
@@ -1389,7 +1405,7 @@ void DecompressBlock(ivec3 coord) {
                 p = Cf / 65535.0f;
             }
 
-            imageStore(dest_image, coord + ivec3(i, j, 0), clamp(p, 0.0f, 1.0f).gbar);
+            WriteTexel(coord, i, j, clamp(p, 0.0f, 1.0f).gbar);
         }
     }
 }
@@ -1402,8 +1418,176 @@ uint SwizzleOffset(uvec2 pos) {
            (pos.x & 15u);
 }
 
+#ifdef ASTC_BC_OUTPUT
+uvec4 BcTexel(uvec2 origin, uint k) {
+    const uint x = origin.x + (k & 3u);
+    const uint y = origin.y + (k >> 2u);
+    return (uvec4(block_texels[y * block_dims.x + x]) >> uvec4(0u, 8u, 16u, 24u)) & 0xFFu;
+}
+
+uint To565(ivec3 c) {
+    const uvec3 q = (uvec3(clamp(c, 0, 255)) * uvec3(31u, 63u, 31u) + 127u) / 255u;
+    return (q.r << 11u) | (q.g << 5u) | q.b;
+}
+
+ivec3 From565(uint c) {
+    const uvec3 q = uvec3(c >> 11u, (c >> 5u) & 63u, c & 31u);
+    return ivec3((q.r << 3u) | (q.r >> 2u), (q.g << 2u) | (q.g >> 4u), (q.b << 3u) | (q.b >> 2u));
+}
+
+bool HasTransparentTexel(uvec2 origin) {
+    for (uint k = 0; k < 16u; ++k) {
+        if (BcTexel(origin, k).a < 128u) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Color half of a BC1/BC3 block: bounding box endpoints, inset by a sixteenth and oriented along
+// the block's main diagonal (signs of the red-green and blue-green covariances), then the nearest
+// palette entry per texel. A BC1 block with transparent texels uses its three-color mode.
+uvec2 EncodeColor(uvec2 origin, bool punch_through) {
+    ivec3 lo = ivec3(255);
+    ivec3 hi = ivec3(0);
+    bool any_opaque = false;
+    for (uint k = 0; k < 16u; ++k) {
+        const uvec4 t = BcTexel(origin, k);
+        if (punch_through && t.a < 128u) {
+            continue;
+        }
+        lo = min(lo, ivec3(t.rgb));
+        hi = max(hi, ivec3(t.rgb));
+        any_opaque = true;
+    }
+    if (!any_opaque) {
+        return uvec2(0u, 0xFFFFFFFFu);
+    }
+    const ivec3 center = (lo + hi) / 2;
+    int cov_rg = 0;
+    int cov_bg = 0;
+    for (uint k = 0; k < 16u; ++k) {
+        const uvec4 t = BcTexel(origin, k);
+        if (punch_through && t.a < 128u) {
+            continue;
+        }
+        const ivec3 d = ivec3(t.rgb) - center;
+        cov_rg += d.r * d.g;
+        cov_bg += d.b * d.g;
+    }
+    const ivec3 inset = (hi - lo) >> 4;
+    lo += inset;
+    hi -= inset;
+    if (cov_rg < 0) {
+        const int r = lo.r;
+        lo.r = hi.r;
+        hi.r = r;
+    }
+    if (cov_bg < 0) {
+        const int b = lo.b;
+        lo.b = hi.b;
+        hi.b = b;
+    }
+    uint c0 = To565(hi);
+    uint c1 = To565(lo);
+    // Four colors need c0 > c1, three colors c0 <= c1
+    if (punch_through ? c0 > c1 : c0 < c1) {
+        const uint c = c0;
+        c0 = c1;
+        c1 = c;
+    }
+    if (c0 == c1 && !punch_through) {
+        return uvec2(c0 | (c1 << 16u), 0u);
+    }
+    const ivec3 p0 = From565(c0);
+    const ivec3 p1 = From565(c1);
+    ivec3 palette[4];
+    palette[0] = p0;
+    palette[1] = p1;
+    if (punch_through) {
+        palette[2] = (p0 + p1) / 2;
+        palette[3] = ivec3(0);
+    } else {
+        palette[2] = (2 * p0 + p1) / 3;
+        palette[3] = (p0 + 2 * p1) / 3;
+    }
+    const uint colors = punch_through ? 3u : 4u;
+    uint indices = 0u;
+    for (uint k = 0; k < 16u; ++k) {
+        const uvec4 t = BcTexel(origin, k);
+        uint best = 0u;
+        if (punch_through && t.a < 128u) {
+            best = 3u;
+        } else {
+            int best_distance = 0x7FFFFFFF;
+            for (uint c = 0; c < colors; ++c) {
+                const ivec3 d = ivec3(t.rgb) - palette[c];
+                const int distance = d.r * d.r + d.g * d.g + d.b * d.b;
+                if (distance < best_distance) {
+                    best_distance = distance;
+                    best = c;
+                }
+            }
+        }
+        indices |= best << (2u * k);
+    }
+    return uvec2(c0 | (c1 << 16u), indices);
+}
+
+// Alpha half of a BC3 block in its eight-value mode
+uvec2 EncodeAlpha(uvec2 origin) {
+    uint lo = 255u;
+    uint hi = 0u;
+    for (uint k = 0; k < 16u; ++k) {
+        const uint a = BcTexel(origin, k).a;
+        lo = min(lo, a);
+        hi = max(hi, a);
+    }
+    if (lo == hi) {
+        return uvec2(hi | (hi << 8u), 0u);
+    }
+    uvec2 bits = uvec2(hi | (lo << 8u), 0u);
+    for (uint k = 0; k < 16u; ++k) {
+        const uint a = BcTexel(origin, k).a;
+        // Level 0 is the low endpoint (index 1) and level 7 the high one (index 0)
+        const uint level = ((a - lo) * 14u + (hi - lo)) / (2u * (hi - lo));
+        const uint index = level == 7u ? 0u : level == 0u ? 1u : 8u - level;
+        const uint bit = 16u + 3u * k;
+        if (bit < 32u) {
+            bits.x |= index << bit;
+            if (bit > 29u) {
+                bits.y |= index >> (32u - bit);
+            }
+        } else {
+            bits.y |= index << (bit - 32u);
+        }
+    }
+    return bits;
+}
+
+void EncodeBlocks(ivec3 coord) {
+    const ivec2 bc_size = imageSize(dest_image).xy;
+    for (uint by = 0; by < block_dims.y / 4u; ++by) {
+        for (uint bx = 0; bx < block_dims.x / 4u; ++bx) {
+            const ivec3 bc_coord = ivec3(coord.x / 4 + int(bx), coord.y / 4 + int(by), coord.z);
+            if (any(greaterThanEqual(bc_coord.xy, bc_size))) {
+                continue;
+            }
+            const uvec2 origin = uvec2(bx, by) * 4u;
+            if (bc1_output != 0u) {
+                const uvec2 color = EncodeColor(origin, HasTransparentTexel(origin));
+                imageStore(dest_image, bc_coord, uvec4(color, 0u, 0u));
+            } else {
+                imageStore(dest_image, bc_coord, uvec4(EncodeAlpha(origin), EncodeColor(origin, false)));
+            }
+        }
+    }
+}
+#endif
+
 void main() {
     uvec3 pos = gl_GlobalInvocationID;
+    pos.z += first_layer;
     pos.x <<= BYTES_PER_BLOCK_LOG2;
     uint swizzle = SwizzleOffset(pos.xy);
     if (native_tiling != 0u) {
@@ -1421,9 +1605,18 @@ void main() {
     offset += swizzle;
 
     const ivec3 coord = ivec3(gl_GlobalInvocationID * uvec3(block_dims, 1));
+#ifdef ASTC_BC_OUTPUT
+    if (any(greaterThanEqual(ivec3(coord.xy / 4, coord.z), imageSize(dest_image)))) {
+        return;
+    }
+#else
     if (any(greaterThanEqual(coord, imageSize(dest_image)))) {
         return;
     }
+#endif
     local_buff = astc_data[offset / 16];
     DecompressBlock(coord);
+#ifdef ASTC_BC_OUTPUT
+    EncodeBlocks(coord);
+#endif
 }
