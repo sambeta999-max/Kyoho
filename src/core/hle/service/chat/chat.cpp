@@ -42,13 +42,29 @@ private:
 class IUserService final : public ServiceFramework<IUserService> {
 public:
     explicit IUserService(Core::System& system_) : ServiceFramework{system_, "chat:u"} {
+        // Commands whose proxies (sdk 0.x) take no data or one u32 and return only a result;
+        // GameChat never runs here, so they succeed without doing anything. Unknown commands
+        // would get no response and the client aborts with 2162-0005 (0x1a80a).
         static const FunctionInfo functions[] = {
             {0, D<&IUserService::CreateUserShimScopedObject>, "CreateUserShimScopedObject"},
+            {22, D<&IUserService::NoOp>, "Unknown22"},
+            {23, D<&IUserService::SetU32>, "Unknown23"},
+            {61, D<&IUserService::NoOp>, "Unknown61"},
         };
         RegisterHandlers(functions);
     }
 
 private:
+    Result NoOp() {
+        LOG_WARNING(Service, "(STUBBED) called");
+        R_SUCCEED();
+    }
+
+    Result SetU32(u32 value) {
+        LOG_WARNING(Service, "(STUBBED) called, value={:#x}", value);
+        R_SUCCEED();
+    }
+
     Result CreateUserShimScopedObject(OutInterface<IUserShimScopedObject> out_object) {
         *out_object = std::make_shared<IUserShimScopedObject>(system);
         R_SUCCEED();
