@@ -364,15 +364,8 @@ void Maxwell3D::RefreshParametersImpl() {
             current_index += segment.second;
             continue;
         }
-        // The front of a split GPU thread reads without flushing the rasterizer, as it reads
-        // command lists
-        if (front_macros) {
-            memory_manager.ReadBlockUnsafe(segment.first, &macro_params[current_index],
-                                           sizeof(u32) * segment.second);
-        } else {
-            memory_manager.ReadBlock(segment.first, &macro_params[current_index],
-                                     sizeof(u32) * segment.second);
-        }
+        memory_manager.ReadBlock(segment.first, &macro_params[current_index],
+                                 sizeof(u32) * segment.second);
         current_index += segment.second;
     }
 }
@@ -635,7 +628,11 @@ void Maxwell3D::FrontFlushMacro(Core::System& system) {
     const u32 entry = ((executing_macro - MacroRegistersStart) >> 1) %
                       static_cast<u32>(MacroPositions().size());
     executing_macro = 0;
-    RefreshParameters();
+    // No RefreshParameters: the front read GPU-written command lists after the back had
+    // written them back (SplitReadsGpuWritten), so the words it has are the ones to use. A
+    // suspended channel can run its macro after the guest has reused that memory, and reading
+    // it again gave macros command headers as parameters (Welcome Tour's loop count of 2^31,
+    // then a host GPU timeout)
     FrontMacroHost host{&system, *this, *front_regs, memory_manager};
     TuringMacro().Execute(MacroPositions()[entry], macro_params, host);
     auto& split = *VideoCommon::GpuSplit::Active();
