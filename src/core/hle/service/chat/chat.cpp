@@ -38,6 +38,31 @@ private:
     Kernel::KEvent* event{};
 };
 
+// nn::chat::detail::IVirtualCameraShimScopedObject. Its commands 0-5 take no data and return
+// only a result; without GameChat they do nothing.
+class IVirtualCameraShimScopedObject final
+    : public ServiceFramework<IVirtualCameraShimScopedObject> {
+public:
+    explicit IVirtualCameraShimScopedObject(Core::System& system_)
+        : ServiceFramework{system_, "IVirtualCameraShimScopedObject"} {
+        static const FunctionInfo functions[] = {
+            {0, D<&IVirtualCameraShimScopedObject::NoOp>, "Unknown0"},
+            {1, D<&IVirtualCameraShimScopedObject::NoOp>, "Unknown1"},
+            {2, D<&IVirtualCameraShimScopedObject::NoOp>, "Unknown2"},
+            {3, D<&IVirtualCameraShimScopedObject::NoOp>, "Unknown3"},
+            {4, D<&IVirtualCameraShimScopedObject::NoOp>, "Unknown4"},
+            {5, D<&IVirtualCameraShimScopedObject::NoOp>, "Unknown5"},
+        };
+        RegisterHandlers(functions);
+    }
+
+private:
+    Result NoOp() {
+        LOG_WARNING(Service, "(STUBBED) called");
+        R_SUCCEED();
+    }
+};
+
 // nn::chat::detail::IUserService, the GameChat interface of Switch 2 applications.
 class IUserService final : public ServiceFramework<IUserService> {
 public:
@@ -47,6 +72,8 @@ public:
         // would get no response and the client aborts with 2162-0005 (0x1a80a).
         static const FunctionInfo functions[] = {
             {0, D<&IUserService::CreateUserShimScopedObject>, "CreateUserShimScopedObject"},
+            {3, D<&IUserService::CreateVirtualCameraShimScopedObject>,
+             "CreateVirtualCameraShimScopedObject"},
             {22, D<&IUserService::NoOp>, "Unknown22"},
             {23, D<&IUserService::SetU32>, "Unknown23"},
             {61, D<&IUserService::NoOp>, "Unknown61"},
@@ -57,6 +84,14 @@ public:
 private:
     Result NoOp() {
         LOG_WARNING(Service, "(STUBBED) called");
+        R_SUCCEED();
+    }
+
+    // A u32 and a u64 (Nintendo Switch Sports Resort sends 1 and 0x3031) in, the object out
+    Result CreateVirtualCameraShimScopedObject(
+        Out<SharedPointer<IVirtualCameraShimScopedObject>> out_object, u32 kind, u64 parameter) {
+        LOG_WARNING(Service, "(STUBBED) called, kind={}, parameter={:#x}", kind, parameter);
+        *out_object = std::make_shared<IVirtualCameraShimScopedObject>(system);
         R_SUCCEED();
     }
 
