@@ -3066,6 +3066,8 @@ public:
             Maxwell3D::Regs::IndexBuffer index_buffer;
             u32 base_instance{};
             u32 instance_count{};
+            /// Deferred instances already drawn by flushes in the middle of the current loop
+            u32 drawn_instances{};
             std::vector<u8> inline_index_draw_indexes;
         };
         struct DrawTextureState {
@@ -3092,7 +3094,14 @@ public:
         };
         void ProcessMethodCall(Maxwell3D& maxwell3d, u32 method, u32 argument);
         void Clear(Maxwell3D& maxwell3d, u32 layer_count);
-        void DrawDeferred(Maxwell3D& maxwell3d);
+        /// Draws the waiting instances; loop_continues is set when the loop goes on afterwards
+        void DrawDeferred(Maxwell3D& maxwell3d, bool loop_continues = false);
+        /// Instances after the first wait to be drawn together (DrawDeferred)
+        [[nodiscard]] bool HasDeferredDraw() const noexcept {
+            return draw_state.draw_mode == DrawMode::Instance && draw_state.instance_count != 0;
+        }
+        /// Methods an instance loop writes between its draws; any other write ends the loop
+        [[nodiscard]] static bool IsInstanceLoopMethod(u32 method) noexcept;
         void DrawArray(Maxwell3D& maxwell3d, Maxwell3D::Regs::PrimitiveTopology topology, u32 vertex_first, u32 vertex_count, u32 base_instance, u32 num_instances);
         void DrawArrayInstanced(Maxwell3D& maxwell3d, Maxwell3D::Regs::PrimitiveTopology topology, u32 vertex_first, u32 vertex_count, bool subsequent);
         void DrawIndex(Maxwell3D& maxwell3d, Maxwell3D::Regs::PrimitiveTopology topology, u32 index_first, u32 index_count, u32 base_index, u32 base_instance, u32 num_instances);
