@@ -228,7 +228,9 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
                 gpu_memory.Read<u64>(ssbo_addr), gpu_memory.Read<u32>(ssbo_addr + 8),
                 desc.is_written ? " written" : ""));
         }
+        capture.binding_views.clear();
         for (size_t index = 0; index < views.size(); ++index) {
+            capture.binding_views.push_back(views[index].id.index);
             capture.bindings.push_back(fmt::format("  tex{} handle={:#x} {}", index,
                                                    views[index].index,
                                                    texture_cache.CaptureDescribe(views[index].id)));

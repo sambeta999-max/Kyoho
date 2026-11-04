@@ -173,6 +173,24 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
         info.size.depth != 1) {
         return false;
     }
+    // Debugging: EDEN_ASTC_CPU=<format>[,<format>...] decodes those ASTC formats on the CPU
+    static const std::vector<u32> cpu_formats{[] {
+        std::vector<u32> formats;
+        if (const char* value = std::getenv("EDEN_ASTC_CPU")) {
+            for (const char* it = value; *it != 0;) {
+                char* end{};
+                formats.push_back(static_cast<u32>(std::strtoul(it, &end, 10)));
+                it = *end == ',' ? end + 1 : end;
+                if (end == it && *it != 0) {
+                    break;
+                }
+            }
+        }
+        return formats;
+    }()};
+    if (std::ranges::find(cpu_formats, static_cast<u32>(info.format)) != cpu_formats.end()) {
+        return false;
+    }
     return VideoCore::Surface::AstcRecompressionFor(info.format) ==
                Settings::AstcRecompression::Uncompressed ||
            AstcBcMode(device, info.format) != 0;

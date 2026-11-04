@@ -481,7 +481,9 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
     ASSERT(samplers.size() == num_textures);
     texture_cache.FillImageViews(std::span(views.data(), views.size()), false, Spec::has_images);
     if (capture.Active()) {
+        capture.binding_views.clear();
         for (size_t index = 0; index < views.size(); ++index) {
+            capture.binding_views.push_back(views[index].id.index);
             capture.bindings.push_back(fmt::format(
                 "  s{} tex{} handle={:#x} {}", index < capture_view_stages.size() ? capture_view_stages[index] : 9,
                 index, views[index].index, texture_cache.CaptureDescribe(views[index].id)));

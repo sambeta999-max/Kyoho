@@ -12,12 +12,16 @@
 //   events as <out>/f<n>_e<event>_rt<i>.bin (raw texels, described by the event's "dump" line);
 //   an item h<hash> picks the draws with that shader hash, dumped before (_pre) and after, and
 //   writes their programs as <out>/capture_<hash>_<stage>.sph/.ash (the header, and the code for
-//   nvdisasm and the [corpus] test)
+//   nvdisasm and the [corpus] test); for a dispatch it writes every bound texture (first layer,
+//   whole 3D level) after it as <out>/f<n>_e<event>_tex<i>.bin instead
 // - EDEN_DRAW_PROBE=<x>,<y>[;<x>,<y>...] reads those texels of color render target 0 after every
 //   draw of the captured frames into a 2560x1440 target and logs the draws that change them
 //   ("probe" lines; each read waits for the GPU)
 // - EDEN_DRAW_SKIP=<hash>[,<hash>...] skips every draw or dispatch with one of these shader hashes,
 //   captured or not
+// - EDEN_DRAW_EVENTS=<n> makes a capture last <n> events instead of whole frames and writes the
+//   presents in it as "present" lines: presents can come from another thread than the draws
+//   (VI2), so frame boundaries drift once dumps and probes stall the draws
 // - EDEN_DRAW_CAPTURE_OUT picks <out> (default %TEMP%/drawcap)
 
 #include <algorithm>
@@ -91,6 +95,9 @@ public:
                 pos = end + 1;
             }
         }
+        if (const char* value = std::getenv("EDEN_DRAW_EVENTS")) {
+            event_budget = static_cast<u32>(std::max(0, std::atoi(value)));
+        }
         if (const char* value = std::getenv("EDEN_DRAW_CAPTURE_OUT")) {
             out_dir = value;
         } else if (const char* temp = std::getenv("TEMP")) {
@@ -108,6 +115,10 @@ public:
     /// Called once per frame by the rasterizer
     void TickFrame() {
         std::scoped_lock lock{mutex};
+        if (active && event_budget != 0) {
+            file << fmt::format("present at {:.3f} s, before e{}\n", Elapsed(), event.load());
+            return;
+        }
         if (active) {
             file << fmt::format("end frame {}\n", frame);
             file.flush();
@@ -140,8 +151,17 @@ public:
     }
 
     /// Index of the next event of the frame
-    [[nodiscard]] u32 NextEvent() noexcept {
-        return event++;
+    [[nodiscard]] u32 NextEvent() {
+        const u32 index{event++};
+        if (event_budget != 0 && index + 1 >= event_budget) {
+            std::scoped_lock lock{mutex};
+            if (active) {
+                file << fmt::format("end capture after e{}\n", index);
+                file.close();
+                active = false;
+            }
+        }
+        return index;
     }
 
     [[nodiscard]] bool ShouldDump(u32 index) const noexcept {
@@ -178,10 +198,24 @@ public:
         return true;
     }
 
+    /// Whether an image was not written yet in this capture
+    [[nodiscard]] bool FirstImageDump(u64 image) {
+        std::scoped_lock lock{mutex};
+        if (std::find(dumped_images.begin(), dumped_images.end(), image) != dumped_images.end()) {
+            return false;
+        }
+        dumped_images.push_back(image);
+        return true;
+    }
+
     /// Path of a program dump without its extension
     [[nodiscard]] std::string ProgramPath(u64 hash, size_t stage) const {
-        static constexpr const char* STAGES[]{"va", "vs", "tc", "te", "gs", "fs"};
+        static constexpr const char* STAGES[]{"va", "vs", "tc", "te", "gs", "fs", "cs"};
         return fmt::format("{}/capture_{:016x}_{}", out_dir, hash, STAGES[stage]);
+    }
+
+    [[nodiscard]] std::string TexturePath(u32 index, size_t binding, const char* suffix) const {
+        return fmt::format("{}/f{}_e{}{}_tex{}.bin", out_dir, frame, index, suffix, binding);
     }
 
     [[nodiscard]] std::string DumpPath(u32 index, u32 rt, const char* suffix) const {
@@ -210,6 +244,8 @@ public:
 
     /// Bindings a pipeline's configuration collected for the current event
     std::vector<std::string> bindings;
+    /// Image views the configuration bound, in the order of the "tex" binding lines
+    std::vector<u32> binding_views;
 
     struct Probe {
         u32 x;
@@ -243,11 +279,13 @@ private:
     u32 frames{1};
     u32 remaining{};
     u32 frame{};
-    u32 event{};
+    std::atomic<u32> event{};
+    u32 event_budget{};
     std::vector<std::pair<u32, u32>> dump_ranges;
     std::vector<u64> dump_hashes;
     std::vector<u64> dumped_programs;
     bool timed{};
+    std::vector<u64> dumped_images;
     bool active{};
 };
 

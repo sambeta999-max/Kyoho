@@ -305,24 +305,41 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
         if (dump_hash) {
             CaptureDumpTargets(event, "_pre");
             CaptureDumpPrograms(*pipeline);
+            // The fragment stage's constant buffers as bound now, <out>/f<n>_e<event>_c<i>.bin
+            const auto& cbufs{maxwell3d->state.shader_stages[4].const_buffers};
+            for (size_t index = 0; index < cbufs.size(); ++index) {
+                if (!cbufs[index].enabled || cbufs[index].size == 0) {
+                    continue;
+                }
+                std::vector<u8> data((std::min)(cbufs[index].size, 0x10000U));
+                gpu_memory->ReadBlockUnsafe(cbufs[index].address, data.data(), data.size());
+                const std::string path{capture.TexturePath(event, index, "_c")};
+                std::ofstream{path, std::ios::binary}.write(
+                    reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+                capture.Line(fmt::format("  dump e{} c{} {:#x} size {:#x} {}", event, index,
+                                         cbufs[index].address, cbufs[index].size, path));
+            }
         }
     }
     draw_func();
     if (dump_hash || capture.ShouldDump(event)) {
         CaptureDumpTargets(event);
     }
-    if (capture.Active() && !capture.probes.empty()) {
-        const auto id{texture_cache.CaptureRenderTargets().color_buffer_ids[0]};
+    if (dump_hash) {
+        CaptureDumpTextures(event, "");
+    }
+    const auto probe_id{capture.Active() && !capture.probes.empty()
+                            ? texture_cache.CaptureRenderTargets().color_buffer_ids[0]
+                            : VideoCommon::ImageViewId{}};
+    if (probe_id) {
+        const auto id{probe_id};
         const u64 image{texture_cache.CaptureImageIndex(id)};
         // Probe coordinates are for 2560x1440 targets and scale to the size of the others
-        std::vector<u8> full;
-        u32 target_width{};
-        u32 target_height{};
         const auto& view{texture_cache.GetImageView(id)};
-        target_width = view.size.width;
-        target_height = view.size.height;
+        const u32 target_width{view.size.width};
+        const u32 target_height{view.size.height};
         // Only the full-size targets: a download per draw waits for the GPU each time
-        const bool probe_target{id && target_width == 2560 && target_height == 1440};
+        const bool probe_target{target_width == 2560 && target_height == 1440};
         for (auto& probe : capture.probes) {
             if (!probe_target) {
                 break;
@@ -387,11 +404,14 @@ void RasterizerVulkan::CaptureDraw(u32 event, const GraphicsPipeline& pipeline) 
                                  hashes[1] != 0 ? hashes[1] : hashes[0], hashes[2], hashes[3],
                                  hashes[4], hashes[5])};
     text += fmt::format("\n  state depth_test={} depth_write={} depth_func={} cull={}/{} "
-                        "mask0={:#x} rt_count={}",
+                        "mask0={:#x} rt_count={} rt_map={}{}{}{}{}{}{}{}",
                         regs.depth_test_enable, regs.depth_write_enabled,
                         static_cast<u32>(regs.depth_test_func), regs.gl_cull_test_enabled,
                         static_cast<u32>(regs.gl_cull_face), regs.color_mask[0].raw,
-                        regs.rt_control.count.Value());
+                        regs.rt_control.count.Value(), regs.rt_control.Map(0),
+                        regs.rt_control.Map(1), regs.rt_control.Map(2), regs.rt_control.Map(3),
+                        regs.rt_control.Map(4), regs.rt_control.Map(5), regs.rt_control.Map(6),
+                        regs.rt_control.Map(7));
     const auto& targets{texture_cache.CaptureRenderTargets()};
     for (size_t index = 0; index < targets.color_buffer_ids.size(); ++index) {
         if (targets.color_buffer_ids[index]) {
@@ -437,6 +457,43 @@ void RasterizerVulkan::CaptureDumpTargets(u32 event, const char* suffix) {
         capture.Line(fmt::format("  dump e{}{} rt{} {}x{} fmt={} {}", event, suffix, index, width, height,
                                  static_cast<u32>(texture_cache.GetImageView(id).format), path));
     }
+}
+
+void RasterizerVulkan::CaptureDumpTextures(u32 event, const char* suffix) {
+    auto& capture{VideoCommon::DrawCapture::Get()};
+    for (size_t index = 0; index < capture.binding_views.size(); ++index) {
+        const VideoCommon::ImageViewId id{capture.binding_views[index]};
+        // Each image once per capture, named by its GPU address
+        if (!capture.FirstImageDump(texture_cache.CaptureImageIndex(id))) {
+            continue;
+        }
+        std::vector<u8> texels;
+        u32 width{};
+        u32 height{};
+        if (!texture_cache.CaptureDownload(id, texels, width, height)) {
+            continue;
+        }
+        const std::string path{capture.TexturePath(event, index, suffix)};
+        std::ofstream{path, std::ios::binary}.write(reinterpret_cast<const char*>(texels.data()),
+                                                    static_cast<std::streamsize>(texels.size()));
+        capture.Line(fmt::format("  dump e{}{} tex{} {}x{} fmt={} {}", event, suffix, index, width,
+                                 height, static_cast<u32>(texture_cache.GetImageView(id).format),
+                                 path));
+    }
+}
+
+void RasterizerVulkan::CaptureDumpComputeProgram(u64 hash) {
+    auto& capture{VideoCommon::DrawCapture::Get()};
+    if (!capture.FirstProgramDump(hash)) {
+        return;
+    }
+    // Compute programs have no header; the .sph is left empty
+    const auto [base, start]{kepler_compute->ShaderProgramLocation()};
+    std::vector<u8> code(0x10000);
+    gpu_memory->ReadBlockUnsafe(base + start, code.data(), code.size());
+    const std::string path{capture.ProgramPath(hash, 6)};
+    std::ofstream{path + ".ash", std::ios::binary}.write(reinterpret_cast<const char*>(code.data()),
+                                                         static_cast<std::streamsize>(code.size()));
 }
 
 void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
@@ -640,10 +697,12 @@ void RasterizerVulkan::Clear(u32 layer_count) {
     if (auto& capture{VideoCommon::DrawCapture::Get()}; capture.Active()) {
         const auto& targets{texture_cache.CaptureRenderTargets()};
         const u32 rt{regs.clear_surface.RT};
-        capture.Line(fmt::format("e{} clear mask={:#x} rt{} {} zeta {}", capture.NextEvent(),
-                                 regs.clear_surface.raw, rt,
+        capture.Line(fmt::format("e{} clear mask={:#x} rt{} {} zeta {} color={},{},{},{}",
+                                 capture.NextEvent(), regs.clear_surface.raw, rt,
                                  texture_cache.CaptureDescribe(targets.color_buffer_ids[rt]),
-                                 texture_cache.CaptureDescribe(targets.depth_buffer_id)));
+                                 texture_cache.CaptureDescribe(targets.depth_buffer_id),
+                                 regs.clear_color[0], regs.clear_color[1], regs.clear_color[2],
+                                 regs.clear_color[3]));
     }
 
     constexpr bool ENABLE_DEFERRED_CLEAR = true;
@@ -838,11 +897,14 @@ void RasterizerVulkan::DispatchCompute() {
                              texture_cache)) {
         return;
     }
+    u32 dispatch_event{};
+    const bool dump_dispatch{capture.Active() && capture.DumpHash(pipeline->ShaderHash())};
     if (capture.Active()) {
         const auto& launch{kepler_compute->launch_description};
         const auto indirect{kepler_compute->GetIndirectComputeAddress()};
+        dispatch_event = capture.NextEvent();
         std::string text{fmt::format("e{} dispatch cs={:016x} grid={}x{}x{} block={}x{}x{}{}",
-                                     capture.NextEvent(), pipeline->ShaderHash(),
+                                     dispatch_event, pipeline->ShaderHash(),
                                      launch.grid_dim_x, launch.grid_dim_y, launch.grid_dim_z,
                                      launch.block_dim_x, launch.block_dim_y, launch.block_dim_z,
                                      indirect ? fmt::format(" indirect={:#x}", *indirect) : "")};
@@ -851,7 +913,17 @@ void RasterizerVulkan::DispatchCompute() {
             text += binding;
         }
         capture.Line(text);
+        if (dump_dispatch) {
+            // Only after the dispatch: waiting for the GPU between the configuration and the
+            // dispatch would record the dispatch in a command buffer without the pipeline
+            CaptureDumpComputeProgram(pipeline->ShaderHash());
+        }
     }
+    const auto dump_after{[&] {
+        if (dump_dispatch) {
+            CaptureDumpTextures(dispatch_event, "");
+        }
+    }};
 
     const auto& qmd{kepler_compute->launch_description};
     auto indirect_address = kepler_compute->GetIndirectComputeAddress();
@@ -869,6 +941,7 @@ void RasterizerVulkan::DispatchCompute() {
             }
             cmdbuf.DispatchIndirect(indirect_buffer, indirect_offset);
         });
+        dump_after();
         return;
     }
     const std::array<u32, 3> dim{qmd.grid_dim_x, qmd.grid_dim_y, qmd.grid_dim_z};
@@ -891,6 +964,7 @@ void RasterizerVulkan::DispatchCompute() {
         }
         cmdbuf.Dispatch(dim[0], dim[1], dim[2]);
     });
+    dump_after();
 }
 
 void RasterizerVulkan::ResetCounter(VideoCommon::QueryType type) {

@@ -237,6 +237,10 @@ private:
     void CaptureDraw(u32 event, const GraphicsPipeline& pipeline);
     /// Draw capture: writes the color render targets after an event
     void CaptureDumpTargets(u32 event, const char* suffix = "");
+    /// Draw capture: writes the first layer of the textures the last configuration bound
+    void CaptureDumpTextures(u32 event, const char* suffix);
+    /// Draw capture: writes the program of the current compute launch
+    void CaptureDumpComputeProgram(u64 hash);
     /// Draw capture: writes the programs of the bound stages
     void CaptureDumpPrograms(const GraphicsPipeline& pipeline);
 };

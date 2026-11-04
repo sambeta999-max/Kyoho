@@ -274,17 +274,30 @@ bool TextureCache<P>::CaptureDownload(ImageViewId id, std::vector<u8>& out, u32&
     }
     Image& image{slot_images[view.image_id]};
     const PixelFormat format{image.info.format};
+    // ASTC decoded to RGBA8 (no BC recompression) downloads as its decoded texels
+    const bool decoded_astc{VideoCore::Surface::IsPixelFormatASTC(format) &&
+                            True(image.flags & ImageFlagBits::Converted) &&
+                            VideoCore::Surface::AstcRecompressionFor(format) ==
+                                Settings::AstcRecompression::Uncompressed};
     if (VideoCore::Surface::GetFormatType(format) != VideoCore::Surface::SurfaceType::ColorTexture ||
-        VideoCore::Surface::IsPixelFormatASTC(format) || VideoCore::Surface::IsPixelFormatBCn(format) ||
-        image.info.num_samples != 1 || image.info.type == ImageType::Buffer) {
+        (VideoCore::Surface::IsPixelFormatASTC(format) && !decoded_astc) ||
+        VideoCore::Surface::IsPixelFormatBCn(format) || image.info.num_samples != 1 ||
+        image.info.type == ImageType::Buffer) {
         return false;
     }
-    const s32 level{view.range.base.level - static_cast<s32>(image.host_level_offset)};
+    // EDEN_DRAW_DUMP_LEVEL=<n> downloads level n of the view instead of its base level
+    static const s32 extra_level{[] {
+        const char* value = std::getenv("EDEN_DRAW_DUMP_LEVEL");
+        return value ? std::atoi(value) : 0;
+    }()};
+    const s32 guest_level{(std::min)(view.range.base.level + (region == 0 ? extra_level : 0),
+                                     image.info.resources.levels - 1)};
+    const s32 level{guest_level - static_cast<s32>(image.host_level_offset)};
     if (level < 0) {
         return false;
     }
-    width = (std::max)(image.info.size.width >> view.range.base.level, 1U);
-    height = (std::max)(image.info.size.height >> view.range.base.level, 1U);
+    width = (std::max)(image.info.size.width >> guest_level, 1U);
+    height = (std::max)(image.info.size.height >> guest_level, 1U);
     Offset3D offset{0, 0, 0};
     if (region != 0) {
         // A region x, y of region x region texels instead of the whole level
@@ -295,7 +308,16 @@ bool TextureCache<P>::CaptureDownload(ImageViewId id, std::vector<u8>& out, u32&
         width = region;
         height = region;
     }
-    const size_t size{size_t{width} * height * VideoCore::Surface::BytesPerBlock(format)};
+    // A whole level of 3D images (region downloads stay one slice)
+    const u32 depth{image.info.type == ImageType::e3D && region == 0
+                        ? (std::max)(image.info.size.depth >> guest_level, 1U)
+                        : 1U};
+    const size_t texel_bytes{decoded_astc ? 4U : VideoCore::Surface::BytesPerBlock(format)};
+    // Every layer of arrays (whole-level downloads only)
+    const u32 layers{region == 0 && image.info.type == ImageType::e2D
+                         ? static_cast<u32>(image.info.resources.layers - view.range.base.layer)
+                         : 1U};
+    const size_t size{size_t{width} * height * depth * layers * texel_bytes};
     const std::array copies{BufferImageCopy{
         .buffer_offset = 0,
         .buffer_size = size,
@@ -304,10 +326,10 @@ bool TextureCache<P>::CaptureDownload(ImageViewId id, std::vector<u8>& out, u32&
         .image_subresource{
             .base_level = level,
             .base_layer = view.range.base.layer,
-            .num_layers = 1,
+            .num_layers = static_cast<s32>(layers),
         },
         .image_offset = offset,
-        .image_extent{width, height, 1},
+        .image_extent{width, height, depth},
     }};
     auto map{runtime.DownloadStagingBuffer(size)};
     image.DownloadMemory(map, copies);
