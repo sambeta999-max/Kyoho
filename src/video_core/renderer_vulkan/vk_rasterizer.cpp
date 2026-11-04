@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <memory>
 #include <mutex>
 
@@ -497,6 +498,25 @@ void RasterizerVulkan::CaptureDumpComputeProgram(u64 hash) {
 }
 
 void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
+    {
+        // A draw's first and count can come from memory a compute program should have written
+        // (a rejected program, or one not run yet); past 16M vertices they are garbage. Building
+        // the quad index buffer for one throws out of the GPU thread and ends the process, and
+        // indexed ones read far out of bounds. From Eglantine 92a1a0f703 (Hyrule Warriors: Age of
+        // Imprisonment entering new areas)
+        const auto& state = maxwell3d->draw_manager.draw_state;
+        const u64 first = is_indexed ? state.index_buffer.first : state.vertex_buffer.first;
+        const u64 count = is_indexed ? state.index_buffer.count : state.vertex_buffer.count;
+        constexpr u64 MaxVertices = u64{1} << 24;
+        if (first + count > MaxVertices) {
+            static std::atomic<u32> skipped{};
+            if (skipped.fetch_add(1, std::memory_order_relaxed) < 16) {
+                LOG_WARNING(Render_Vulkan, "Draw skipped: {} {} from {} (count past {})", count,
+                            is_indexed ? "indices" : "vertices", first, MaxVertices);
+            }
+            return;
+        }
+    }
     if (VideoCommon::DrawCapture::Get().Active()) {
         const DrawParams params{
             MakeDrawParams(maxwell3d->draw_manager.draw_state, instance_count, is_indexed)};
