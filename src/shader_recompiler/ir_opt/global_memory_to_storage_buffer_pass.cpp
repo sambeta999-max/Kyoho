@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <optional>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -63,6 +64,40 @@ struct StorageInfo {
     std::unordered_map<const IR::Inst*, std::optional<StorageBufferAddr>> biased_tracks;
     std::unordered_map<const IR::Inst*, std::optional<StorageBufferAddr>> unbiased_tracks;
 };
+
+/// Returns true when the instruction returns data read from memory (loads and atomics)
+bool IsMemoryRead(const IR::Inst& inst) {
+    switch (inst.GetOpcode()) {
+    case IR::Opcode::LoadGlobalU8:
+    case IR::Opcode::LoadGlobalS8:
+    case IR::Opcode::LoadGlobalU16:
+    case IR::Opcode::LoadGlobalS16:
+    case IR::Opcode::LoadGlobal32:
+    case IR::Opcode::LoadGlobal64:
+    case IR::Opcode::LoadGlobal128:
+    case IR::Opcode::LoadStorageU8:
+    case IR::Opcode::LoadStorageS8:
+    case IR::Opcode::LoadStorageU16:
+    case IR::Opcode::LoadStorageS16:
+    case IR::Opcode::LoadStorage32:
+    case IR::Opcode::LoadStorage64:
+    case IR::Opcode::LoadStorage128:
+    case IR::Opcode::LoadLocal:
+    case IR::Opcode::LoadSharedU8:
+    case IR::Opcode::LoadSharedS8:
+    case IR::Opcode::LoadSharedU16:
+    case IR::Opcode::LoadSharedS16:
+    case IR::Opcode::LoadSharedU32:
+    case IR::Opcode::LoadSharedU64:
+    case IR::Opcode::LoadSharedU128:
+        return true;
+    default:
+        break;
+    }
+    const std::string_view name{IR::NameOf(inst.GetOpcode())};
+    return name.starts_with("GlobalAtomic") || name.starts_with("StorageAtomic") ||
+           name.starts_with("SharedAtomic");
+}
 
 /// Returns true when the instruction is a global memory instruction
 bool IsGlobalMemory(const IR::Inst& inst) {
@@ -379,6 +414,29 @@ std::optional<StorageBufferAddr> Track(const IR::Value& value, const Bias* bias)
     return BreadthFirstSearch(value, pred);
 }
 
+/// Returns true when a word is data read from memory (directly or plus an offset), not something
+/// computed from constant buffer words
+bool IsLoadedWord(const IR::Value& value, int depth = 2) {
+    if (value.IsImmediate()) {
+        return false;
+    }
+    const IR::Inst* inst{value.InstRecursive()};
+    switch (inst->GetOpcode()) {
+    case IR::Opcode::CompositeExtractU32x2:
+    case IR::Opcode::CompositeExtractU32x3:
+    case IR::Opcode::CompositeExtractU32x4:
+        if (inst->Arg(0).IsImmediate()) {
+            return false;
+        }
+        return IsMemoryRead(*inst->Arg(0).InstRecursive());
+    case IR::Opcode::IAdd32:
+        return depth > 0 &&
+               (IsLoadedWord(inst->Arg(0), depth - 1) || IsLoadedWord(inst->Arg(1), depth - 1));
+    default:
+        return IsMemoryRead(*inst);
+    }
+}
+
 /// Constant buffer words a value is a sum of (immediate index and offset). Only additions (and the
 /// carries and copies around them) are followed: a pointer is added to offsets, while words that
 /// are multiplied, shifted or compared are strides, sizes and bounds.
@@ -489,6 +547,15 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info) 
         return result;
     };
     std::optional<StorageBufferAddr> storage_buffer{TrackPointerPair(*low_addr_info)};
+    if (!storage_buffer && low_addr_info->high && IsLoadedWord(*low_addr_info->high)) {
+        // The pointer itself was read from memory: the address it was read from says nothing
+        // about where it points (Donkey Kong Bananza stores through pointers it loads from a list
+        // at c0[0x110], which tracking would take for offsets into the list). Leave it to the
+        // global memory fallbacks.
+        LOG_INFO(Shader,
+                 "Global memory address is a pointer read from memory, using global fallbacks");
+        return;
+    }
     if (!storage_buffer) {
         storage_buffer = cached_track(&nvn_bias, info.biased_tracks);
     }
