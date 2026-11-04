@@ -208,11 +208,13 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
 
     RenderAppletCaptureLayer(framebuffers);
 
+    // Screenshots render offscreen, so they are taken while the window is hidden too
+    RenderScreenshot(framebuffers);
+
     if (!render_window.IsShown()) {
         return;
     }
 
-    RenderScreenshot(framebuffers);
     Frame* frame = present_manager.GetRenderFrame();
 
     scheduler.RequestOutsideRenderPassOperationContext();
