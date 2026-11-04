@@ -179,7 +179,15 @@ void FixedPipelineState::Refresh(Tegra::Engines::Maxwell3D& maxwell3d, DynamicFe
     for (size_t i = 0; i < regs.rt.size(); ++i) {
         color_formats[i] = static_cast<u8>(regs.rt[i].format);
     }
-    alpha_test_ref = std::bit_cast<u32>(regs.alpha_test_ref);
+    // The reference is part of the pipeline only while the test compares with it: games animate
+    // the register with the test off (text fading in and out), which made a new pipeline,
+    // translated on the GPU thread, for every value.
+    // From Eglantine 01fce03d24 (src/video_core/renderer_vulkan/fixed_pipeline_state.cpp).
+    const u32 packed_alpha_test = alpha_test_func.Value();
+    alpha_test_ref = packed_alpha_test != PackComparisonOp(Maxwell::ComparisonOp::Never_GL) &&
+                             packed_alpha_test != PackComparisonOp(Maxwell::ComparisonOp::Always_GL)
+                         ? std::bit_cast<u32>(regs.alpha_test_ref)
+                         : 0;
     point_size = std::bit_cast<u32>(regs.point_size);
 
     if (maxwell3d.dirty.flags[Dirty::VertexInput]) {

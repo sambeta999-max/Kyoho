@@ -5,15 +5,19 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <memory>
 #include <span>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 #include <bit>
 #include <numeric>
+#include <fmt/ranges.h>
 #include "common/cityhash.h"
 #include "common/fs/fs.h"
 #include "common/fs/path_util.h"
@@ -791,11 +795,109 @@ void PipelineCache::QueueVulkanPipelineCacheFlush() {
     });
 }
 
+namespace {
+// EDEN_PIPELINE_DIFF=1: for a new graphics pipeline whose shaders an earlier one uses too,
+// log which parts of the fixed state differ from that one (finds state that splits the same
+// draws into many pipelines, each translated on the GPU thread).
+// From Eglantine 01fce03d24 (src/video_core/renderer_vulkan/vk_pipeline_cache.cpp).
+void ReportNewPipelineKey(const GraphicsPipelineCacheKey& key) {
+    static const bool enabled = std::getenv("EDEN_PIPELINE_DIFF") != nullptr;
+    if (!enabled) {
+        return;
+    }
+    static std::unordered_map<u64, GraphicsPipelineCacheKey> last_by_shaders;
+    static u32 logged{};
+    const u64 shaders = Common::CityHash64(reinterpret_cast<const char*>(key.unique_hashes.data()),
+                                           sizeof(key.unique_hashes));
+    const auto [it, first] = last_by_shaders.try_emplace(shaders, key);
+    if (first) {
+        return;
+    }
+    const FixedPipelineState& now = key.state;
+    const FixedPipelineState& before = it->second.state;
+    std::string diffs;
+    if (now.raw1 != before.raw1) diffs += fmt::format(" raw1^{:#x}", now.raw1 ^ before.raw1);
+    if (now.raw2 != before.raw2) diffs += fmt::format(" raw2^{:#x}", now.raw2 ^ before.raw2);
+    if (now.color_formats != before.color_formats) {
+        diffs += fmt::format(" color_formats {:02x} -> {:02x}", fmt::join(before.color_formats, ""),
+                             fmt::join(now.color_formats, ""));
+    }
+    if (now.alpha_test_ref != before.alpha_test_ref) {
+        diffs += fmt::format(" alpha_test_ref {:#x} -> {:#x} (func {})", before.alpha_test_ref,
+                             now.alpha_test_ref, now.alpha_test_func.Value());
+    }
+    if (now.point_size != before.point_size) {
+        diffs += fmt::format(" point_size {:#x} -> {:#x}", before.point_size, now.point_size);
+    }
+    if (now.viewport_swizzles != before.viewport_swizzles) diffs += " viewport_swizzles";
+    if (now.attribute_types != before.attribute_types) {
+        diffs += fmt::format(" attribute_types^{:#x}", now.attribute_types ^ before.attribute_types);
+    }
+    if (std::memcmp(&now.dynamic_state, &before.dynamic_state, sizeof(now.dynamic_state)) != 0) {
+        diffs += " dynamic_state";
+    }
+    if (now.driver_id != before.driver_id || now.driver_version != before.driver_version) {
+        diffs += " driver";
+    }
+    const size_t size = now.Size();
+    const auto tail = [&](const char* name, size_t offset, size_t bytes) {
+        if (offset < size &&
+            std::memcmp(reinterpret_cast<const char*>(&now) + offset,
+                        reinterpret_cast<const char*>(&before) + offset,
+                        std::min(bytes, size - offset)) != 0) {
+            diffs += fmt::format(" {}", name);
+        }
+    };
+#define EDEN_PIPELINE_DIFF_TAIL(member)                                                                tail(#member, offsetof(FixedPipelineState, member), sizeof(FixedPipelineState::member))
+    EDEN_PIPELINE_DIFF_TAIL(attachments);
+    EDEN_PIPELINE_DIFF_TAIL(attributes);
+    EDEN_PIPELINE_DIFF_TAIL(binding_divisors);
+    EDEN_PIPELINE_DIFF_TAIL(vertex_strides);
+    EDEN_PIPELINE_DIFF_TAIL(xfb_state);
+    EDEN_PIPELINE_DIFF_TAIL(depth_bounds_min);
+    EDEN_PIPELINE_DIFF_TAIL(depth_bounds_max);
+    EDEN_PIPELINE_DIFF_TAIL(line_stipple_factor);
+    EDEN_PIPELINE_DIFF_TAIL(line_stipple_pattern);
+#undef EDEN_PIPELINE_DIFF_TAIL
+    it->second = key;
+    if (logged++ < 4000) {
+        LOG_WARNING(Render_Vulkan, "New pipeline for known shaders {:016x} differs in:{}", shaders,
+                 diffs.empty() ? std::string{" nothing in the key prefix"} : diffs);
+    }
+}
+
+// With EDEN_PIPELINE_DIFF, logs the graphics pipelines built on the GPU thread every 10 s and the
+// time they took. After Eglantine's ReportRuntimePipeline (src/video_core/renderer_vulkan/
+// vk_pipeline_cache.cpp).
+void ReportRuntimePipeline(std::chrono::steady_clock::time_point begin) {
+    static const bool enabled = std::getenv("EDEN_PIPELINE_DIFF") != nullptr;
+    if (!enabled) {
+        return;
+    }
+    static std::chrono::steady_clock::duration total{};
+    static u32 count{};
+    static auto window = std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
+    total += now - begin;
+    ++count;
+    if (now - window > std::chrono::seconds{10}) {
+        LOG_WARNING(Render_Vulkan, "Graphics pipelines in the last 10 s: {} built, {:.1f} ms",
+                    count, std::chrono::duration<double, std::milli>(total).count());
+        total = {};
+        count = 0;
+        window = now;
+    }
+}
+} // Anonymous namespace
+
 GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
     const auto [pair, is_new]{graphics_cache.try_emplace(graphics_key)};
     auto& pipeline{pair->second};
     if (is_new) {
+        ReportNewPipelineKey(graphics_key);
+        const auto begin = std::chrono::steady_clock::now();
         pipeline = CreateGraphicsPipeline();
+        ReportRuntimePipeline(begin);
     }
     if (!pipeline) {
         return nullptr;
