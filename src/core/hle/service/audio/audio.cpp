@@ -5,9 +5,13 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 
+#include "audio_core/audio_core.h"
+#include "audio_core/sink/sink.h"
+#include "audio_core/sink/sink_stream.h"
 #include "core/core.h"
 #include "core/memory.h"
 #include "core/hle/service/kernel_helpers.h"
@@ -225,8 +229,8 @@ private:
 // A stream's memory (sysmix::detail ring setup in the sdk): a 0x40-byte header at +0, the server's
 // block at +0x40 (u32 read index at +0x44), the client's block at +0x1000 (u32 write index at
 // +0x1004), then the frames at +0x1040, (buffer frames + 1) slots of channels * sample bytes. The
-// server here consumes the frames in real time and signals the data event; they are not mixed
-// into the audio output yet.
+// server here consumes the frames at the stream's rate, plays PCM16 streams through an output
+// sink stream of the audio core and signals the data event.
 class ISysmixStreamSession final : public ServiceFramework<ISysmixStreamSession> {
 public:
     ISysmixStreamSession(Core::System& system_, u64 memory_address_, u64 memory_size_)
@@ -261,6 +265,7 @@ public:
 
     ~ISysmixStreamSession() override {
         system.CoreTiming().UnscheduleEvent(tick_event);
+        CloseSink();
         service_context.CloseEvent(state_event);
         service_context.CloseEvent(data_event);
     }
@@ -268,6 +273,10 @@ public:
 private:
     static constexpr u64 ReadIndexOffset = 0x44;
     static constexpr u64 WriteIndexOffset = 0x1004;
+    static constexpr u64 FramesOffset = 0x1040;
+    static constexpr u32 SampleFormatPcm16 = 2;
+    /// Sink buffers kept queued ahead of playback (one tick each)
+    static constexpr u32 MaxQueuedBuffers = 8;
     static constexpr std::chrono::milliseconds TickPeriod{5};
 
     // StreamFormat (sample format, channels, rate), the buffer frame count and two option words
@@ -283,7 +292,20 @@ private:
             std::scoped_lock lock{mutex};
             capacity = buffer_frames + 1;
             frames_per_tick = std::max<u32>(1, static_cast<u32>(sample_rate) / 200);
+            frame_channels = static_cast<u32>(std::clamp(channels, 1, 6));
+            pcm16 = sample_format == SampleFormatPcm16;
             open = true;
+            CloseSinkLocked();
+            // The audio core's sinks run at 48 kHz: other rates are consumed but not played
+            if (pcm16 && sample_rate == 48'000) {
+                sink = &system.AudioCore().GetOutputSink();
+                sink_stream = sink->AcquireSinkStream(system, frame_channels, "SysmixStream",
+                                                      ::AudioCore::Sink::StreamType::Out);
+                if (sink_stream) {
+                    sink_stream->SetRingSize(MaxQueuedBuffers);
+                    sink_stream->Start();
+                }
+            }
         }
         system.CoreTiming().UnscheduleEvent(tick_event);
         system.CoreTiming().ScheduleLoopingEvent(TickPeriod, TickPeriod, tick_event);
@@ -296,6 +318,7 @@ private:
         {
             std::scoped_lock lock{mutex};
             open = false;
+            CloseSinkLocked();
         }
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(ResultSuccess);
@@ -348,13 +371,60 @@ private:
             return;
         }
         const u32 filled = write >= read ? write - read : write + capacity - read;
-        const u32 consumed = std::min(filled, frames_per_tick);
+        u32 consumed = std::min(filled, frames_per_tick);
+        // With a sink, consume only what it can queue: playback paces the stream
+        if (sink_stream && sink_stream->GetQueueSize() >= MaxQueuedBuffers) {
+            consumed = 0;
+        }
         if (consumed != 0) {
+            if (sink_stream && FramesOffset + u64{capacity} * frame_channels * 2 <= memory_size) {
+                PlayFrames(read, consumed);
+            }
             memory.Write32(memory_address + ReadIndexOffset, (read + consumed) % capacity);
         }
         const u32 free_frames = capacity - 1 - (filled - consumed);
         if (consumed != 0 || free_frames >= data_threshold) {
             data_event->Signal(system.Kernel());
+        }
+    }
+
+    // Copies frames [read, read + count) of the ring to the sink stream
+    void PlayFrames(u32 read, u32 count) {
+        auto& memory = system.ApplicationMemory();
+        samples.resize(size_t{count} * frame_channels);
+        const u32 first = std::min(count, capacity - read);
+        memory.ReadBlock(memory_address + FramesOffset + u64{read} * frame_channels * 2,
+                         samples.data(), size_t{first} * frame_channels * 2);
+        if (first < count) {
+            memory.ReadBlock(memory_address + FramesOffset, samples.data() + size_t{first} * frame_channels,
+                             size_t{count - first} * frame_channels * 2);
+        }
+        ::AudioCore::Sink::SinkBuffer buffer{
+            .frames = count,
+            .frames_played = 0,
+            .tag = ++buffer_tag,
+            .consumed = false,
+        };
+        if (const char* path = std::getenv("EDEN_SYSMIX_DUMP")) {
+            // Debugging: the raw PCM16 frames each stream played, appended to <path>
+            if (std::FILE* file = std::fopen(path, "ab")) {
+                std::fwrite(samples.data(), sizeof(s16), samples.size(), file);
+                std::fclose(file);
+            }
+        }
+        sink_stream->AppendBuffer(buffer, samples);
+    }
+
+    void CloseSink() {
+        std::scoped_lock lock{mutex};
+        CloseSinkLocked();
+    }
+
+    void CloseSinkLocked() {
+        if (sink_stream) {
+            sink_stream->Stop();
+            sink->CloseStream(sink_stream);
+            sink_stream = nullptr;
         }
     }
 
@@ -367,8 +437,14 @@ private:
     u64 memory_size;
     u32 capacity{};
     u32 frames_per_tick{};
+    u32 frame_channels{2};
     u32 data_threshold{};
+    bool pcm16{};
     bool open{};
+    ::AudioCore::Sink::Sink* sink{};
+    ::AudioCore::Sink::SinkStream* sink_stream{};
+    std::vector<s16> samples;
+    u64 buffer_tag{};
 };
 
 class ISysmixUserSession final : public ServiceFramework<ISysmixUserSession> {
