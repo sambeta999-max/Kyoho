@@ -329,18 +329,34 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
     if (dump_hash) {
         CaptureDumpTextures(event, "");
     }
-    const auto probe_id{capture.Active() && !capture.probes.empty()
-                            ? texture_cache.CaptureRenderTargets().color_buffer_ids[0]
-                            : VideoCommon::ImageViewId{}};
-    if (probe_id) {
+    // Color target 0 and the depth target (D32_FLOAT or D24_UNORM_S8_UINT)
+    std::array<VideoCommon::ImageViewId, 2> probe_ids{};
+    if (capture.Active() && !capture.probes.empty()) {
+        const auto& targets{texture_cache.CaptureRenderTargets()};
+        probe_ids = {targets.color_buffer_ids[0], targets.depth_buffer_id};
+    }
+    for (const auto probe_id : probe_ids) {
+        if (!probe_id) {
+            continue;
+        }
         const auto id{probe_id};
         const u64 image{texture_cache.CaptureImageIndex(id)};
-        // Probe coordinates are for 2560x1440 targets and scale to the size of the others
+        // Probe coordinates are for targets of EDEN_DRAW_PROBE_SIZE (<w>x<h>, default 2560x1440)
+        static const std::pair<u32, u32> probe_size{[] {
+            u32 w = 2560, h = 1440;
+            if (const char* value = std::getenv("EDEN_DRAW_PROBE_SIZE")) {
+                char* end{};
+                w = static_cast<u32>(std::strtoul(value, &end, 10));
+                h = (end && *end == 'x') ? static_cast<u32>(std::strtoul(end + 1, nullptr, 10)) : 0;
+            }
+            return std::pair{w, h};
+        }()};
         const auto& view{texture_cache.GetImageView(id)};
         const u32 target_width{view.size.width};
         const u32 target_height{view.size.height};
         // Only the full-size targets: a download per draw waits for the GPU each time
-        const bool probe_target{target_width == 2560 && target_height == 1440};
+        const bool probe_target{target_width == probe_size.first &&
+                                target_height == probe_size.second};
         for (auto& probe : capture.probes) {
             if (!probe_target) {
                 break;
@@ -348,8 +364,8 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
             std::vector<u8> texel;
             u32 width{};
             u32 height{};
-            const u32 x{static_cast<u32>(u64{probe.x} * target_width / 2560)};
-            const u32 y{static_cast<u32>(u64{probe.y} * target_height / 1440)};
+            const u32 x{probe.x};
+            const u32 y{probe.y};
             if (!texture_cache.CaptureDownload(id, texel, width, height, x, y, 1)) {
                 continue;
             }

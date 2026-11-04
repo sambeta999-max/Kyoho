@@ -15,8 +15,10 @@
 //   nvdisasm and the [corpus] test); for a dispatch it writes every bound texture (first layer,
 //   whole 3D level) after it as <out>/f<n>_e<event>_tex<i>.bin instead
 // - EDEN_DRAW_PROBE=<x>,<y>[;<x>,<y>...] reads those texels of color render target 0 after every
-//   draw of the captured frames into a 2560x1440 target and logs the draws that change them
+//   draw of the captured frames into a 2560x1440 target (EDEN_DRAW_PROBE_SIZE=<w>x<h> picks
+//   another size) and logs the draws that change them
 //   ("probe" lines; each read waits for the GPU)
+// - the probe also reads the depth target (D24_UNORM_S8_UINT: stencil in byte 0, depth above)
 // - EDEN_DRAW_SKIP=<hash>[,<hash>...] skips every draw or dispatch with one of these shader hashes,
 //   captured or not
 // - EDEN_DRAW_EVENTS=<n> makes a capture last <n> events instead of whole frames and writes the

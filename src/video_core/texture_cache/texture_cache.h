@@ -280,7 +280,11 @@ bool TextureCache<P>::CaptureDownload(ImageViewId id, std::vector<u8>& out, u32&
                             True(image.flags & ImageFlagBits::Converted) &&
                             VideoCore::Surface::AstcRecompressionFor(format) ==
                                 Settings::AstcRecompression::Uncompressed};
-    if (VideoCore::Surface::GetFormatType(format) != VideoCore::Surface::SurfaceType::ColorTexture ||
+    // D32_FLOAT and D24_UNORM_S8_UINT depth download too. For D24_UNORM_S8_UINT the stencil
+    // plane is copied over the start of the buffer: whole-level dumps have it in their first
+    // quarter, and a probe (one texel) reads the stencil in byte 0 and the depth in bytes 1-3
+    if ((VideoCore::Surface::GetFormatType(format) != VideoCore::Surface::SurfaceType::ColorTexture &&
+         format != PixelFormat::D32_FLOAT && format != PixelFormat::D24_UNORM_S8_UINT) ||
         (VideoCore::Surface::IsPixelFormatASTC(format) && !decoded_astc) ||
         VideoCore::Surface::IsPixelFormatBCn(format) || image.info.num_samples != 1 ||
         image.info.type == ImageType::Buffer) {
