@@ -24,6 +24,7 @@
 #include "video_core/texture_cache/samples_helper.h"
 #include "video_core/texture_cache/texture_cache_base.h"
 #include "video_core/texture_cache/util.h"
+#include "video_core/textures/astc.h"
 #include "video_core/textures/decoders.h"
 
 namespace VideoCommon {
@@ -1275,6 +1276,102 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
     auto staging = runtime.UploadStagingBuffer(MapSizeBytes(image));
     UploadImageContents(image, staging);
     runtime.InsertUploadMemoryBarrier();
+    if (IsPixelFormatASTC(image.info.format) && True(image.flags & ImageFlagBits::AcceleratedUpload) &&
+        VideoCore::Surface::AstcRecompressionFor(image.info.format) ==
+            Settings::AstcRecompression::Uncompressed) {
+        VerifyAstcUpload(image);
+    }
+}
+
+template <class P>
+void TextureCache<P>::VerifyAstcUpload(Image& image) {
+    // Debugging: EDEN_ASTC_VERIFY_ALL=<format> compares every GPU decode of that format with the
+    // CPU decoder, level by level (first layer), and logs the levels that differ
+    static const int verify_format{[] {
+        const char* value = std::getenv("EDEN_ASTC_VERIFY_ALL");
+        return value ? std::atoi(value) : -1;
+    }()};
+    if (verify_format != static_cast<int>(image.info.format) || image.host_level_offset != 0 ||
+        image.info.type != ImageType::e2D) {
+        return;
+    }
+    const PixelFormat format{image.info.format};
+    const u32 tile_w{VideoCore::Surface::DefaultBlockWidth(format)};
+    const u32 tile_h{VideoCore::Surface::DefaultBlockHeight(format)};
+    std::vector<u8> guest(image.guest_size_bytes);
+    gpu_memory->ReadBlockUnsafe(image.gpu_addr, guest.data(), guest.size());
+    std::vector<u8> linear(image.unswizzled_size_bytes);
+    const auto unswizzled{UnswizzleImage(*gpu_memory, image.gpu_addr, image.info, guest, linear)};
+    for (s32 level = 0; level < image.info.resources.levels; ++level) {
+        const u32 width{(std::max)(image.info.size.width >> level, 1U)};
+        const u32 height{(std::max)(image.info.size.height >> level, 1U)};
+        const size_t size{size_t{width} * height * 4};
+        const std::array copies{BufferImageCopy{
+            .buffer_offset = 0,
+            .buffer_size = size,
+            .buffer_row_length = width,
+            .buffer_image_height = height,
+            .image_subresource{.base_level = level, .base_layer = 0, .num_layers = 1},
+            .image_offset = {0, 0, 0},
+            .image_extent{width, height, 1},
+        }};
+        auto map{runtime.DownloadStagingBuffer(size)};
+        image.DownloadMemory(map, copies);
+        runtime.Finish();
+        std::vector<u8> cpu(size);
+        Tegra::Texture::ASTC::Decompress(
+            std::span<const u8>(linear).subspan(unswizzled[level].buffer_offset), width, height, 1,
+            tile_w, tile_h, cpu);
+        size_t bad{};
+        u32 first_x{};
+        u32 first_y{};
+        for (u32 ty = 0; ty < height; ++ty) {
+            for (u32 tx = 0; tx < width; ++tx) {
+                const size_t i{(size_t{ty} * width + tx) * 4};
+                int diff{};
+                for (int c = 0; c < 4; ++c) {
+                    diff = (std::max)(diff, std::abs(int(cpu[i + c]) - int(map.mapped_span[i + c])));
+                }
+                if (diff > 8 && bad++ == 0) {
+                    first_x = tx;
+                    first_y = ty;
+                }
+            }
+        }
+        if (bad != 0) {
+            // The alpha of the 6x6 (or whatever) block around the first difference, CPU then GPU
+            std::string cpu_alpha;
+            std::string gpu_alpha;
+            const u32 bx0{first_x / tile_w * tile_w};
+            const u32 by0{first_y / tile_h * tile_h};
+            for (u32 ty = by0; ty < (std::min)(by0 + tile_h, height); ++ty) {
+                for (u32 tx = bx0; tx < (std::min)(bx0 + tile_w, width); ++tx) {
+                    const size_t i{(size_t{ty} * width + tx) * 4 + 3};
+                    cpu_alpha += fmt::format("{:02x}", cpu[i]);
+                    gpu_alpha += fmt::format("{:02x}", map.mapped_span[i]);
+                }
+                cpu_alpha += '/';
+                gpu_alpha += '/';
+            }
+            LOG_WARNING(HW_GPU, "ASTC verify block alpha cpu={} gpu={}", cpu_alpha, gpu_alpha);
+            LOG_WARNING(HW_GPU,
+                        "ASTC verify gpu={:#x} fmt={} {}x{} levels={} layers={} block={}/{} "
+                        "level {}: {} of {} texels differ, first at {},{} cpu={:08x} gpu={:08x} "
+                        "block={}",
+                        image.gpu_addr, static_cast<u32>(format), image.info.size.width,
+                        image.info.size.height, image.info.resources.levels,
+                        image.info.resources.layers, image.info.block.height,
+                        image.info.block.depth, level, bad, size_t{width} * height, first_x,
+                        first_y,
+                        *reinterpret_cast<const u32*>(&cpu[(size_t{first_y} * width + first_x) * 4]),
+                        *reinterpret_cast<const u32*>(
+                            &map.mapped_span[(size_t{first_y} * width + first_x) * 4]),
+                        fmt::format("{:02x}", fmt::join(std::span<const u8>(
+                            linear.data() + unswizzled[level].buffer_offset +
+                                ((first_y / tile_h) * ((width + tile_w - 1) / tile_w) + first_x / tile_w) * 16,
+                            16), "")));
+        }
+    }
 }
 
 template <class P>

@@ -12,6 +12,7 @@
 #include "core/core.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/maxwell_dma.h"
+#include "video_core/draw_capture.h"
 #include "video_core/engines/semaphore.h"
 #include "video_core/guest_memory.h"
 #include "video_core/memory_manager.h"
@@ -82,6 +83,9 @@ void MaxwellDMA::Launch() {
         }
 
         if (is_src_pitch && is_dst_pitch) {
+            VideoCommon::DrawCapture::Get().EngineWrite(
+                "dma-lines", regs.offset_out, static_cast<u64>(regs.pitch_out) * regs.line_count, regs.offset_in,
+                false);
             for (u32 line = 0; line < regs.line_count; ++line) {
                 const GPUVAddr source_line =
                     regs.offset_in + static_cast<size_t>(line) * regs.pitch_in;
@@ -145,7 +149,12 @@ void MaxwellDMA::Launch() {
                         convert_linear_2_blocklinear_addr(regs.offset_out + offset), 16);
                 }
             } else {
-                if (!accelerate.BufferCopy(regs.offset_in, regs.offset_out, regs.line_length_in)) {
+                const bool accelerated{
+                    accelerate.BufferCopy(regs.offset_in, regs.offset_out, regs.line_length_in)};
+                VideoCommon::DrawCapture::Get().EngineWrite("dma", regs.offset_out,
+                                                            regs.line_length_in, regs.offset_in,
+                                                            accelerated);
+                if (!accelerated) {
                     Tegra::Memory::GpuGuestMemoryScoped<
                         u8, Tegra::Memory::GuestMemoryFlags::SafeReadCachedWrite>
                         tmp_write_buffer(memory_manager, regs.offset_in, regs.line_length_in,

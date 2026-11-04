@@ -283,7 +283,8 @@ struct System::Impl {
         exit_locked = false;
         exit_requested = false;
 
-        if (Settings::values.enable_renderdoc_hotkey) {
+        // EDEN_RENDERDOC=1 too, for scripted captures (the EDEN_SCRIPT g action)
+        if (Settings::values.enable_renderdoc_hotkey || std::getenv("EDEN_RENDERDOC") != nullptr) {
             renderdoc_api.emplace();
         }
 

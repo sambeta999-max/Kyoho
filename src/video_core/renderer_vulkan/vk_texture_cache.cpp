@@ -189,7 +189,26 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
         return formats;
     }()};
     if (std::ranges::find(cpu_formats, static_cast<u32>(info.format)) != cpu_formats.end()) {
-        return false;
+        // EDEN_ASTC_CPU_LAYERS=1 limits it to single images, =2 to arrays
+        static const int layer_filter{[] {
+            const char* value = std::getenv("EDEN_ASTC_CPU_LAYERS");
+            return value ? std::atoi(value) : 0;
+        }()};
+        // EDEN_ASTC_CPU_WIDTH=<w> limits it further to images that wide
+        static const u32 width_filter{[] {
+            const char* value = std::getenv("EDEN_ASTC_CPU_WIDTH");
+            return value ? static_cast<u32>(std::atoi(value)) : 0U;
+        }()};
+        // EDEN_ASTC_CPU_LEVELS=<n> limits it to images with n levels
+        static const s32 levels_filter{[] {
+            const char* value = std::getenv("EDEN_ASTC_CPU_LEVELS");
+            return value ? std::atoi(value) : 0;
+        }()};
+        if ((layer_filter == 0 || (layer_filter == 1) == (info.resources.layers == 1)) &&
+            (width_filter == 0 || width_filter == info.size.width) &&
+            (levels_filter == 0 || levels_filter == info.resources.levels)) {
+            return false;
+        }
     }
     return VideoCore::Surface::AstcRecompressionFor(info.format) ==
                Settings::AstcRecompression::Uncompressed ||

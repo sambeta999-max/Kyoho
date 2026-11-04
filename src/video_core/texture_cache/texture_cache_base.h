@@ -189,6 +189,9 @@ public:
     /// Draw capture: the image of a view
     [[nodiscard]] u64 CaptureImageIndex(ImageViewId id) const noexcept;
 
+    /// Debugging: compares a GPU ASTC decode with the CPU decoder (EDEN_ASTC_VERIFY_ALL)
+    void VerifyAstcUpload(Image& image);
+
     /// Handle feedback loops during draws.
     void CheckFeedbackLoop(std::span<const ImageViewInOut> views);
 

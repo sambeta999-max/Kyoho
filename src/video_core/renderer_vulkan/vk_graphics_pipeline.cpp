@@ -482,11 +482,24 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
     texture_cache.FillImageViews(std::span(views.data(), views.size()), false, Spec::has_images);
     if (capture.Active()) {
         capture.binding_views.clear();
+        // The TIC entry each handle selects: its address, the table limit, its first words and
+        // whether the buffer cache holds newer GPU-written data for it than guest memory
+        const GPUVAddr tic_base{regs.tex_header.Address()};
+        const u32 tic_limit{regs.tex_header.limit};
+        capture.SetWatchRange(tic_base, (u64{tic_limit} + 1) * 32);
         for (size_t index = 0; index < views.size(); ++index) {
             capture.binding_views.push_back(views[index].id.index);
+            const GPUVAddr entry{tic_base + u64{views[index].index} * 32};
+            std::array<u32, 4> words{};
+            gpu_memory->ReadBlockUnsafe(entry, words.data(), sizeof(words));
+            const auto cpu_entry{gpu_memory->GpuToCpuAddress(entry)};
+            const bool gpu_modified{cpu_entry && buffer_cache.IsRegionGpuModified(*cpu_entry, 32)};
             capture.bindings.push_back(fmt::format(
-                "  s{} tex{} handle={:#x} {}", index < capture_view_stages.size() ? capture_view_stages[index] : 9,
-                index, views[index].index, texture_cache.CaptureDescribe(views[index].id)));
+                "  s{} tex{} handle={:#x} {} tic={:#x}{} lim={:#x} words={:08x}{}",
+                index < capture_view_stages.size() ? capture_view_stages[index] : 9, index,
+                views[index].index, texture_cache.CaptureDescribe(views[index].id), entry,
+                views[index].index > tic_limit ? " OUT_OF_RANGE" : "", tic_limit,
+                fmt::join(words, ","), gpu_modified ? " GPU_MODIFIED" : ""));
         }
     }
 

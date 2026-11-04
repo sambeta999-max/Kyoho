@@ -242,6 +242,25 @@ public:
         }
     }
 
+    /// GPU range whose writes by the DMA and inline-to-memory engines are logged ("write" lines);
+    /// the rasterizer sets it to the texture header table of the last draw
+    void SetWatchRange(u64 address, u64 size) noexcept {
+        watch_address = address;
+        watch_size = size;
+    }
+
+    /// Logs a write by a copy engine if it overlaps the watched range
+    void EngineWrite(const char* engine, u64 dest, u64 size, u64 source, bool accelerated) {
+        if (!active || watch_size == 0 || dest + size <= watch_address ||
+            dest >= watch_address + watch_size) {
+            return;
+        }
+        Line(fmt::format("  write {} {:#x}+{:#x} from {:#x}{} (entries {:#x}-{:#x})", engine, dest,
+                         size, source, accelerated ? " gpu-side" : "",
+                         (dest > watch_address ? dest - watch_address : 0) / 32,
+                         (dest + size - watch_address - 1) / 32));
+    }
+
     /// Bindings a pipeline's configuration collected for the current event
     std::vector<std::string> bindings;
     /// Image views the configuration bound, in the order of the "tex" binding lines
@@ -286,6 +305,8 @@ private:
     std::vector<u64> dumped_programs;
     bool timed{};
     std::vector<u64> dumped_images;
+    u64 watch_address{};
+    u64 watch_size{};
     bool active{};
 };
 

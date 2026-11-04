@@ -9,6 +9,7 @@
 #include "common/algorithm.h"
 #include "common/assert.h"
 #include "video_core/engines/engine_upload.h"
+#include "video_core/draw_capture.h"
 #include "video_core/guest_memory.h"
 #include "video_core/memory_manager.h"
 #include "video_core/rasterizer_interface.h"
@@ -49,6 +50,7 @@ void State::ProcessData(const u32* data, size_t num_data) {
 
 void State::ProcessData(std::span<const u8> read_buffer) {
     const GPUVAddr address{regs.dest.Address()};
+    VideoCommon::DrawCapture::Get().EngineWrite("i2m", address, read_buffer.size(), 0, false);
     if (is_linear) {
         for (size_t line = 0; line < regs.line_count; ++line) {
             const GPUVAddr dest_line = address + line * regs.dest.pitch;

@@ -15,6 +15,9 @@ public:
 
     void ToggleCapture();
 
+    /// Captures the next `frames` presented frames (RenderDoc's TriggerMultiFrameCapture)
+    void TriggerCapture(unsigned frames);
+
 private:
     void* rdoc_api{};
     bool is_capturing{false};

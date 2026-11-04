@@ -37,6 +37,7 @@
 #include "core/file_sys/vfs/vfs_real.h"
 #include "core/hle/service/am/applet_manager.h"
 #include "core/hle/service/filesystem/filesystem.h"
+#include "core/tools/renderdoc.h"
 #include "core/loader/loader.h"
 #include "frontend_common/config.h"
 #include "core/frontend/framebuffer_layout.h"
@@ -227,6 +228,12 @@ void RunScript(std::stop_token stop, SdlState* state, std::string script, std::s
             return;
         }
         LOG_INFO(Frontend, "script: {}", action);
+        if (kind == 'g') {
+            // RenderDoc capture of the next presented frame (run under renderdoccmd with
+            // renderdoc_hotkey enabled)
+            state->system.GetRenderdocAPI().TriggerCapture(1);
+            continue;
+        }
         if (kind == 'c') {
             // Draw capture from the next frame on (video_core/draw_capture.h); EDEN_DRAW_FRAMES
             // sets how many frames
