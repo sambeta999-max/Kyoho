@@ -57,22 +57,19 @@ void GpuSplit::SetGpuWritten(DAddr address, u64 size) noexcept {
     }
 }
 
-bool GpuSplit::TakeGpuWritten(DAddr address, u64 size) noexcept {
+bool GpuSplit::WasGpuWritten(DAddr address, u64 size) const noexcept {
     if (size == 0) {
         return false;
     }
-    bool written = false;
     const u64 first = address >> PageBits;
     const u64 last = std::min<u64>((address + size - 1) >> PageBits, DevicePages - 1);
     for (u64 page = first; page <= last; ++page) {
-        auto& word = gpu_written[page / 64];
         const u64 bit = u64{1} << (page % 64);
-        if ((word.load(std::memory_order_acquire) & bit) != 0) {
-            word.fetch_and(~bit, std::memory_order_acq_rel);
-            written = true;
+        if ((gpu_written[page / 64].load(std::memory_order_acquire) & bit) != 0) {
+            return true;
         }
     }
-    return written;
+    return false;
 }
 
 GpuSplit::~GpuSplit() {

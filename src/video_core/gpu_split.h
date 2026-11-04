@@ -85,9 +85,10 @@ public:
             split->SetGpuWritten(address, size);
         }
     }
-    /// Whether the GPU wrote [address, +size) since the last call that covered it; clears the
-    /// note first, so a write the back notes meanwhile is seen next time
-    [[nodiscard]] bool TakeGpuWritten(DAddr address, u64 size) noexcept;
+    /// Whether the GPU ever wrote a page of [address, +size). The note is never cleared: the
+    /// work that rewrites such a page (a culling dispatch filling the next frame's command list)
+    /// may still be queued on the back when the front reads it, so it is not marked again yet
+    [[nodiscard]] bool WasGpuWritten(DAddr address, u64 size) const noexcept;
 
     [[nodiscard]] bool OnBackThread() const noexcept {
         return std::this_thread::get_id() == back_id;

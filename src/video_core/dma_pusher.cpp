@@ -314,11 +314,12 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
 
 bool DmaPusher::SplitReadsGpuWritten(VideoCommon::GpuSplit& split, GPUVAddr address,
                                      size_t size) {
-    // A lock-free note first; the buffer cache knows whether the data is still only on the GPU
+    // Pages the GPU ever wrote always take the drained, flushing read: whether their data is still
+    // only on the GPU can't be told before the back ran what the front queued (the dispatch that
+    // rewrites a command list each frame may not have run yet; its draws would then use an older
+    // frame's words). A lock-free check; for a range the GPU never wrote, nothing is only on it
     if (const auto device = memory_manager.GpuToCpuAddress(address, size)) {
-        if (!split.TakeGpuWritten(*device, size)) {
-            return false;
-        }
+        return split.WasGpuWritten(*device, size);
     }
     return memory_manager.IsMemoryDirty(address, size);
 }
