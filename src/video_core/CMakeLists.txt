@@ -98,6 +98,7 @@ add_library(video_core STATIC
     macro_memo.h
     macro_turing.cpp
     macro_turing.h
+    macro_turing_jit.h
     fence_manager.h
     gpu.cpp
     gpu.h

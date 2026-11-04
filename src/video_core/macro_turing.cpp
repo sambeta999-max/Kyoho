@@ -8,6 +8,9 @@
 #include "common/logging.h"
 #include "video_core/engines/semaphore.h"
 #include "video_core/macro_turing.h"
+#ifdef ARCHITECTURE_x86_64
+#include "video_core/macro_turing_jit.h"
+#endif
 
 namespace Tegra {
 namespace {
@@ -180,8 +183,13 @@ void TuringMacroEngine::Upload(u32 word) {
         LOG_ERROR(HW_GPU, "MME instruction RAM overflow");
         return;
     }
-    code[upload_word++] = word;
-    ++code_generation;
+    // Titles upload the same macros again; only a changed word makes the memo and the compiled
+    // code stale
+    if (code[upload_word] != word) {
+        code[upload_word] = word;
+        ++code_generation;
+    }
+    ++upload_word;
 }
 
 namespace {
@@ -191,6 +199,18 @@ bool MemoEnabled() {
         return value == nullptr || value[0] != '0';
     }();
     return enabled;
+}
+
+bool JitEnabled() {
+#ifdef ARCHITECTURE_x86_64
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_MME_JIT");
+        return value == nullptr || value[0] != '0';
+    }();
+    return enabled;
+#else
+    return false;
+#endif
 }
 
 bool MemoVerify() {
@@ -219,6 +239,10 @@ public:
 } // Anonymous namespace
 
 bool TuringMacroEngine::Execute(u32 start, std::span<const u32> parameters, Host& host) {
+    // Compiled code costs less than looking a call up in the memo
+    if (JitEnabled()) {
+        return ExecuteJit(start, parameters, host);
+    }
     if (!MemoEnabled()) {
         return Interpret(start, parameters, host);
     }
@@ -570,6 +594,40 @@ bool TuringMacroEngine::Interpret(u32 start, std::span<const u32> parameters, Ho
         pc = next_pc;
     }
     return fail("instruction limit exceeded");
+}
+
+bool TuringMacroEngine::ExecuteJit(u32 start, std::span<const u32> parameters, Host& host) {
+#ifdef ARCHITECTURE_x86_64
+    fifo.assign(parameters.begin(), parameters.end());
+    if (!jit) {
+        jit = std::make_shared<TuringMacroJit>();
+    }
+    if (jit->Prepare(code, code_generation)) {
+        static u64 compiles{};
+        if ((++compiles & (compiles - 1)) == 0) {
+            LOG_WARNING(HW_GPU, "MME macro code compiled {} times", compiles);
+        }
+    }
+    const auto result = jit->Execute(
+        start, fifo, data_ram, [&](u32 address) { return host.ReadState(address); },
+        [&](u32 method, u32 value) {
+            host.CallMethod(method, value);
+            return true;
+        },
+        [&](u32 operation) {
+            if (operation == EXTENDED_READ_FIFO_BARRIER) {
+                ReadFifoBarrier(host);
+            } else {
+                LOG_ERROR(HW_GPU, "Unknown MME extended operation {:#x}", operation);
+            }
+        });
+    if (!result.success) {
+        LOG_ERROR(HW_GPU, "MME macro at {:#x} failed: {}", start, result.error);
+    }
+    return result.success;
+#else
+    return Interpret(start, parameters, host);
+#endif
 }
 
 void TuringMacroEngine::ReadFifoBarrier(Host& host) {

@@ -15,6 +15,8 @@
 
 namespace Tegra {
 
+class TuringMacroJit;
+
 /// Macro engine of the Turing and later 3D classes (TU104 MME). Instructions are 96 bits: a
 /// predicate, two ALUs with a 16-bit immediate each and two method outputs. The encoding and the
 /// semantics follow Mesa src/nouveau/mme (mme_tu104.c, mme_tu104_sim.c; MIT, Collabora Ltd.).
@@ -46,7 +48,8 @@ public:
     /// Runs the macro starting at an instruction; false if it failed. A call that depends only on
     /// its parameters and the data RAM words it reads replays the effects of an identical earlier
     /// call (EDEN_MME_MEMO=0 turns this off, EDEN_MME_MEMO_VERIFY=1 interprets every replayed call
-    /// too and logs differences).
+    /// too and logs differences). On x86-64 the macro code runs compiled instead
+    /// (EDEN_MME_JIT=0 goes back to the memo and the interpreter).
     bool Execute(u32 start, std::span<const u32> parameters, Host& host);
 
     /// Handles the MME DMA methods of the 3D class; false for any other method
@@ -58,6 +61,7 @@ public:
 
 private:
     bool Interpret(u32 start, std::span<const u32> parameters, Host& host);
+    bool ExecuteJit(u32 start, std::span<const u32> parameters, Host& host);
     void Verify(u32 start, std::span<const u32> parameters, Host& host,
                 const MacroMemo::Effects& effects);
 
@@ -86,6 +90,8 @@ private:
 
     MacroMemo memo;
     u64 code_generation{};
+    /// The macro code compiled to x86-64, created on first use
+    std::shared_ptr<TuringMacroJit> jit;
     /// What the call being interpreted did, while it can still be remembered
     bool recording{};
     bool memo_ok{};
