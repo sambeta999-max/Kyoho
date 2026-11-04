@@ -9,6 +9,7 @@
 #include <array>
 #include <bitset>
 #include <cmath>
+#include <cstdlib>
 #include <limits>
 #include <optional>
 #include <type_traits>
@@ -3280,6 +3281,15 @@ private:
     u32 ProcessShadowRam(u32 method, u32 argument);
 
     void ProcessDirtyRegisters(u32 method, u32 argument);
+
+    /// Whether state register writes that keep the register's value are dropped (CallMethod)
+    static bool SkipSameValueWrites() {
+        static const bool skip = [] {
+            const char* value = std::getenv("EDEN_SKIP_SAME_WRITES");
+            return value == nullptr || value[0] != '0';
+        }();
+        return skip;
+    }
 
     void ConsumeSinkImpl(Core::System& system) override;
 
