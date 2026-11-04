@@ -161,10 +161,22 @@ void Run() {
     const char* const start_env = std::getenv("EDEN_HOST_SAMPLER_START");
     const auto start = std::chrono::steady_clock::now() +
                        std::chrono::seconds(start_env ? std::atoi(start_env) : 0);
+    // EDEN_HOST_SAMPLER_STOP=<seconds>: stop sampling then (after a last report), to profile a
+    // window of the run
+    const char* const stop_env = std::getenv("EDEN_HOST_SAMPLER_STOP");
+    const auto stop = stop_env ? std::chrono::steady_clock::now() +
+                                     std::chrono::seconds(std::atoi(stop_env))
+                               : std::chrono::steady_clock::time_point::max();
+    bool stopped = false;
     auto next_report = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     for (;;) {
-        if (std::chrono::steady_clock::now() < start) {
+        if (std::chrono::steady_clock::now() < start || stopped) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            continue;
+        }
+        if (std::chrono::steady_clock::now() >= stop) {
+            Report();
+            stopped = true;
             continue;
         }
         {
