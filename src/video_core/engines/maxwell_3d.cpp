@@ -4,6 +4,8 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <cstdlib>
 #include <optional>
@@ -1053,12 +1055,28 @@ void Maxwell3D::ProcessCBMultiData(const u32* start_base, u32 amount) {
     const GPUVAddr buffer_address = regs.const_buffer.Address();
     ASSERT(buffer_address != 0);
 
-    // Don't allow writing past the end of the buffer.
-    ASSERT(regs.const_buffer.offset <= regs.const_buffer.size);
-
-    const GPUVAddr address{buffer_address + regs.const_buffer.offset};
+    // Only the whole words that fit in the buffer are written. A method's data can continue
+    // across command list entries, so dropping just the words past the end keeps the contents
+    // independent of where the list was split; the offset still advances by the full size, as
+    // on the front of a split GPU thread. From Eglantine 217f0229ad
     const size_t copy_size = amount * sizeof(u32);
-    memory_manager.WriteBlockCached(address, start_base, copy_size);
+    const size_t room = regs.const_buffer.offset < regs.const_buffer.size
+                            ? regs.const_buffer.size - regs.const_buffer.offset
+                            : 0;
+    const size_t write_size = std::min(copy_size, room / sizeof(u32) * sizeof(u32));
+    if (write_size != 0) {
+        const GPUVAddr address{buffer_address + regs.const_buffer.offset};
+        memory_manager.WriteBlockCached(address, start_base, write_size);
+    }
+    if (write_size != copy_size) {
+        static std::atomic<bool> warned{};
+        if (!warned.exchange(true, std::memory_order_relaxed)) {
+            LOG_ERROR(HW_GPU,
+                      "Dropping constant buffer words past the end: offset={:#x}, size={:#x}, "
+                      "bytes={:#x}, written={:#x}",
+                      regs.const_buffer.offset, regs.const_buffer.size, copy_size, write_size);
+        }
+    }
 
     // Increment the current buffer position.
     regs.const_buffer.offset += static_cast<u32>(copy_size);
