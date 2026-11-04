@@ -4,7 +4,10 @@
 // SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <array>
 #include <cstring>
+
+#include <fmt/ranges.h>
 
 #include "common/algorithm.h"
 #include "common/assert.h"
@@ -51,6 +54,14 @@ void State::ProcessData(const u32* data, size_t num_data) {
 void State::ProcessData(std::span<const u8> read_buffer) {
     const GPUVAddr address{regs.dest.Address()};
     VideoCommon::DrawCapture::Get().EngineWrite("i2m", address, read_buffer.size(), 0, false);
+    if (auto& capture{VideoCommon::DrawCapture::Get()};
+        capture.Active() && read_buffer.size() <= 0x40) {
+        std::array<u32, 8> words{};
+        std::memcpy(words.data(), read_buffer.data(), std::min(read_buffer.size(), sizeof(words)));
+        capture.Line(fmt::format("i2m {:#x} size={:#x} linear={} lines={} data=[{}]", address,
+                                 read_buffer.size(), is_linear, regs.line_count,
+                                 fmt::join(words.begin(), words.begin() + (read_buffer.size() + 3) / 4, ",")));
+    }
     if (is_linear) {
         for (size_t line = 0; line < regs.line_count; ++line) {
             const GPUVAddr dest_line = address + line * regs.dest.pitch;

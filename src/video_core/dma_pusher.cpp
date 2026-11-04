@@ -6,9 +6,12 @@
 
 #include <bit>
 
+#include <fmt/ranges.h>
+
 #include "common/settings.h"
 #include "core/core.h"
 #include "video_core/dma_pusher.h"
+#include "video_core/draw_capture.h"
 #include "video_core/control/channel_state.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/gpu.h"
@@ -120,6 +123,18 @@ bool DmaPusher::Step() {
                 const size_t words = std::min<size_t>(dma_state.method_count, header.size);
                 auto* const payload_engine = subchannels[dma_state.subchannel];
                 const bool dirty = memory_manager.IsMemoryDirty(dma_state.dma_get, words * sizeof(u32));
+                if (auto& capture{VideoCommon::DrawCapture::Get()}; capture.Active()) {
+                    // Macro parameters fetched from memory (indirect draws): what the front read
+                    std::array<u32, 6> first{};
+                    memory_manager.ReadBlockUnsafe(dma_state.dma_get, first.data(),
+                                                   std::min<size_t>(words, first.size()) * sizeof(u32));
+                    capture.Line(fmt::format("pb macro {:#x} payload {:#x} words={} dirty={} "
+                                             "gpu_written={} split_safe={} first={}",
+                                             dma_state.method, dma_state.dma_get, words, dirty,
+                                             split != nullptr && SplitReadsGpuWritten(
+                                                 *split, dma_state.dma_get, words * sizeof(u32)),
+                                             split_safe, fmt::join(first, ",")));
+                }
                 if (split != nullptr && kepler_payload) {
                     // Compute data uploads run on the back of a split GPU thread
                     split->PushTask([payload_engine, dirty] { payload_engine->current_dirty = dirty; });

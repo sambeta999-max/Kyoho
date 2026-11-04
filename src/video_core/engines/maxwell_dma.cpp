@@ -70,6 +70,25 @@ void MaxwellDMA::Launch() {
         ReleaseSemaphore();
         return;
     }
+    if (auto& capture{VideoCommon::DrawCapture::Get()}; capture.Active()) {
+        const GPUVAddr dst{static_cast<GPUVAddr>(regs.offset_out)};
+        const u64 bytes{u64{regs.line_length_in} *
+                        (launch.multi_line_enable ? std::max<u32>(regs.line_count, 1) : 1)};
+        capture.EngineWrite("dma-launch", dst, bytes, static_cast<GPUVAddr>(regs.offset_in),
+                            false);
+        if (bytes <= 0x100) {
+            capture.Line(fmt::format(
+                "dma launch {:#x} <- {:#x} len={} lines={} multi={} remap={} layout={}/{} "
+                "kind={}/{}",
+                dst, static_cast<GPUVAddr>(regs.offset_in), static_cast<u32>(regs.line_length_in),
+                static_cast<u32>(regs.line_count), static_cast<u32>(launch.multi_line_enable.Value()),
+                static_cast<u32>(launch.remap_enable.Value()),
+                static_cast<u32>(launch.src_memory_layout.Value()),
+                static_cast<u32>(launch.dst_memory_layout.Value()),
+                static_cast<u32>(memory_manager.GetPageKind(static_cast<GPUVAddr>(regs.offset_in))),
+                static_cast<u32>(memory_manager.GetPageKind(dst))));
+        }
+    }
 
     if (launch.multi_line_enable) {
         const bool is_src_pitch = launch.src_memory_layout == LaunchDMA::MemoryLayout::PITCH;
@@ -104,6 +123,28 @@ void MaxwellDMA::Launch() {
         // TODO: allow multisized components.
         auto& accelerate = rasterizer->AccessAccelerateDMA();
         const bool is_const_a_dst = regs.remap_const.dst_x == RemapConst::Swizzle::CONST_A;
+        if (regs.launch_dma.remap_enable != 0) {
+            auto& capture{VideoCommon::DrawCapture::Get()};
+            if (capture.Active()) {
+                capture.EngineWrite("dma-remap", static_cast<GPUVAddr>(regs.offset_out),
+                                    regs.line_length_in, static_cast<GPUVAddr>(regs.offset_in),
+                                    false);
+                capture.Line(fmt::format(
+                    "dma remap {:#x} <- {:#x} len={} lines={} multi={} comp_size={} dst_comps={} "
+                    "src_comps={} swizzle={},{},{},{} a={:#x} b={:#x}",
+                    static_cast<GPUVAddr>(regs.offset_out), static_cast<GPUVAddr>(regs.offset_in),
+                    static_cast<u32>(regs.line_length_in), static_cast<u32>(regs.line_count),
+                    static_cast<u32>(regs.launch_dma.multi_line_enable.Value()),
+                    static_cast<u32>(regs.remap_const.component_size_minus_one) + 1,
+                    static_cast<u32>(regs.remap_const.num_dst_components_minus_one) + 1,
+                    static_cast<u32>(regs.remap_const.num_src_components_minus_one) + 1,
+                    static_cast<u32>(regs.remap_const.dst_x.Value()),
+                    static_cast<u32>(regs.remap_const.dst_y.Value()),
+                    static_cast<u32>(regs.remap_const.dst_z.Value()),
+                    static_cast<u32>(regs.remap_const.dst_w.Value()),
+                    regs.remap_const.remap_consta_value, regs.remap_const.remap_constb_value));
+            }
+        }
         if (regs.launch_dma.remap_enable != 0 && is_const_a_dst) {
             const u32 component_size = regs.remap_const.component_size_minus_one + 1;
             ASSERT(component_size == 1 || component_size == 2 || component_size == 4);

@@ -5,6 +5,7 @@
 #include <array>
 
 #include "common/logging.h"
+#include "video_core/draw_capture.h"
 #include "video_core/engines/semaphore.h"
 #include "video_core/memory_manager.h"
 #include "video_core/query_cache/types.h"
@@ -55,6 +56,9 @@ u64 ReduceSemaphore(SemaphoreReduction op, u64 old_value, u64 value, bool is_sig
 
 void ReleaseSemaphore(VideoCore::RasterizerInterface& rasterizer, MemoryManager& memory_manager,
                       const SemaphoreRelease& release) {
+    VideoCommon::DrawCapture::Get().EngineWrite(release.payload_64 ? "sem64" : "sem32",
+                                                release.address, release.payload_64 ? 8 : 4,
+                                                release.payload, release.reduction.has_value());
     // The query cache writes a 32-bit payload, or with a timestamp the payload zero extended to
     // 64 bits followed by the timestamp
     const bool fits_query = !release.payload_64 || (release.timestamp && (release.payload >> 32) == 0);
@@ -208,6 +212,8 @@ void ReportSemaphore::Execute(VideoCore::RasterizerInterface& rasterizer,
             ReleaseSemaphore(rasterizer, memory_manager, release);
             return;
         }
+        VideoCommon::DrawCapture::Get().EngineWrite("report32", release.address, 4,
+                                                    release.payload, report != 0);
         // As SET_REPORT_SEMAPHORE_D: long reports carry a timestamp, short releases are fences.
         // Two word counter reports are written as one word.
         VideoCommon::QueryPropertiesFlags flags{};

@@ -7,11 +7,14 @@
 #pragma once
 
 #include <algorithm>
+#include <cstring>
 #include <memory>
 #include <numeric>
 
 #include "common/range_sets.inc"
 #include "video_core/buffer_cache/buffer_cache_base.h"
+#include <fmt/ranges.h>
+#include "video_core/draw_capture.h"
 #include "video_core/guest_memory.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/texture_cache/util.h"
@@ -718,6 +721,17 @@ void BufferCache<P>::PopAsyncBuffers() {
         // Only what no write replaced since the copy was taken: the rest is older than guest
         // memory (CPU writes) or than the GPU's copy (GPU writes, still to be downloaded)
         ranges.ForEachInRange(device_addr, copy.size, [&](DAddr start, DAddr end) {
+            if (auto& capture{VideoCommon::DrawCapture::Get()};
+                capture.DeviceWatched(start, end - start)) {
+                std::array<u32, 5> old_words{};
+                std::array<u32, 5> new_words{};
+                const size_t bytes{std::min<size_t>(end - start, sizeof(old_words))};
+                device_memory.ReadBlockUnsafe(start, old_words.data(), bytes);
+                std::memcpy(new_words.data(), &read_mapped_memory[start - device_addr], bytes);
+                capture.Line(fmt::format("  watch async download {:#x}-{:#x} guest [{}] -> [{}]",
+                                         start, end, fmt::join(old_words, ","),
+                                         fmt::join(new_words, ",")));
+            }
             device_memory.WriteBlockUnsafe(start, &read_mapped_memory[start - device_addr],
                                            end - start);
             gpu_modified_ranges.Subtract(start, end - start);
@@ -1981,6 +1995,11 @@ void BufferCache<P>::DownloadBufferMemory(Buffer& buffer, DAddr device_addr, u64
             // Undo the modified offset
             const u64 dst_offset = copy.dst_offset - download_staging.offset;
             const u8* copy_mapped_memory = mapped_memory + dst_offset;
+            if (auto& capture{VideoCommon::DrawCapture::Get()};
+                capture.DeviceWatched(copy_device_addr, copy.size)) {
+                capture.Line(fmt::format("  watch download {:#x}+{:#x}", copy_device_addr,
+                                         copy.size));
+            }
             device_memory.WriteBlockUnsafe(copy_device_addr, copy_mapped_memory, copy.size);
         }
     } else {

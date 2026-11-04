@@ -17,6 +17,7 @@
 #include "core/core.h"
 #include "core/core_timing.h"
 #include "video_core/dirty_flags.h"
+#include "video_core/draw_capture.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/semaphore.h"
@@ -101,10 +102,18 @@ public:
     void ReadMemory(GPUVAddr address, std::span<u32> data) override {
         VideoCommon::GpuSplit::Active()->Drain();
         memory_manager.ReadBlock(address, data.data(), data.size_bytes());
+        if (auto& capture{VideoCommon::DrawCapture::Get()}; capture.Active()) {
+            capture.Line(fmt::format("  macro read {:#x} {}", address,
+                                     fmt::join(data.begin(), data.begin() + std::min<size_t>(data.size(), 8), ",")));
+        }
     }
 
     void WriteMemory(GPUVAddr address, std::span<const u32> data) override {
         VideoCommon::GpuSplit::Active()->Drain();
+        if (auto& capture{VideoCommon::DrawCapture::Get()}; capture.Active()) {
+            capture.Line(fmt::format("  macro write {:#x} {}", address,
+                                     fmt::join(data.begin(), data.begin() + std::min<size_t>(data.size(), 8), ",")));
+        }
         memory_manager.WriteBlock(address, data.data(), data.size_bytes());
     }
 
@@ -649,6 +658,20 @@ void Maxwell3D::FrontFlushMacro(Core::System& system) {
     // suspended channel can run its macro after the guest has reused that memory, and reading
     // it again gave macros command headers as parameters (Welcome Tour's loop count of 2^31,
     // then a host GPU timeout)
+    if (auto& capture{VideoCommon::DrawCapture::Get()}; capture.Active()) {
+        std::string segments;
+        for (size_t i = 0; i < std::min<size_t>(macro_segments.size(), 3); ++i) {
+            segments += fmt::format(" seg {:#x}+{}", macro_segments[i].first,
+                                    macro_segments[i].second);
+        }
+        capture.Line(fmt::format("front macro {} at {:#x} params={}{}", entry,
+                                 MacroPositions()[entry],
+                                 fmt::join(macro_params.begin(),
+                                           macro_params.begin() +
+                                               std::min<size_t>(macro_params.size(), 10),
+                                           ","),
+                                 segments));
+    }
     FrontMacroHost host{&system, *this, *front_regs, memory_manager};
     TuringMacro().Execute(MacroPositions()[entry], macro_params, host);
     auto& split = *VideoCommon::GpuSplit::Active();
@@ -798,6 +821,14 @@ void Maxwell3D::CallMacroMethod(Core::System& system, u32 method, const std::vec
     // Execute the current macro.
     if (is_ampere) {
         RefreshParameters();
+        if (auto& capture{VideoCommon::DrawCapture::Get()}; capture.Active()) {
+            capture.Line(fmt::format("macro {} at {:#x} dirty={} params={}", entry,
+                                     MacroPositions()[entry], current_macro_dirty,
+                                     fmt::join(parameters.begin(),
+                                               parameters.begin() +
+                                                   std::min<size_t>(parameters.size(), 10),
+                                               ",")));
+        }
         TuringMacroHost host{&system, *this, memory_manager};
         TuringMacro().Execute(MacroPositions()[entry], parameters, host);
     } else {
@@ -932,6 +963,7 @@ void Maxwell3D::ProcessQueryGet() {
         static_cast<VideoCommon::QueryType>(regs.report_semaphore.query.report.Value());
     const u32 payload = regs.report_semaphore.payload;
     const u32 subreport = regs.report_semaphore.query.sub_report;
+    VideoCommon::DrawCapture::Get().EngineWrite("report", sequence_address, 16, payload, false);
     switch (regs.report_semaphore.query.operation) {
     case Regs::ReportSemaphore::Operation::Release:
     case Regs::ReportSemaphore::Operation::ReportOnly:
@@ -970,6 +1002,19 @@ void Maxwell3D::ProcessQueryGet() {
 }
 
 void Maxwell3D::ProcessQueryCondition() {
+    SCOPE_EXIT {
+        if (auto& capture{VideoCommon::DrawCapture::Get()}; capture.Active()) {
+            std::array<u32, 4> words{};
+            memory_manager.ReadBlockUnsafe(regs.render_enable.Address(), words.data(),
+                                           sizeof(words));
+            capture.Line(fmt::format("render enable override={} mode={} address={:#x} "
+                                     "guest=[{:#x},{:#x},{:#x},{:#x}] execute={}",
+                                     static_cast<u32>(regs.render_enable_override),
+                                     static_cast<u32>(regs.render_enable.mode),
+                                     regs.render_enable.Address(), words[0], words[1], words[2],
+                                     words[3], execute_on));
+        }
+    };
     if (rasterizer->AccelerateConditionalRendering()) {
         execute_on = true;
         return;

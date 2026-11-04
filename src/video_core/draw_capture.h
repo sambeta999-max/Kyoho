@@ -247,8 +247,19 @@ public:
     /// GPU range whose writes by the DMA and inline-to-memory engines are logged ("write" lines);
     /// the rasterizer sets it to the texture header table of the last draw
     void SetWatchRange(u64 address, u64 size) noexcept {
-        watch_address = address;
-        watch_size = size;
+        // EDEN_DRAW_CAPTURE_WATCH=<gpu address>+<size> (hex) watches that range instead
+        static const std::pair<u64, u64> fixed{[] {
+            const char* const value{std::getenv("EDEN_DRAW_CAPTURE_WATCH")};
+            if (value == nullptr) {
+                return std::pair<u64, u64>{};
+            }
+            char* end{};
+            const u64 base{std::strtoull(value, &end, 16)};
+            const u64 length{*end == '+' ? std::strtoull(end + 1, nullptr, 16) : 0x1000};
+            return std::pair{base, length};
+        }()};
+        watch_address = fixed.second != 0 ? fixed.first : address;
+        watch_size = fixed.second != 0 ? fixed.second : size;
     }
 
     /// Logs a write by a copy engine if it overlaps the watched range
@@ -267,6 +278,15 @@ public:
     std::vector<std::string> bindings;
     /// Image views the configuration bound, in the order of the "tex" binding lines
     std::vector<u32> binding_views;
+    /// Device range whose CPU writes and buffer downloads are logged (the first small written
+    /// storage buffer of the capture)
+    std::atomic<u64> device_watch{};
+    static constexpr u64 DeviceWatchSize = 0x40;
+
+    [[nodiscard]] bool DeviceWatched(u64 address, u64 size) const noexcept {
+        const u64 watch{device_watch.load(std::memory_order_relaxed)};
+        return active && watch != 0 && address < watch + DeviceWatchSize && watch < address + size;
+    }
 
     struct Probe {
         u32 x;

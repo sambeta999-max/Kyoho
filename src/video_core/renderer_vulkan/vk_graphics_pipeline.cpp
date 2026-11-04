@@ -5,11 +5,13 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <iostream>
 #include <span>
 
 #include <boost/container/small_vector.hpp>
+#include <fmt/ranges.h>
 #include <boost/container/static_vector.hpp>
 #include <fmt/format.h>
 
@@ -388,10 +390,25 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
             const auto& stage_cbufs{maxwell3d->state.shader_stages[stage].const_buffers};
             for (const auto& desc : info.storage_buffers_descriptors) {
                 const GPUVAddr ssbo_addr{stage_cbufs[desc.cbuf_index].address + desc.cbuf_offset};
+                const GPUVAddr ssbo_base{gpu_memory->Read<u64>(ssbo_addr)};
+                const u32 ssbo_size{gpu_memory->Read<u32>(ssbo_addr + 8)};
+                std::string guest;
+                if (ssbo_size <= 0x40) {
+                    // Small buffers (counters): their guest words before the draw
+                    std::array<u32, 5> words{};
+                    gpu_memory->ReadBlockUnsafe(ssbo_base, words.data(), sizeof(words));
+                    guest = fmt::format(" guest=[{}]", fmt::join(words, ","));
+                    if (desc.is_written && capture.device_watch.load() == 0) {
+                        if (const auto device{gpu_memory->GpuToCpuAddress(ssbo_base)}) {
+                            capture.device_watch.store(*device);
+                            guest += fmt::format(" watched device={:#x}", *device);
+                        }
+                    }
+                }
                 capture.bindings.push_back(fmt::format(
-                    "  s{} ssbo c{}[{:#x}] = {:#x} size {:#x}{}", stage, desc.cbuf_index,
-                    desc.cbuf_offset, gpu_memory->Read<u64>(ssbo_addr),
-                    gpu_memory->Read<u32>(ssbo_addr + 8), desc.is_written ? " written" : ""));
+                    "  s{} ssbo c{}[{:#x}] = {:#x} size {:#x}{}{}", stage, desc.cbuf_index,
+                    desc.cbuf_offset, ssbo_base, ssbo_size, desc.is_written ? " written" : "",
+                    guest));
             }
         }
         if constexpr (Spec::has_storage_buffers) {

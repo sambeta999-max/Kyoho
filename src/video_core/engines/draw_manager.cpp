@@ -8,6 +8,7 @@
 
 #include "common/settings.h"
 #include "video_core/dirty_flags.h"
+#include "video_core/draw_capture.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/rasterizer_interface.h"
 
@@ -317,6 +318,11 @@ void Maxwell3D::DrawManager::ProcessDraw(Maxwell3D& maxwell3d, bool draw_indexed
     UpdateTopology(maxwell3d);
     if (maxwell3d.ShouldExecute()) {
         maxwell3d.rasterizer->Draw(draw_indexed, instance_count);
+    } else if (auto& capture{VideoCommon::DrawCapture::Get()}; capture.Active()) {
+        capture.Line(fmt::format("draw not rendered (render enable): {} count={}",
+                                 draw_indexed ? "indexed" : "", draw_indexed
+                                     ? draw_state.index_buffer.count
+                                     : draw_state.vertex_buffer.count));
     }
 }
 
@@ -325,6 +331,8 @@ void Maxwell3D::DrawManager::ProcessDrawIndirect(Maxwell3D& maxwell3d) {
     UpdateTopology(maxwell3d);
     if (maxwell3d.ShouldExecute()) {
         maxwell3d.rasterizer->DrawIndirect();
+    } else if (auto& capture{VideoCommon::DrawCapture::Get()}; capture.Active()) {
+        capture.Line("indirect draw not rendered (render enable)");
     }
 }
 } // namespace Tegra::Engines

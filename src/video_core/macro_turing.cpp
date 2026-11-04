@@ -7,6 +7,8 @@
 
 #include "common/logging.h"
 #include "video_core/engines/semaphore.h"
+#include <fmt/ranges.h>
+#include "video_core/draw_capture.h"
 #include "video_core/macro_turing.h"
 #ifdef ARCHITECTURE_x86_64
 #include "video_core/macro_turing_jit.h"
@@ -674,6 +676,13 @@ bool TuringMacroEngine::ProcessMethod(u32 method, u32 value, Host& host) {
             return true;
         }
         const std::span<u32> words{&data_ram[data_ram_address], value};
+        if (auto& capture{VideoCommon::DrawCapture::Get()}; capture.Active()) {
+            capture.Line(fmt::format("mme dma {} {:#x} words={} data=[{}]",
+                                     method == MME_DMA_READ ? "read" : "write", MemoryAddress(),
+                                     value,
+                                     fmt::join(words.begin(),
+                                               words.begin() + std::min<size_t>(value, 6), ",")));
+        }
         if (method == MME_DMA_READ) {
             host.ReadMemory(MemoryAddress(), words);
         } else {
@@ -705,6 +714,10 @@ bool TuringMacroEngine::ProcessMethod(u32 method, u32 value, Host& host) {
         const u64 operand =
             (u64{is_64 ? data_ram[data_ram_address + 1] : 0} << 32) | data_ram[data_ram_address];
         const u64 result = Engines::ReduceSemaphore(op, old_value, operand, is_signed, is_64);
+        if (auto& capture{VideoCommon::DrawCapture::Get()}; capture.Active()) {
+            capture.Line(fmt::format("mme dma reduction {:#x} op={} {:#x} -> {:#x}",
+                                     MemoryAddress(), value & 7, old_value, result));
+        }
         memory = {static_cast<u32>(result), static_cast<u32>(result >> 32)};
         host.WriteMemory(MemoryAddress(), target);
         return true;

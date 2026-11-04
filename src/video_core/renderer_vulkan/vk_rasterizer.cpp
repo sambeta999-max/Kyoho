@@ -1128,7 +1128,12 @@ bool RasterizerVulkan::OnCPUWrite(DAddr addr, u64 size) {
     DEBUG_ASSERT(addr != 0 || size != 0);
     {
         std::scoped_lock lock{buffer_cache.mutex};
-        if (buffer_cache.OnCPUWrite(addr, size)) {
+        const bool gpu_modified{buffer_cache.OnCPUWrite(addr, size)};
+        if (auto& capture{VideoCommon::DrawCapture::Get()}; capture.DeviceWatched(addr, size)) {
+            capture.Line(fmt::format("  watch cpu write {:#x}+{:#x} gpu_modified={}", addr, size,
+                                     gpu_modified));
+        }
+        if (gpu_modified) {
             return true;
         }
     }
@@ -1143,6 +1148,9 @@ bool RasterizerVulkan::OnCPUWrite(DAddr addr, u64 size) {
 void RasterizerVulkan::OnCacheInvalidation(DAddr addr, u64 size) {
     if (addr == 0 || size == 0) {
         return;
+    }
+    if (auto& capture{VideoCommon::DrawCapture::Get()}; capture.DeviceWatched(addr, size)) {
+        capture.Line(fmt::format("  watch invalidation {:#x}+{:#x}", addr, size));
     }
 
     {
