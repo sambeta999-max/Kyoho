@@ -1287,6 +1287,10 @@ void DecompressBlock(ivec3 coord) {
     }
     // Read color data...
     const uint color_data_bits = remaining_bits;
+    // The integer sequence of the last values can read past color_data_bits (a trit or quint
+    // block of fewer values than it holds); ASTC defines those bits as zero, so the words of the
+    // stream this loop does not reach must not keep stale contents
+    color_endpoint_data = uvec4(0);
     while (remaining_bits > 0) {
         const int nb = int(min(remaining_bits, 32U));
         const uint b = StreamBits(nb);
