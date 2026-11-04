@@ -15,7 +15,10 @@ namespace Vulkan {
 DescriptorBufferRing::DescriptorBufferRing(const Device& device_,
                                            MemoryAllocator& memory_allocator)
     : device{device_} {
-    if (!device.IsExtDescriptorBufferSupported() || !device.IsBufferDeviceAddressSupported()) {
+    // Kept off where buffer device addresses are core (Vulkan 1.2+) as before they also backed the
+    // global memory table: this path has not been validated there yet
+    if (!device.IsExtDescriptorBufferSupported() ||
+        !device.IsKhrBufferDeviceAddressExtensionLoaded()) {
         return;
     }
     const VkPhysicalDeviceDescriptorBufferPropertiesEXT& props{device.DescriptorBufferProperties()};

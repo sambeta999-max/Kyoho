@@ -6,10 +6,15 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstring>
+#include <optional>
 #include <span>
 #include <vector>
 
+#include "common/alignment.h"
+#include "common/logging.h"
+#include "shader_recompiler/global_memory_table.h"
 #include "video_core/buffer_cache/buffer_cache_base.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
 
@@ -357,7 +362,7 @@ BufferCacheRuntime::BufferCacheRuntime(const Device& device_, MemoryAllocator& m
       staging_pool{staging_pool_}, guest_descriptor_queue{guest_descriptor_queue_},
       quad_index_pass(device, scheduler, descriptor_pool, staging_pool,
                       compute_pass_descriptor_queue),
-      multi_range_buffers(device_) {
+      multi_range_buffers(device_), global_memory_table(device_, memory_allocator_) {
     const VkDriverIdKHR driver_id = device.GetDriverID();
     limit_dynamic_storage_buffers = driver_id == VK_DRIVER_ID_QUALCOMM_PROPRIETARY ||
                                     driver_id == VK_DRIVER_ID_ARM_PROPRIETARY;
@@ -372,6 +377,156 @@ BufferCacheRuntime::BufferCacheRuntime(const Device& device_, MemoryAllocator& m
                                                                      scheduler_, staging_pool_);
     quad_strip_index_buffer = std::make_shared<QuadStripIndexBuffer>(device_, memory_allocator_,
                                                                      scheduler_, staging_pool_);
+}
+
+namespace {
+constexpr u64 GLOBAL_MEMORY_TOMBSTONE = ~u64{0};
+
+Shader::GlobalMemoryTableEntry* GlobalMemoryEntries(std::span<u8> mapped) {
+    return reinterpret_cast<Shader::GlobalMemoryTableEntry*>(mapped.data());
+}
+} // Anonymous namespace
+
+GlobalMemoryTable::GlobalMemoryTable(const Device& device, MemoryAllocator& memory_allocator) {
+    if (!device.IsBufferDeviceAddressSupported() || !device.IsShaderInt64Supported()) {
+        return;
+    }
+    const size_t num_entries = size_t{1} << TABLE_BITS;
+    table = memory_allocator.CreateBuffer(
+        VkBufferCreateInfo{
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .size = num_entries * sizeof(Shader::GlobalMemoryTableEntry),
+            .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .queueFamilyIndexCount = 0,
+            .pQueueFamilyIndices = nullptr,
+        },
+        MemoryUsage::Upload);
+    mapped = table.Mapped();
+    if (mapped.empty()) {
+        LOG_ERROR(Render_Vulkan, "Global memory table is not host visible");
+        return;
+    }
+    std::memset(mapped.data(), 0, mapped.size());
+    owners.resize(num_entries);
+    if (device.HasDebuggingToolAttached()) {
+        table.SetObjectNameEXT("Global Memory Table");
+    }
+    table_address = device.GetLogical().GetBufferDeviceAddress(*table);
+}
+
+void GlobalMemoryTable::Register(GPUVAddr gpu_addr, u64 size, VkBuffer buffer,
+                                 VkDeviceAddress host_address) {
+    if (size == 0) {
+        return;
+    }
+    RecentRegistration& last = recent[(gpu_addr >> 6) % recent.size()];
+    if (last.gpu_addr == gpu_addr && last.size == size && last.buffer == buffer &&
+        last.host_address == host_address) {
+        return;
+    }
+    last = RecentRegistration{gpu_addr, size, buffer, host_address};
+
+    const GPUVAddr end_addr = gpu_addr + size;
+    for (GPUVAddr page_addr = Common::AlignDown(gpu_addr, Shader::GLOBAL_MEMORY_PAGE_SIZE);
+         page_addr < end_addr; page_addr += Shader::GLOBAL_MEMORY_PAGE_SIZE) {
+        const u32 begin = static_cast<u32>((std::max)(gpu_addr, page_addr) - page_addr);
+        const u32 end = static_cast<u32>(
+            (std::min)(end_addr, page_addr + Shader::GLOBAL_MEMORY_PAGE_SIZE) - page_addr);
+        // Device address the start of the page would have in the buffer (may lie before it)
+        const VkDeviceAddress base = host_address - (gpu_addr - page_addr);
+        RegisterPage(page_addr >> Shader::GLOBAL_MEMORY_PAGE_BITS, begin, end, buffer, base);
+    }
+}
+
+void GlobalMemoryTable::RegisterPage(u64 page, u32 begin, u32 end, VkBuffer buffer,
+                                     VkDeviceAddress base) {
+    Shader::GlobalMemoryTableEntry* const entries = GlobalMemoryEntries(mapped);
+    const u32 mask = (1U << TABLE_BITS) - 1;
+    const u32 first = Shader::GlobalMemoryTableSlot(page, TABLE_BITS);
+    const u64 tag = page + 1;
+    std::optional<u32> free_slot;
+    for (u32 probe = 0; probe < Shader::GLOBAL_MEMORY_TABLE_PROBES; ++probe) {
+        const u32 slot = (first + probe) & mask;
+        Shader::GlobalMemoryTableEntry& entry = entries[slot];
+        if (entry.tag == tag) {
+            if (owners[slot] == buffer && entry.base == base) {
+                if (begin >= entry.begin && end <= entry.end) {
+                    return;
+                }
+                // Same buffer and mapping: the bytes between both ranges are in it too
+                begin = (std::min)(begin, entry.begin);
+                end = (std::max)(end, entry.end);
+            }
+            // Clear the range first so that a shader never pairs a new range with an old base
+            entry.end = 0;
+            std::atomic_thread_fence(std::memory_order_release);
+            entry.base = base;
+            entry.begin = begin;
+            std::atomic_thread_fence(std::memory_order_release);
+            entry.end = end;
+            if (owners[slot] != buffer) {
+                owners[slot] = buffer;
+                owner_slots[buffer].push_back(slot);
+            }
+            return;
+        }
+        if (!free_slot && (entry.tag == 0 || entry.tag == GLOBAL_MEMORY_TOMBSTONE)) {
+            free_slot = slot;
+        }
+        if (entry.tag == 0) {
+            break;
+        }
+    }
+    if (!free_slot) {
+        // Evict the first entry of the chain
+        free_slot = first;
+        if (!full_warned) {
+            full_warned = true;
+            LOG_WARNING(Render_Vulkan, "Global memory table is full, evicting entries");
+        }
+    }
+    const u32 slot = *free_slot;
+    Shader::GlobalMemoryTableEntry& entry = entries[slot];
+    entry.end = 0;
+    std::atomic_thread_fence(std::memory_order_release);
+    entry.base = base;
+    entry.begin = begin;
+    entry.padding[0] = 0;
+    entry.padding[1] = 0;
+    std::atomic_thread_fence(std::memory_order_release);
+    entry.tag = tag;
+    std::atomic_thread_fence(std::memory_order_release);
+    entry.end = end;
+    owners[slot] = buffer;
+    owner_slots[buffer].push_back(slot);
+}
+
+void GlobalMemoryTable::Unregister(VkBuffer buffer) {
+    const auto it = owner_slots.find(buffer);
+    if (it == owner_slots.end()) {
+        return;
+    }
+    Shader::GlobalMemoryTableEntry* const entries = GlobalMemoryEntries(mapped);
+    for (const u32 slot : it->second) {
+        if (owners[slot] != buffer) {
+            continue;
+        }
+        Shader::GlobalMemoryTableEntry& entry = entries[slot];
+        entry.end = 0;
+        std::atomic_thread_fence(std::memory_order_release);
+        // A tombstone keeps the probe chains through this entry intact
+        entry.tag = GLOBAL_MEMORY_TOMBSTONE;
+        owners[slot] = VK_NULL_HANDLE;
+    }
+    owner_slots.erase(it);
+    for (RecentRegistration& registration : recent) {
+        if (registration.buffer == buffer) {
+            registration = {};
+        }
+    }
 }
 
 StagingBufferRef BufferCacheRuntime::UploadStagingBuffer(size_t size) {

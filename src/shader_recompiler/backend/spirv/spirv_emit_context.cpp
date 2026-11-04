@@ -17,6 +17,7 @@
 #include "common/div_ceil.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/backend/spirv/spirv_emit_context.h"
+#include "shader_recompiler/global_memory_table.h"
 
 namespace Shader::Backend::SPIRV {
 namespace {
@@ -950,6 +951,77 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
     }
     using DefPtr = Id StorageDefinitions::*;
     const Id zero{u32_zero_value};
+    // Addresses outside the program's storage buffers go through the global memory table
+    const bool use_table{profile.global_memory_table != 0 && profile.global_memory_table_bits > 0 &&
+                         profile.global_memory_table_bits <= 30};
+    Id psb_u64{};
+    Id psb_u32{};
+    if (use_table) {
+        AddExtension("SPV_KHR_physical_storage_buffer");
+        AddCapability(spv::Capability::PhysicalStorageBufferAddresses);
+        SetMemoryModel(spv::AddressingModel::PhysicalStorageBuffer64, spv::MemoryModel::GLSL450);
+        psb_u64 = TypePointer(spv::StorageClass::PhysicalStorageBuffer, U64);
+        psb_u32 = TypePointer(spv::StorageClass::PhysicalStorageBuffer, U32[1]);
+    }
+    // Looks the address up in the global memory table; on a hit, calls table_callback with a
+    // physical pointer of type pointer_type to it. Reaching an empty entry ends the search and
+    // calls miss_callback. Both callbacks return from the function
+    const auto define_table_lookup{[&](Id addr, Id pointer_type, u32 shift, auto&& table_callback,
+                                       auto&& miss_callback) {
+        const u32 bits{profile.global_memory_table_bits};
+        const u32 mask{(1U << bits) - 1U};
+        const Id table{Constant(U64, profile.global_memory_table)};
+        const Id page{OpShiftRightLogical(U64, addr, Const(GLOBAL_MEMORY_PAGE_BITS))};
+        const Id page_low{OpUConvert(U32[1], page)};
+        const Id page_high{OpUConvert(U32[1], OpShiftRightLogical(U64, page, Const(32U)))};
+        const Id hash{OpShiftRightLogical(
+            U32[1],
+            OpBitwiseXor(U32[1], OpIMul(U32[1], page_low, Const(GLOBAL_MEMORY_HASH_MULTIPLIER)),
+                         page_high),
+            Const(32U - bits))};
+        const Id tag{OpIAdd(U64, page, Constant(U64, u64{1}))};
+        const Id offset{OpUConvert(
+            U32[1], OpBitwiseAnd(U64, addr, Constant(U64, u64{GLOBAL_MEMORY_PAGE_SIZE - 1})))};
+        const Id offset_end{OpIAdd(U32[1], offset, Const(1U << shift))};
+        const auto load_entry{[&](Id entry, u32 field_offset, Id pointer, Id type, u32 align) {
+            const Id field{OpIAdd(U64, entry, Constant(U64, u64{field_offset}))};
+            return OpLoad(type, OpConvertUToPtr(pointer, field), spv::MemoryAccessMask::Aligned,
+                          align);
+        }};
+        for (u32 probe = 0; probe < GLOBAL_MEMORY_TABLE_PROBES; ++probe) {
+            const Id slot{OpBitwiseAnd(U32[1], OpIAdd(U32[1], hash, Const(probe)), Const(mask))};
+            const Id entry{OpIAdd(
+                U64, table,
+                OpIMul(U64, OpUConvert(U64, slot),
+                       Constant(U64, u64{sizeof(GlobalMemoryTableEntry)})))};
+            const Id entry_tag{load_entry(entry, 0, psb_u64, U64, 8)};
+            const Id is_empty{OpIEqual(U1, entry_tag, Constant(U64, u64{0}))};
+            const Id empty_label{OpLabel()};
+            const Id used_label{OpLabel()};
+            OpSelectionMerge(used_label, spv::SelectionControlMask::MaskNone);
+            OpBranchConditional(is_empty, empty_label, used_label);
+            AddLabel(empty_label);
+            miss_callback();
+            AddLabel(used_label);
+            const Id entry_begin{load_entry(entry, offsetof(GlobalMemoryTableEntry, begin),
+                                            psb_u32, U32[1], 4)};
+            const Id entry_end{load_entry(entry, offsetof(GlobalMemoryTableEntry, end), psb_u32,
+                                          U32[1], 4)};
+            const Id cond{OpLogicalAnd(
+                U1, OpIEqual(U1, entry_tag, tag),
+                OpLogicalAnd(U1, OpUGreaterThanEqual(U1, offset, entry_begin),
+                             OpULessThanEqual(U1, offset_end, entry_end)))};
+            const Id then_label{OpLabel()};
+            const Id else_label{OpLabel()};
+            OpSelectionMerge(else_label, spv::SelectionControlMask::MaskNone);
+            OpBranchConditional(cond, then_label, else_label);
+            AddLabel(then_label);
+            const Id base{load_entry(entry, offsetof(GlobalMemoryTableEntry, base), psb_u64, U64, 8)};
+            const Id address{OpIAdd(U64, base, OpUConvert(U64, offset))};
+            table_callback(OpConvertUToPtr(pointer_type, address));
+            AddLabel(else_label);
+        }
+    }};
     const auto define_body{[&](DefPtr ssbo_member, Id addr, Id element_pointer, u32 shift,
                                auto&& callback) {
         AddLabel();
@@ -992,6 +1064,16 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
         const Id addr{OpFunctionParameter(U64)};
         define_body(ssbo_member, addr, element_pointer, shift,
                     [&](Id ssbo_pointer) { OpReturnValue(OpLoad(type, ssbo_pointer)); });
+        if (use_table) {
+            const Id pointer_type{TypePointer(spv::StorageClass::PhysicalStorageBuffer, type)};
+            define_table_lookup(
+                addr, pointer_type, shift,
+                [&](Id pointer) {
+                    OpReturnValue(
+                        OpLoad(type, pointer, spv::MemoryAccessMask::Aligned, 1U << shift));
+                },
+                [&] { OpReturnValue(ConstantNull(type)); });
+        }
         OpReturnValue(ConstantNull(type));
         OpFunctionEnd();
         return func_id;
@@ -1005,6 +1087,16 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
             OpStore(ssbo_pointer, data);
             OpReturn();
         });
+        if (use_table) {
+            const Id pointer_type{TypePointer(spv::StorageClass::PhysicalStorageBuffer, type)};
+            define_table_lookup(
+                addr, pointer_type, shift,
+                [&](Id pointer) {
+                    OpStore(pointer, data, spv::MemoryAccessMask::Aligned, 1U << shift);
+                    OpReturn();
+                },
+                [&] { OpReturn(); });
+        }
         OpReturn();
         OpFunctionEnd();
         return func_id;

@@ -114,6 +114,13 @@ struct Profile {
     u64 min_ssbo_alignment{};
     u32 max_user_clip_distances{};
 
+    /// Device address of the global memory table (0: none). Global memory accesses that no
+    /// storage buffer of the program covers look their guest address up there: an open-addressing
+    /// hash table of 2^global_memory_table_bits entries, one per 4 KiB guest GPU page, laid out
+    /// as GlobalMemoryTableEntry (shader_recompiler/global_memory_table.h)
+    u64 global_memory_table{};
+    u32 global_memory_table_bits{};
+
     bool SupportsSubgroupStage(Stage stage) const {
         return (supported_subgroup_stages & (1u << static_cast<u32>(stage))) != 0;
     }

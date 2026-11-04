@@ -521,6 +521,12 @@ FN_MAX_LIMIT_LIST
 
     /// Returns true if the device supports buffer device address.
     bool IsBufferDeviceAddressSupported() const {
+        // Core in Vulkan 1.2, where the extension flag stays unset
+        return features.buffer_device_address.bufferDeviceAddress;
+    }
+
+    /// Returns true if VK_KHR_buffer_device_address was loaded as an extension (Vulkan 1.1 devices)
+    bool IsKhrBufferDeviceAddressExtensionLoaded() const {
         return extensions.buffer_device_address;
     }
 

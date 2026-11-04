@@ -6,7 +6,11 @@
 
 #pragma once
 
+#include <array>
 #include <limits>
+#include <span>
+#include <unordered_map>
+#include <vector>
 
 #include <boost/container/small_vector.hpp>
 
@@ -94,6 +98,46 @@ private:
 
 class QuadArrayIndexBuffer;
 class QuadStripIndexBuffer;
+
+/// Maps guest GPU pages to the device addresses of the host buffers holding them, for the global
+/// memory accesses of shaders that no storage buffer of the program covers (see
+/// shader_recompiler/global_memory_table.h). Storage buffer bindings add their pages; deleting a
+/// host buffer removes its entries.
+class GlobalMemoryTable {
+public:
+    static constexpr u32 TABLE_BITS = 17;
+
+    explicit GlobalMemoryTable(const Device& device, MemoryAllocator& memory_allocator);
+
+    /// Device address of the table, 0 when the device can not use one
+    [[nodiscard]] VkDeviceAddress Address() const noexcept {
+        return table_address;
+    }
+
+    /// Records that [gpu_addr, gpu_addr + size) is held by buffer at device address host_address
+    void Register(GPUVAddr gpu_addr, u64 size, VkBuffer buffer, VkDeviceAddress host_address);
+
+    /// Removes the entries pointing into buffer
+    void Unregister(VkBuffer buffer);
+
+private:
+    struct RecentRegistration {
+        GPUVAddr gpu_addr;
+        u64 size;
+        VkBuffer buffer;
+        VkDeviceAddress host_address;
+    };
+
+    void RegisterPage(u64 page, u32 begin, u32 end, VkBuffer buffer, VkDeviceAddress base);
+
+    vk::Buffer table;
+    VkDeviceAddress table_address{};
+    std::span<u8> mapped;
+    std::vector<VkBuffer> owners;
+    std::unordered_map<VkBuffer, std::vector<u32>> owner_slots;
+    std::array<RecentRegistration, 1024> recent{};
+    bool full_warned{};
+};
 
 class BufferCacheRuntime {
     friend Buffer;
@@ -206,6 +250,24 @@ public:
 
     void OnBufferDeleted(const Buffer& buffer) {
         multi_range_buffers.DropOwner(scheduler, buffer.Handle());
+        if (global_memory_table.Address() != 0) {
+            global_memory_table.Unregister(buffer.Handle());
+        }
+    }
+
+    [[nodiscard]] VkDeviceAddress GlobalMemoryTableAddress() const noexcept {
+        return global_memory_table.Address();
+    }
+
+    [[nodiscard]] u32 GlobalMemoryTableBits() const noexcept {
+        return GlobalMemoryTable::TABLE_BITS;
+    }
+
+    void RegisterGlobalMemory(GPUVAddr gpu_addr, u32 size, const Buffer& buffer, u32 offset) {
+        if (global_memory_table.Address() != 0 && buffer.Handle() != VK_NULL_HANDLE) {
+            global_memory_table.Register(gpu_addr, size, buffer.Handle(),
+                                         buffer.DeviceAddress() + offset);
+        }
     }
 
     void BindUniformBuffer(const Buffer& buffer, u32 offset, u32 size) {
@@ -262,6 +324,7 @@ private:
     QuadIndexedPass quad_index_pass;
 
     MultiRangeBufferCache multi_range_buffers;
+    GlobalMemoryTable global_memory_table;
     boost::container::small_vector<MultiRangeSource, 16> multi_range_sources;
     VkDeviceSize multi_range_total{};
 

@@ -215,6 +215,7 @@ add_library(shader_recompiler STATIC
     ir_opt/vendor_workaround_pass.cpp
     ir_opt/verification_pass.cpp
     object_pool.h
+    global_memory_table.h
     profile.h
     program_header.h
     runtime_info.h

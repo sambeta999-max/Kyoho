@@ -1112,6 +1112,9 @@ void BufferCache<P>::BindHostGraphicsStorageBuffers(size_t stage) {
 
         const u32 offset = buffer.Offset(binding.device_addr);
         buffer.MarkUsage(offset, size);
+        if constexpr (requires { runtime.RegisterGlobalMemory(binding.gpu_addr, size, buffer, offset); }) {
+            runtime.RegisterGlobalMemory(binding.gpu_addr, size, buffer, offset);
+        }
 
         if (is_written) {
             MarkWrittenBuffer(binding.buffer_id, binding.device_addr, size);
@@ -1252,6 +1255,9 @@ void BufferCache<P>::BindHostComputeStorageBuffers() {
 
         const u32 offset = buffer.Offset(binding.device_addr);
         buffer.MarkUsage(offset, size);
+        if constexpr (requires { runtime.RegisterGlobalMemory(binding.gpu_addr, size, buffer, offset); }) {
+            runtime.RegisterGlobalMemory(binding.gpu_addr, size, buffer, offset);
+        }
 
         if (is_written) {
             MarkWrittenBuffer(binding.buffer_id, binding.device_addr, size, true);

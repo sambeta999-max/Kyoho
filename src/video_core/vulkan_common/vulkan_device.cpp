@@ -732,7 +732,8 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
         RemoveExtensionFeature(extensions.descriptor_buffer, features.descriptor_buffer,
                                VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
     }
-    if (!extensions.descriptor_buffer) {
+    // Buffer device addresses also back the global memory table of the shaders (64-bit addresses)
+    if (!extensions.descriptor_buffer && !features.features.shaderInt64) {
         RemoveExtensionFeature(extensions.buffer_device_address, features.buffer_device_address,
                                VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
     }
@@ -750,7 +751,7 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
     if (extensions.memory_budget) {
         flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
     }
-    if (extensions.buffer_device_address) {
+    if (features.buffer_device_address.bufferDeviceAddress) {
         flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
     }
     const VmaAllocatorCreateInfo allocator_info{
