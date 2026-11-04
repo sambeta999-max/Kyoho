@@ -3,7 +3,10 @@
 
 #include <cstdlib>
 #include <algorithm>
+#include <chrono>
 #include <cstring>
+#include <string_view>
+#include <vector>
 #if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
 #include <intrin.h>
 #endif
@@ -203,8 +206,49 @@ void GpuSplit::PushTask(std::function<void()>&& task) {
     Push(Entry{.kind = Kind::Task, .data_end = data_head});
 }
 
-void GpuSplit::Drain() {
+void GpuSplit::Drain(std::source_location where) {
     const u64 head = entry_head.load(std::memory_order_relaxed);
+    // EDEN_GPU_SPLIT_STATS: how often each call site drains and how long it waits (front only)
+    static const bool stats = std::getenv("EDEN_GPU_SPLIT_STATS") != nullptr;
+    if (stats) [[unlikely]] {
+        struct Site {
+            const char* file;
+            u32 line;
+            u64 count;
+            u64 busy;
+            s64 wait_ns;
+        };
+        static std::vector<Site> sites;
+        static auto last_log = std::chrono::steady_clock::now();
+        const auto start = std::chrono::steady_clock::now();
+        const bool busy = entry_tail.load(std::memory_order_acquire) != head;
+        int spins = 0;
+        while (entry_tail.load(std::memory_order_acquire) != head) {
+            Relax(spins);
+        }
+        const auto end = std::chrono::steady_clock::now();
+        auto it = std::find_if(sites.begin(), sites.end(), [&](const Site& site) {
+            return site.line == where.line() && site.file == where.file_name();
+        });
+        if (it == sites.end()) {
+            sites.push_back({where.file_name(), where.line(), 0, 0, 0});
+            it = sites.end() - 1;
+        }
+        ++it->count;
+        it->busy += busy ? 1 : 0;
+        it->wait_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+        if (end - last_log >= std::chrono::seconds{5}) {
+            for (const Site& site : sites) {
+                const std::string_view file{site.file};
+                LOG_WARNING(HW_GPU, "split drain {}:{} count {} busy {} wait {} us",
+                            file.substr(file.find_last_of("/\\") + 1), site.line, site.count,
+                            site.busy, site.wait_ns / 1000);
+            }
+            sites.clear();
+            last_log = end;
+        }
+        return;
+    }
     int spins = 0;
     while (entry_tail.load(std::memory_order_acquire) != head) {
         Relax(spins);

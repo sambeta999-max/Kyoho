@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <source_location>
+
 #include <array>
 #include <atomic>
 #include <functional>
@@ -68,7 +70,7 @@ public:
     /// Anything else that must run on the back in order
     void PushTask(std::function<void()>&& task);
     /// Waits until the back has executed everything pushed so far
-    void Drain();
+    void Drain(std::source_location where = std::source_location::current());
 
     /// Entries pushed so far, and executed so far: the back has executed everything before a
     /// position once Executed() reaches it
