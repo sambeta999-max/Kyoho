@@ -22,6 +22,7 @@
 #include <queue>
 
 #include "common/common_types.h"
+#include "common/spin_recursive_mutex.h"
 #include "common/hash.h"
 #include "common/literals.h"
 #include "common/lru_cache.h"
@@ -248,6 +249,9 @@ public:
     /// Return true when there are uncommitted images to be downloaded
     [[nodiscard]] bool HasUncommittedFlushes() const noexcept;
 
+    /// Whether CommitAsyncFlushes would commit anything (downloads or their buffers)
+    [[nodiscard]] bool HasAsyncFlushWork() const noexcept;
+
     /// Return true when the caller should wait for async downloads
     [[nodiscard]] bool ShouldWaitAsyncFlushes() const noexcept;
 
@@ -280,7 +284,7 @@ public:
     /// Prepare an image to be used
     void PrepareImage(ImageId image_id, bool is_modification, bool invalidate);
 
-    std::recursive_mutex mutex;
+    Common::SpinRecursiveMutex mutex;
 
 private:
     /// Iterate over all page indices in a range

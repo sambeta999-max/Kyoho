@@ -96,6 +96,7 @@ add_library(
     ${CMAKE_CURRENT_BINARY_DIR}/scm_rev.cpp
     scm_rev.h
     scope_exit.h
+    spin_recursive_mutex.h
     scratch_buffer.h
     settings.cpp
     settings.h
