@@ -399,12 +399,12 @@ private:
             const std::scoped_lock lock{mutex};
             PublishHeld();
             result = Kernel::ResultInvalidState;
-            if (decoder && inputs.size() >= MaxQueuedInputs) {
-                // The input queue is full: the console's decoder answers with this result and
-                // nn::codec clients (Donkey Kong Bananza) submit again after the submission-ready
-                // event, instead of having the server buffer the whole stream.
-                result = ResultInputQueueFull;
-            } else if (decoder) {
+            // Input is always taken; a full queue only leaves the submission-ready event
+            // unsignaled (SignalSubmissionReady), as in Eglantine's decoder (nx2_gsv.h,
+            // SubmitInput). Mario Tennis Fever submits while the queue is full and never sends
+            // input it was refused again: its movies lost frames and showed broken pictures
+            // until the next key frame.
+            if (decoder) {
                 const s64 pts = static_cast<s64>(u64{packet[5]} | (u64{packet[6]} << 32));
                 const bool end_of_stream = (packet[7] & 0xff) != 0;
                 // Submissions that only signal the end of the stream carry no input
@@ -597,8 +597,6 @@ private:
     // MaxDecodedAhead).
     static constexpr size_t MaxQueuedInputs = 8;
     static constexpr size_t MaxDecodedAhead = 2;
-    // Module 111 (codec), description 3603: the result nn::codec clients treat as "try again"
-    static constexpr Result ResultInputQueueFull{static_cast<ErrorModule>(111), 3603};
     static constexpr size_t MaxBufferedPictures = 16;
     // How long a decoded picture waits for the client's next request before it is written
     static constexpr std::chrono::milliseconds PublishDelay{2};
