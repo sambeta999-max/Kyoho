@@ -933,6 +933,22 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) const
     return nullptr;
 }
 
+// With Maxwell 0x11F0 set (the layer offset by the viewport index), a geometry program is lowered
+// on every host: the hardware draws a primitive once per viewport in its mask, each into layer =
+// viewport (Mario Tennis Fever's four shadow cascades), and Vulkan's NV extensions don't offset
+// the layer by the viewport; the lowered passthrough does. From Orchid 80dcbc23a.
+Shader::HostTranslateInfo PipelineCache::StageHostInfo(const GraphicsPipelineCacheKey& key,
+                                                       size_t index) const {
+    Shader::HostTranslateInfo info{host_info};
+    if (key.state.layer_viewport_relative != 0 &&
+        index == static_cast<size_t>(Maxwell::ShaderType::Geometry)) {
+        info.support_viewport_mask = false;
+        info.support_geometry_shader_passthrough = false;
+        info.layer_viewport_relative = true;
+    }
+    return info;
+}
+
 std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     ShaderPools& pools, const GraphicsPipelineCacheKey& key,
     std::span<Shader::Environment* const> envs, PipelineStatistics* statistics,
@@ -980,7 +996,8 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         Shader::Maxwell::Flow::CFG cfg(env, pools.flow_block, cfg_offset, index == 0);
         if (!uses_vertex_a || index != 1) {
             // Normal path
-            programs[index] = TranslateProgram(pools.inst, pools.block, env, cfg, host_info);
+            programs[index] = TranslateProgram(pools.inst, pools.block, env, cfg,
+                                               StageHostInfo(key, index));
         } else {
             // VertexB path when VertexA is present.
             auto& program_va{programs[0]};
@@ -1017,7 +1034,14 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
 
         const auto runtime_info{MakeRuntimeInfo(programs, key, program, previous_stage, device)};
         ConvertLegacyToGeneric(program, runtime_info);
-        const std::vector<u32> code{EmitSPIRV(profile, runtime_info, program, binding)};
+        Shader::Profile stage_profile{profile};
+        if (key.state.layer_viewport_relative != 0 &&
+            index == static_cast<size_t>(Maxwell::ShaderType::Geometry)) {
+            // Translated as on hosts without the NV extensions (StageHostInfo), emitted the same
+            stage_profile.support_viewport_mask = false;
+            stage_profile.support_geometry_shader_passthrough = false;
+        }
+        const std::vector<u32> code{EmitSPIRV(stage_profile, runtime_info, program, binding)};
         device.SaveShader(code);
         modules[stage_index] = BuildShader(device, code);
 

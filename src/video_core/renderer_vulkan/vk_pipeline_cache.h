@@ -170,6 +170,8 @@ private:
 
     Shader::Profile profile;
     Shader::HostTranslateInfo host_info;
+    [[nodiscard]] Shader::HostTranslateInfo StageHostInfo(const GraphicsPipelineCacheKey& key,
+                                                          size_t index) const;
 
     std::filesystem::path pipeline_cache_filename;
 

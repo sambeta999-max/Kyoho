@@ -178,11 +178,17 @@ void EmitGeometryPassthrough(IR::IREmitter& ir, const IR::Program& program,
                              const Shader::VaryingState& passthrough_mask,
                              bool passthrough_position,
                              std::optional<IR::Attribute> passthrough_layer_attr,
-                             std::optional<IR::Reg> viewport_mask_reg) {
+                             std::optional<IR::Reg> viewport_mask_reg, bool multicast) {
     constexpr std::array CULLED_POSITION{2.0f, 2.0f, 2.0f, 1.0f};
     IR::U1 culled{ir.Imm1(false)};
     IR::U32 viewport{ir.Imm32(0)};
-    if (viewport_mask_reg) {
+    if (viewport_mask_reg && multicast) {
+        // One invocation per viewport: keep the primitive where its bit is set in the mask.
+        const IR::U32 mask{ir.GetReg(*viewport_mask_reg)};
+        viewport = ir.InvocationId();
+        const IR::U32 bit{ir.BitwiseAnd(IR::U32{ir.ShiftRightLogical(mask, viewport)}, ir.Imm32(1))};
+        culled = ir.IEqual(bit, ir.Imm32(0));
+    } else if (viewport_mask_reg) {
         const IR::U32 mask{ir.GetReg(*viewport_mask_reg)};
         const IR::U32 lowest_bit{ir.BitwiseAnd(mask, IR::U32{ir.INeg(mask)})};
         culled = ir.IEqual(mask, ir.Imm32(0));
@@ -218,6 +224,11 @@ void EmitGeometryPassthrough(IR::IREmitter& ir, const IR::Program& program,
         if (viewport_mask_reg) {
             ir.SetAttribute(IR::Attribute::ViewportIndex, ir.BitCast<IR::F32>(viewport),
                             ir.Imm32(0));
+        }
+        if (multicast) {
+            // The layer is the viewport index alone; a layer the program writes itself
+            // is not added (Mario Tennis Fever's cascade shaders write none).
+            ir.SetAttribute(IR::Attribute::Layer, ir.BitCast<IR::F32>(viewport), ir.Imm32(0));
         }
 
         if (passthrough_layer_attr) {
@@ -288,10 +299,26 @@ std::optional<IR::Reg> LowerViewportMask(const IR::Program& program) {
     return reg;
 }
 
-void LowerGeometryPassthrough(const IR::Program& program, const HostTranslateInfo& host_info) {
+bool ReadsInvocationId(const IR::Program& program) {
+    return std::ranges::any_of(program.blocks, [](const IR::Block* block) {
+        return std::ranges::any_of(block->Instructions(), [](const IR::Inst& inst) {
+            return inst.GetOpcode() == IR::Opcode::InvocationId;
+        });
+    });
+}
+
+void LowerGeometryPassthrough(IR::Program& program, const HostTranslateInfo& host_info) {
     std::optional<IR::Reg> viewport_mask_reg;
     if (!host_info.support_viewport_mask) {
         viewport_mask_reg = LowerViewportMask(program);
+    }
+    // With the layer relative to the viewport (Maxwell 0x11F0) the hardware draws the primitive
+    // once per viewport in the mask, each into layer = viewport: one shadow cascade per layer in
+    // Mario Tennis Fever. Only the lowest viewport and layer 0 left every cascade in layer 0.
+    const bool multicast = viewport_mask_reg && host_info.layer_viewport_relative &&
+                           program.invocations <= 1 && !ReadsInvocationId(program);
+    if (multicast) {
+        program.invocations = 16; // Maxwell's viewport count
     }
     for (IR::Block* const block : program.blocks) {
         for (IR::Inst& inst : block->Instructions()) {
@@ -300,7 +327,7 @@ void LowerGeometryPassthrough(const IR::Program& program, const HostTranslateInf
                 EmitGeometryPassthrough(
                     ir, program, program.info.passthrough,
                     program.info.passthrough.AnyComponent(IR::Attribute::PositionX), {},
-                    viewport_mask_reg);
+                    viewport_mask_reg, multicast);
             }
         }
     }
@@ -594,7 +621,7 @@ IR::Program GenerateGeometryPassthrough(ObjectPool<IR::Inst>& inst_pool,
 
     IR::IREmitter ir{*current_block};
     EmitGeometryPassthrough(ir, program, program.info.stores, true,
-                            source_program.info.emulated_layer, std::nullopt);
+                            source_program.info.emulated_layer, std::nullopt, false);
 
     IR::Block* return_block{block_pool.Create(inst_pool)};
     IR::IREmitter{*return_block}.Epilogue();

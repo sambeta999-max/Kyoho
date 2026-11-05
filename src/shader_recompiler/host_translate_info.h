@@ -40,6 +40,8 @@ struct HostTranslateInfo {
     bool support_conditional_barrier{}; ///< True when the device supports barriers in conditional
                                         ///< control flow
     bool single_lane_geometry_subgroups{};
+    /// The render target layer is offset by the viewport index (Maxwell 0x11F0); per pipeline.
+    bool layer_viewport_relative{};
     /// Compute shaders can run HMMA.1688.F16 / HMMA.16816.F16 as subgroup cooperative matrices
     bool support_cooperative_matrix_f16_k8{};
     bool support_cooperative_matrix_f16_k16{};
