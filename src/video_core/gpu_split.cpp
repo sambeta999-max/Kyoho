@@ -19,7 +19,10 @@
 #include "core/core.h"
 #include "video_core/dma_pusher.h"
 #include "video_core/engines/engine_interface.h"
+#include "video_core/gpu.h"
 #include "video_core/gpu_split.h"
+#include "video_core/rasterizer_interface.h"
+#include "video_core/renderer_base.h"
 
 namespace VideoCommon {
 
@@ -38,11 +41,53 @@ void Relax(int& spins) {
 }
 } // Anonymous namespace
 
+void GpuSplit::Pause() noexcept {
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+    _mm_pause();
+#endif
+}
+
 GpuSplit::GpuSplit(Core::System& system_) : system{system_} {
     entries.resize(EntryCapacity);
     data.resize(DataCapacity);
     tasks.resize(TaskCapacity);
     gpu_written = std::make_unique<std::atomic<u64>[]>(DevicePages / 64);
+    command_list_pages = std::make_unique<std::atomic<u64>[]>(DevicePages / 64);
+}
+
+void GpuSplit::MarkCommandListPage(DAddr address) noexcept {
+    const u64 page = address >> PageBits;
+    if (page >= DevicePages) {
+        return;
+    }
+    auto& word = command_list_pages[page / 64];
+    const u64 bit = u64{1} << (page % 64);
+    if ((word.load(std::memory_order_relaxed) & bit) == 0) {
+        word.fetch_or(bit, std::memory_order_relaxed);
+        has_command_list_pages.store(true, std::memory_order_relaxed);
+    }
+}
+
+void GpuSplit::RequestFlush() {
+    flush_requested.store(true, std::memory_order_seq_cst);
+    if (Executed() == Pushed()) {
+        // The back may be asleep
+        PushCall([](void* split) { static_cast<GpuSplit*>(split)->BackFlush(); }, this);
+    }
+}
+
+void GpuSplit::BackFlush() {
+    if (flush_requested.exchange(false, std::memory_order_acq_rel)) {
+        system.GPU().Renderer().ReadRasterizer()->FlushListCopies();
+    }
+}
+
+void GpuSplit::WaitForWriters() noexcept {
+    // The back publishes its position after every entry
+    int spins = 0;
+    while (entry_tail.load(std::memory_order_acquire) < last_writer) {
+        Relax(spins);
+    }
 }
 
 void GpuSplit::SetGpuWritten(DAddr address, u64 size) noexcept {
@@ -185,6 +230,10 @@ void GpuSplit::PushEngineMethod(Tegra::Engines::EngineInterface& engine, u32 met
         .target = &engine,
         .data_end = data_head,
     });
+    // Inline uploads of the 3D engine (launch_dma, inline_data) a macro writes
+    if (method == 0x6C || method == 0x6D) {
+        NoteWriter();
+    }
 }
 
 void GpuSplit::PushCall(void (*function)(void*), void* argument) {
@@ -325,6 +374,9 @@ void GpuSplit::Run(std::stop_token stop_token) {
             } catch (...) {
                 LOG_CRITICAL(HW_GPU, "GPU back thread: unknown exception (entry kind {})",
                              static_cast<int>(entry.kind));
+            }
+            if (flush_requested.load(std::memory_order_relaxed)) [[unlikely]] {
+                BackFlush();
             }
             data_tail.store(entry.data_end, std::memory_order_release);
             entry_tail.store(tail + 1, std::memory_order_release);

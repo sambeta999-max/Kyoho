@@ -23,6 +23,7 @@
 namespace Tegra {
 
 constexpr u32 MacroRegistersStart = 0xE00;
+constexpr u32 UploadLaunchDma = 0x6C;
 constexpr u32 ComputeInline = 0x6D;
 
 DmaPusher::DmaPusher(Core::System& system_, MemoryManager& memory_manager_, Control::ChannelState& channel_state_)
@@ -108,12 +109,23 @@ bool DmaPusher::Step() {
     if (header.size > 0) {
         // The front of a split GPU thread fetches ahead of what the back has executed, as a
         // PBDMA does: a SYNC entry waits for the methods before it, and memory the GPU wrote has
-        // to be flushed; both need the back to be idle
+        // to be flushed; both need the back to be idle. Lists on pages the GPU wrote are read
+        // from the copies the buffer cache makes after the work that writes them when it can
         bool split_safe = false;
-        if (split && (header.sync || SplitReadsGpuWritten(*split, dma_state.dma_get,
-                                                          header.size * sizeof(u32)))) {
-            split->Drain();
-            split_safe = true;
+        bool split_copied = false;
+        if (split) {
+            const size_t bytes = size_t{header.size} * sizeof(u32);
+            if (header.sync) {
+                split_safe = true;
+            } else if (SplitReadsGpuWritten(*split, dma_state.dma_get, bytes)) {
+                split_copied = SplitReadGpuWrittenCommands(*split, dma_state.dma_get,
+                                                           static_cast<u32>(header.size));
+                split_safe = !split_copied;
+            }
+            if (split_safe) {
+                split->Drain();
+                SplitFlushCommandPages(*split, dma_state.dma_get, bytes);
+            }
         }
         if (subchannels[dma_state.subchannel] && dma_state.method_count) {
             const auto engine = subchannel_type[dma_state.subchannel];
@@ -122,7 +134,14 @@ bool DmaPusher::Step() {
             if (kepler_payload || macro_payload) {
                 const size_t words = std::min<size_t>(dma_state.method_count, header.size);
                 auto* const payload_engine = subchannels[dma_state.subchannel];
-                const bool dirty = memory_manager.IsMemoryDirty(dma_state.dma_get, words * sizeof(u32));
+                // On a split GPU thread the same lock-free check as for command words: the
+                // buffer cache lock IsMemoryDirty takes is held by the back most of the time
+                // (Fast Fusion: a fifth of the front waited for it). Pages the GPU ever wrote
+                // are a superset of the dirty ones; a parameter wrongly taken as dirty only
+                // goes through the GPU-side (indirect) path or is read again
+                const bool dirty =
+                    split ? SplitReadsGpuWritten(*split, dma_state.dma_get, words * sizeof(u32))
+                          : memory_manager.IsMemoryDirty(dma_state.dma_get, words * sizeof(u32));
                 if (auto& capture{VideoCommon::DrawCapture::Get()}; capture.Active()) {
                     // Macro parameters fetched from memory (indirect draws): what the front read
                     std::array<u32, 6> first{};
@@ -143,13 +162,21 @@ bool DmaPusher::Step() {
                 }
             }
         }
-        const bool use_safe = split ? split_safe : (Settings::IsDMALevelDefault() ? Settings::IsGPULevelHigh() : Settings::IsDMALevelSafe());
+        // A split GPU thread flushed the pages above when it had to
+        const bool use_safe = split ? false : (Settings::IsDMALevelDefault() ? Settings::IsGPULevelHigh() : Settings::IsDMALevelSafe());
         if (split && command_resume_offset != 0 && split_saved_address == dma_state.dma_get &&
             split_saved_commands.size() == header.size) {
             // A channel resumed in the middle of a segment goes on with the words the front
             // fetched, as a PBDMA does; the guest may have reused that memory since
             const std::span<const CommandHeader> commands{split_saved_commands};
             command_resume_offset += ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
+        } else if (split_copied) {
+            const std::span<const CommandHeader> commands{command_headers.data(), header.size};
+            command_resume_offset += ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
+            if (puller.HasPendingNativeAcquire()) {
+                split_saved_commands.assign(commands.begin(), commands.end());
+                split_saved_address = dma_state.dma_get;
+            }
         } else if (use_safe) {
             Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::SafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
             const std::span<const CommandHeader> commands{headers.data(), headers.size()};
@@ -339,6 +366,93 @@ bool DmaPusher::SplitReadsGpuWritten(VideoCommon::GpuSplit& split, GPUVAddr addr
     return memory_manager.IsMemoryDirty(address, size);
 }
 
+bool DmaPusher::SplitReadGpuWrittenCommands(VideoCommon::GpuSplit& split, GPUVAddr address,
+                                             u32 count) {
+    // Ported from Eglantine 8f1435f8db ("nx2: read GPU-written command lists from copies instead
+    // of draining", dma_pusher.cpp ReadGpuWrittenCommands). The pages are marked as command list
+    // pages: from the next write on, the buffer cache copies them to host memory right after the
+    // dispatch or DMA operation that writes them and submits. The front then waits only for the
+    // back to execute that work and for the host GPU to finish the copy, not for everything
+    // queued and a cache flush with a full GPU wait (Fast Fusion: ~1500 drains and ~37 of those
+    // waits a second for the 5-word indirect draw parameters its culling dispatches write, with
+    // the back mostly idle meanwhile). Pages flushed whole since no GPU work wrote are read from
+    // guest memory
+    if (rasterizer == nullptr || count == 0) {
+        return false;
+    }
+    constexpr GPUVAddr page_mask = VideoCommon::GpuSplit::PageSize - 1;
+    const GPUVAddr end = address + u64{count} * sizeof(u32);
+    for (GPUVAddr page = address & ~page_mask; page < end; page += page_mask + 1) {
+        const auto device = memory_manager.GpuToCpuAddress(page);
+        if (!device) {
+            return false;
+        }
+        if (split.WasGpuWritten(*device, 1)) {
+            split.MarkCommandListPage(*device);
+        }
+    }
+    split.WaitForWriters();
+    using GpuWrittenList = VideoCore::RasterizerInterface::GpuWrittenList;
+    command_headers.resize_destructive(count);
+    u8* const out = reinterpret_cast<u8*>(command_headers.data());
+    for (GPUVAddr chunk = address; chunk < end;) {
+        const GPUVAddr chunk_end = (std::min)(end, (chunk & ~page_mask) + page_mask + 1);
+        const std::span<u8> part{out + (chunk - address), static_cast<size_t>(chunk_end - chunk)};
+        const auto device = memory_manager.GpuToCpuAddress(chunk);
+        if (!device) {
+            return false;
+        }
+        GpuWrittenList where = GpuWrittenList::Synced;
+        if (split.WasGpuWritten(*device, part.size())) {
+            where = rasterizer->ReadGpuWrittenCommandList(*device, part);
+        }
+        if (where == GpuWrittenList::Unknown) {
+            return false;
+        }
+        if (where == GpuWrittenList::Synced) {
+            memory_manager.ReadBlockUnsafe(chunk, part.data(), part.size());
+        }
+        chunk = chunk_end;
+    }
+    return true;
+}
+
+void DmaPusher::SplitFlushCommandPages(VideoCommon::GpuSplit& split, GPUVAddr address,
+                                       size_t size) {
+    // The back is idle. The whole pages are flushed: their next lists read guest memory until GPU
+    // work writes them again (SplitReadGpuWrittenCommands)
+    constexpr GPUVAddr page_mask = VideoCommon::GpuSplit::PageSize - 1;
+    const GPUVAddr first_page = address & ~page_mask;
+    const GPUVAddr end_page = (address + size + page_mask) & ~page_mask;
+    if (memory_manager.IsMemoryDirty(first_page, end_page - first_page)) {
+        memory_manager.FlushRegion(first_page, end_page - first_page);
+    }
+    if (rasterizer == nullptr || !split.HasCommandListPages()) {
+        return;
+    }
+    for (GPUVAddr page = first_page; page < end_page; page += page_mask + 1) {
+        if (const auto device = memory_manager.GpuToCpuAddress(page);
+            device && split.IsCommandListPage(*device)) {
+            rasterizer->NoteGpuWrittenCommandListSynced(*device);
+        }
+    }
+}
+
+bool DmaPusher::IsSplitWriter(u32 subchannel, u32 method) const {
+    // What can write the command lists the GPU fills in: compute dispatches, DMA operations and
+    // inline uploads (SplitReadGpuWrittenCommands waits for the back to execute them)
+    switch (subchannel_type[subchannel]) {
+    case Engines::EngineTypes::KeplerCompute:
+    case Engines::EngineTypes::MaxwellDMA:
+    case Engines::EngineTypes::KeplerMemory:
+        return true;
+    case Engines::EngineTypes::Maxwell3D:
+        return method == UploadLaunchDma || method == ComputeInline;
+    default:
+        return false;
+    }
+}
+
 bool DmaPusher::CanResumeNativeAcquire() {
     auto* const split = VideoCommon::GpuSplit::Active();
     if (split == nullptr || split->OnBackThread()) {
@@ -395,13 +509,18 @@ void DmaPusher::SplitPullerMethod(VideoCommon::GpuSplit& split,
             if (greater_equal && puller.IsAcquiredNow(*this, *semaphore)) {
                 return;
             }
-            // Most acquires hold once the back has executed what comes before them and the
-            // host GPU has finished it, as on one thread. One that still does not hold
-            // suspends the channel without stopping the front; it is checked again once the
-            // back has executed everything before it
+            // Most acquires hold once the back has executed the release they wait for (its
+            // value is pending until the host GPU reaches it, as on one thread): the front goes
+            // on as soon as it has, the work after the acquire is queued behind the release.
+            // One that still does not hold once the back is idle suspends the channel without
+            // stopping the front; it is checked again once the back has executed everything
+            // before it
             puller.SetPendingAcquire(*semaphore);
             split_acquire_position = split.Pushed();
-            split.Drain();
+            if (split.DrainUnless([&] { return puller.IsPendingAcquireMet(*this); })) {
+                puller.ClearPendingAcquire();
+                return;
+            }
             if (!puller.IsPendingAcquireMet(*this)) {
                 rasterizer->ReleaseFences();
             }
@@ -443,6 +562,9 @@ void DmaPusher::SplitCallMethod(VideoCommon::GpuSplit& split, u32 argument) {
         engine->FrontWrite(method, argument);
     }
     split.PushMethod(*this, subchannel, method, argument, dma_state.is_last_call, segment);
+    if (IsSplitWriter(subchannel, method)) {
+        split.NoteWriter();
+    }
 }
 
 void DmaPusher::SplitCallMultiMethod(VideoCommon::GpuSplit& split, const u32* base_start,
@@ -473,6 +595,9 @@ void DmaPusher::SplitCallMultiMethod(VideoCommon::GpuSplit& split, const u32* ba
     }
     split.PushMultiMethod(*this, subchannel, method, base_start, num_methods,
                           dma_state.method_count, segment);
+    if (IsSplitWriter(subchannel, method)) {
+        split.NoteWriter();
+    }
 }
 
 void DmaPusher::BackFlushPendingMacros(u32 subchannel, u32 method) {

@@ -5,6 +5,7 @@
 
 #include <source_location>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <functional>
@@ -37,6 +38,11 @@ namespace VideoCommon {
 /// idle (semaphore acquires, MME DMA reads, channel binding).
 class GpuSplit {
 public:
+    /// Pages of the lock-free notes below
+    static constexpr size_t PageBits = 12;
+    static constexpr u64 PageSize = u64{1} << PageBits;
+    static constexpr size_t DevicePages = size_t{1} << (36 - PageBits);
+
     explicit GpuSplit(Core::System& system);
     ~GpuSplit();
 
@@ -71,6 +77,23 @@ public:
     void PushTask(std::function<void()>&& task);
     /// Waits until the back has executed everything pushed so far
     void Drain(std::source_location where = std::source_location::current());
+    /// Waits until the back has executed everything pushed so far or `done` holds, which it
+    /// checks while the back works; true when `done` held first
+    template <typename Done>
+    bool DrainUnless(Done&& done) {
+        const u64 head = entry_head.load(std::memory_order_relaxed);
+        for (u32 spins = 0; entry_tail.load(std::memory_order_acquire) != head; ++spins) {
+            if (done()) {
+                return true;
+            }
+            if (spins < 4000) {
+                Pause();
+            } else {
+                std::this_thread::yield();
+            }
+        }
+        return false;
+    }
 
     /// Entries pushed so far, and executed so far: the back has executed everything before a
     /// position once Executed() reaches it
@@ -79,6 +102,62 @@ public:
     }
     [[nodiscard]] u64 Executed() const noexcept {
         return entry_tail.load(std::memory_order_acquire);
+    }
+
+    /// Work that can write command lists the GPU fills in (compute dispatches, DMA copies, inline
+    /// uploads) was just pushed
+    void NoteWriter() noexcept {
+        last_writer = entry_head.load(std::memory_order_relaxed);
+    }
+    /// Waits until the back has executed the work NoteWriter noted, not what came after it
+    void WaitForWriters() noexcept;
+
+    /// Front: asks the back to submit the host GPU work it recorded so far (copies of command
+    /// list pages the front waits for), between two entries or at once when it is idle
+    void RequestFlush();
+
+    /// Notes device pages the front read command lists from that the GPU wrote: the buffer cache
+    /// copies them to host memory after the work that writes them (BufferCache::NoteListWrite)
+    void MarkCommandListPage(DAddr address) noexcept;
+    [[nodiscard]] bool IsCommandListPage(DAddr address) const noexcept {
+        const u64 page = address >> PageBits;
+        return page < DevicePages &&
+               ((command_list_pages[page / 64].load(std::memory_order_relaxed) >> (page % 64)) &
+                1) != 0;
+    }
+    /// Calls func with the address of each command list page in [address, +size)
+    template <typename Func>
+    void ForEachCommandListPage(DAddr address, u64 size, Func&& func) const {
+        if (size == 0) {
+            return;
+        }
+        const u64 last = (std::min<u64>)((address + size - 1) >> PageBits, DevicePages - 1);
+        for (u64 page = address >> PageBits; page <= last;) {
+            // Storage buffers can be large: skip 64 pages at a time where none is a list page
+            const u64 word =
+                command_list_pages[page / 64].load(std::memory_order_relaxed) >> (page % 64);
+            if (word == 0) {
+                page = (page / 64 + 1) * 64;
+                continue;
+            }
+            if ((word & 1) != 0) {
+                func(static_cast<DAddr>(page << PageBits));
+            }
+            ++page;
+        }
+    }
+    /// 64 pages of the command list page bits, from page index * 64
+    [[nodiscard]] u64 CommandListPageWord(size_t index) const noexcept {
+        return command_list_pages[index].load(std::memory_order_relaxed);
+    }
+    /// Whether any page was marked: the buffer cache skips its checks until then
+    [[nodiscard]] bool HasCommandListPages() const noexcept {
+        return has_command_list_pages.load(std::memory_order_relaxed);
+    }
+    /// The active split once its front marked a command list page
+    [[nodiscard]] static GpuSplit* WithCommandListPages() noexcept {
+        GpuSplit* const split = active;
+        return split != nullptr && split->HasCommandListPages() ? split : nullptr;
     }
 
     /// Notes device memory the GPU wrote, from any thread; nothing when the split is off
@@ -97,6 +176,8 @@ public:
     }
 
 private:
+    static void Pause() noexcept;
+
     enum class Kind : u8 { Method, MultiMethod, EngineMethod, Call, Task };
     struct Entry {
         Kind kind;
@@ -116,12 +197,16 @@ private:
 
     void Push(const Entry& entry);
     void SetGpuWritten(DAddr address, u64 size) noexcept;
+    /// Back: submits the recorded host GPU work when the front asked for it
+    void BackFlush();
+    std::atomic<bool> flush_requested{};
 
-    static constexpr size_t PageBits = 12;
-    static constexpr size_t DevicePages = size_t{1} << (36 - PageBits);
     /// A bit per device page the GPU wrote, so the front checks command lists without the
     /// buffer cache's lock
     std::unique_ptr<std::atomic<u64>[]> gpu_written;
+    /// A bit per device page of the GPU-written command lists the front read (same layout)
+    std::unique_ptr<std::atomic<u64>[]> command_list_pages;
+    std::atomic<bool> has_command_list_pages{};
     u64 ReserveData(u32 amount, u64& offset);
     void Run(std::stop_token stop_token);
     void Execute(Entry& entry);
@@ -137,6 +222,7 @@ private:
     alignas(64) std::atomic<u64> entry_head{}; ///< Written by the front
     u64 data_head{};
     u64 task_head{};
+    u64 last_writer{}; ///< Entries pushed when the last writer was (NoteWriter)
     alignas(64) std::atomic<u64> entry_tail{}; ///< Written by the back
     std::atomic<u64> data_tail{};
     std::atomic<u64> task_tail{};

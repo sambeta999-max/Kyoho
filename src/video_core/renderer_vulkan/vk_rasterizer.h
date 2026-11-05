@@ -72,6 +72,9 @@ private:
                             const Tegra::DMA::BufferOperand& src,
                             const Tegra::DMA::ImageOperand& dst);
 
+    /// Copies the command list pages the operation wrote for the split's front
+    void RecordListCopies();
+
     BufferCache& buffer_cache;
     TextureCache& texture_cache;
     Scheduler& scheduler;
@@ -97,6 +100,9 @@ public:
     void BindGraphicsUniformBuffer(size_t stage, u32 index, GPUVAddr gpu_addr, u32 size) override;
     void DisableGraphicsUniformBuffer(size_t stage, u32 index) override;
     void FlushAll() override;
+    GpuWrittenList ReadGpuWrittenCommandList(DAddr addr, std::span<u8> out) override;
+    void NoteGpuWrittenCommandListSynced(DAddr page) override;
+    void FlushListCopies() override;
     void FlushRegion(DAddr addr, u64 size,
                      VideoCommon::CacheType which = VideoCommon::CacheType::All) override;
     bool MustFlushRegion(DAddr addr, u64 size,
@@ -159,6 +165,11 @@ private:
     void PrepareDraw(bool is_indexed, Func&&);
 
     void FlushWork();
+
+    /// Records copies of the command list pages the work just recorded wrote
+    /// (BufferCache::CopyListPages); they go with the next submission, or with the one the
+    /// split's front asks for when it waits for one (FlushListCopies)
+    void RecordListCopies();
 
     void UpdateDynamicStates();
 

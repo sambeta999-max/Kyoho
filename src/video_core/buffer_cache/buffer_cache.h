@@ -21,6 +21,7 @@
 
 namespace VideoCommon {
 
+using Core::DEVICE_PAGEBITS;
 using Core::DEVICE_PAGESIZE;
 
 template <class P>
@@ -124,6 +125,8 @@ void BufferCache<P>::UnmapGPUMemory(size_t as_id, GPUVAddr gpu_addr, size_t size
 
 template <class P>
 void BufferCache<P>::WriteMemory(DAddr device_addr, u64 size, bool keep_page_gpu_data) {
+    NoteListHostWrite(device_addr, size);
+    NoteCpuAccess(device_addr, size);
     if (IsRegionGpuModified(device_addr, size)) {
         ClearDownload(device_addr, size);
         gpu_modified_ranges.Subtract(device_addr, size);
@@ -158,6 +161,8 @@ void BufferCache<P>::CachedWriteMemory(DAddr device_addr, u64 size) {
         return;
     }
 
+    NoteListHostWrite(device_addr, size);
+    NoteCpuAccess(device_addr, size);
     tmp_buffer.resize_destructive(size);
     device_memory.ReadBlockUnsafe(device_addr, tmp_buffer.data(), size);
 
@@ -194,6 +199,8 @@ std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DA
                                            device_addr_end_aligned - device_addr_start_aligned);
     memory_tracker.MarkRegionAsPreflushable(device_addr_start_aligned,
                                             device_addr_end_aligned - device_addr_start_aligned);
+    // Later reads of the area are not trapped: they rely on the downloads at each fence
+    NoteCpuAccess(device_addr_start_aligned, device_addr_end_aligned - device_addr_start_aligned);
     return area;
 }
 
@@ -253,7 +260,7 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
         const DAddr diff = base_address - *cpu_src_address;
         const DAddr new_base_address = *cpu_dest_address + diff;
         tmp_intervals.push_back({new_base_address, size});
-        uncommitted_gpu_modified_ranges.Add(new_base_address, size);
+        AddFenceDownload(new_base_address, size);
     };
     gpu_modified_ranges.ForEachInRange(*cpu_src_address, amount, mirror);
     // This subtraction in this order is important for overlapping copies.
@@ -266,6 +273,8 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
     src_buffer.MarkUsage(copy.src_offset, copy.size);
     dest_buffer.MarkUsage(copy.dst_offset, copy.size);
     runtime.CopyBuffer(dest_buffer, src_buffer, copies, true);
+    // The host buffer holds the copied words whether or not they came from the GPU
+    NoteListWrite(buffer_b, *cpu_dest_address, amount);
     if (has_new_downloads) {
         memory_tracker.MarkRegionAsGpuModified(*cpu_dest_address, amount);
         const bool should_sync = Settings::IsGPUFenceBehaviorBalanced() || Settings::IsGPUFenceBehaviorAccurate();
@@ -300,6 +309,7 @@ bool BufferCache<P>::DMAClear(GPUVAddr dst_address, u64 amount, u32 value) {
     const u32 offset = dest_buffer.Offset(*cpu_dst_address);
     runtime.ClearBuffer(dest_buffer, offset, size, value);
     dest_buffer.MarkUsage(offset, size);
+    NoteListWrite(buffer, *cpu_dst_address, size);
     return true;
 }
 
@@ -1575,7 +1585,254 @@ void BufferCache<P>::MarkWrittenBuffer(BufferId buffer_id, DAddr device_addr, u3
     }
     memory_tracker.MarkRegionAsGpuModified(device_addr, size);
     gpu_modified_ranges.Add(device_addr, size);
-    uncommitted_gpu_modified_ranges.Add(device_addr, size);
+    AddFenceDownload(device_addr, size);
+    NoteListWrite(buffer_id, device_addr, size);
+}
+
+template <class P>
+void BufferCache<P>::AddFenceDownload(DAddr device_addr, u64 size) {
+    if (AsyncBufferDownloads()) {
+        uncommitted_gpu_modified_ranges.Add(device_addr, size);
+        return;
+    }
+    // Still downloaded at the next fence: the GPU-written bytes on pages the guest CPU reads or
+    // writes, and on command list pages.
+    // - Reactive flushing traps only the first CPU read of an area (GetFlushArea marks it
+    //   preflushable); later reads see what the fence downloads brought. Without them Donkey
+    //   Kong Bananza read stale culling results and drew ~45% more each frame.
+    // - A CPU write to a page with GPU-written bytes guest memory lacks downloads them first
+    //   (WriteMemory) with a full host GPU wait.
+    // - The front of a split GPU thread reads the command lists a draw wrote after draining;
+    //   each would otherwise wait for a download of its own.
+    // Pages only GPU work touches (Fast Fusion's storage buffers, 1-8 MiB a fence) stay on the
+    // host GPU until something flushes them
+    const GpuSplit* const split = GpuSplit::WithCommandListPages();
+    if (cpu_accessed_pages.empty() && split == nullptr) {
+        return;
+    }
+    const DAddr end = device_addr + size;
+    const u64 first = device_addr >> DEVICE_PAGEBITS;
+    const u64 last = (std::min<u64>)((end - 1) >> DEVICE_PAGEBITS, FENCE_DOWNLOAD_PAGES - 1);
+    u64 run_begin = ~u64{0};
+    const auto add_run = [&](u64 end_page) {
+        if (run_begin == ~u64{0}) {
+            return;
+        }
+        const DAddr begin = (std::max)(DAddr{run_begin << DEVICE_PAGEBITS}, device_addr);
+        const DAddr run_end = (std::min)(DAddr{end_page << DEVICE_PAGEBITS}, end);
+        uncommitted_gpu_modified_ranges.Add(begin, run_end - begin);
+        run_begin = ~u64{0};
+    };
+    for (u64 page = first; page <= last;) {
+        const size_t index = page / 64;
+        u64 word = cpu_accessed_pages.empty() ? 0 : cpu_accessed_pages[index];
+        if (split != nullptr) {
+            word |= split->CommandListPageWord(index);
+        }
+        word >>= page % 64;
+        if (word == 0) {
+            add_run(page);
+            page = (index + 1) * 64;
+            continue;
+        }
+        if ((word & 1) != 0) {
+            if (run_begin == ~u64{0}) {
+                run_begin = page;
+            }
+        } else {
+            add_run(page);
+        }
+        ++page;
+    }
+    add_run(last + 1);
+}
+
+template <class P>
+void BufferCache<P>::NoteCpuAccess(DAddr device_addr, u64 size) {
+    if (size == 0) {
+        return;
+    }
+    if (cpu_accessed_pages.empty()) {
+        cpu_accessed_pages.resize(FENCE_DOWNLOAD_PAGES / 64);
+    }
+    const u64 last =
+        (std::min<u64>)((device_addr + size - 1) >> DEVICE_PAGEBITS, FENCE_DOWNLOAD_PAGES - 1);
+    for (u64 page = device_addr >> DEVICE_PAGEBITS; page <= last; ++page) {
+        cpu_accessed_pages[page / 64] |= u64{1} << (page % 64);
+    }
+}
+
+template <class P>
+void BufferCache<P>::NoteListWrite(BufferId buffer_id, DAddr device_addr, u64 size) {
+    if constexpr (!IS_OPENGL) {
+        const GpuSplit* const split = GpuSplit::WithCommandListPages();
+        if (split == nullptr) {
+            return;
+        }
+        split->ForEachCommandListPage(device_addr, size, [&](DAddr page) {
+            {
+                std::scoped_lock lock{list_mutex};
+                ListPage& entry = list_pages[page];
+                ++entry.writes;
+                if (!collect_list_copies && !entry.draw_written) {
+                    entry.draw_written = true;
+                    LOG_INFO(HW_GPU,
+                             "Command list page {:#x} is written by draws too: its lists drain "
+                             "the split",
+                             page);
+                }
+            }
+            if (collect_list_copies) {
+                list_copy_requests.emplace_back(buffer_id, page);
+            }
+        });
+    }
+}
+
+template <class P>
+bool BufferCache<P>::CopyListPages(u64 tick) {
+    if constexpr (IS_OPENGL) {
+        return false;
+    } else {
+        if (list_copy_requests.empty()) {
+            return false;
+        }
+        std::ranges::sort(list_copy_requests, {}, &std::pair<BufferId, DAddr>::second);
+        constexpr DAddr page_size = GpuSplit::PageSize;
+        bool recorded = false;
+        for (size_t i = 0; i < list_copy_requests.size(); ++i) {
+            const auto [buffer_id, page] = list_copy_requests[i];
+            // The last write of a page wins
+            if (i + 1 < list_copy_requests.size() && list_copy_requests[i + 1].second == page) {
+                continue;
+            }
+            Buffer& buffer = slot_buffers[buffer_id];
+            const DAddr begin = (std::max<DAddr>)(page, buffer.CpuAddr());
+            const DAddr end =
+                (std::min<DAddr>)(page + page_size, buffer.CpuAddr() + buffer.SizeBytes());
+            if (begin >= end) {
+                continue;
+            }
+            ListStaging staging = runtime.DownloadStagingBuffer(page_size, true);
+            const BufferCopy copy{
+                .src_offset = buffer.Offset(begin),
+                .dst_offset = staging.offset + (begin - page),
+                .size = end - begin,
+            };
+            buffer.MarkUsage(copy.src_offset, copy.size);
+            runtime.CopyBuffer(staging.buffer, buffer, std::span{&copy, 1}, true);
+            recorded = true;
+            last_list_copy_tick = tick;
+            std::scoped_lock lock{list_mutex};
+            ListPage& entry = list_pages[page];
+            if (entry.copy) {
+                retired_list_copies.emplace_back(entry.copy_tick, std::move(*entry.copy));
+            }
+            entry.copy = staging;
+            entry.copy_writes = entry.writes;
+            entry.copy_tick = tick;
+            entry.copy_begin = static_cast<u32>(begin - page);
+            entry.copy_end = static_cast<u32>(end - page);
+        }
+        list_copy_requests.clear();
+        std::erase_if(retired_list_copies, [this](auto& retired) {
+            if (!runtime.IsFree(retired.first)) {
+                return false;
+            }
+            runtime.FreeDeferredStagingBuffer(retired.second);
+            return true;
+        });
+        return recorded;
+    }
+}
+
+template <class P>
+auto BufferCache<P>::ReadListCopy(DAddr device_addr, std::span<u8> out) -> ListRead {
+    if constexpr (IS_OPENGL) {
+        return ListRead::Unknown;
+    } else {
+        constexpr DAddr page_size = GpuSplit::PageSize;
+        const DAddr page = device_addr & ~(page_size - 1);
+        const u64 offset = device_addr - page;
+        if (offset + out.size() > page_size) {
+            return ListRead::Unknown;
+        }
+        const auto current = [&](const ListPage& entry) {
+            return entry.copy && !entry.draw_written && entry.copy_writes == entry.writes &&
+                   offset >= entry.copy_begin && offset + out.size() <= entry.copy_end;
+        };
+        u64 tick{};
+        u64 writes{};
+        {
+            std::scoped_lock lock{list_mutex};
+            const auto it = list_pages.find(page);
+            if (it == list_pages.end()) {
+                return ListRead::Unknown;
+            }
+            const ListPage& entry = it->second;
+            // Pages the CPU writes the lists of (GPU-written once, long before) stay synced
+            if (!entry.draw_written && entry.synced_writes == entry.writes) {
+                return ListRead::Synced;
+            }
+            if (!current(entry)) {
+                return ListRead::Unknown;
+            }
+            // The lists after the first of a batch find the copy done: read it at once
+            if (runtime.IsFree(entry.copy_tick)) {
+                std::memcpy(out.data(), entry.copy->mapped_span.data() + offset, out.size());
+                return ListRead::Copied;
+            }
+            tick = entry.copy_tick;
+            writes = entry.copy_writes;
+        }
+        // The back submits the copy with its next submission, or now when asked
+        if (!runtime.IsSubmitted(tick)) {
+            if (GpuSplit* const split = GpuSplit::Active()) {
+                split->RequestFlush();
+            }
+        }
+        runtime.WaitSubmittedTick(tick);
+        std::scoped_lock lock{list_mutex};
+        const auto it = list_pages.find(page);
+        if (it == list_pages.end() || !current(it->second) || it->second.copy_tick != tick ||
+            it->second.copy_writes != writes) {
+            return ListRead::Unknown;
+        }
+        std::memcpy(out.data(), it->second.copy->mapped_span.data() + offset, out.size());
+        return ListRead::Copied;
+    }
+}
+
+template <class P>
+void BufferCache<P>::NoteListSynced(DAddr page) {
+    if constexpr (!IS_OPENGL) {
+        std::scoped_lock lock{list_mutex};
+        ListPage& entry = list_pages[page];
+        entry.synced_writes = entry.writes;
+    }
+}
+
+template <class P>
+void BufferCache<P>::NoteListHostWrite(DAddr device_addr, u64 size) {
+    if constexpr (!IS_OPENGL) {
+        const GpuSplit* const split = GpuSplit::WithCommandListPages();
+        if (split == nullptr) {
+            return;
+        }
+        split->ForEachCommandListPage(device_addr, size, [&](DAddr page) {
+            std::scoped_lock lock{list_mutex};
+            const auto it = list_pages.find(page);
+            if (it == list_pages.end()) {
+                return;
+            }
+            ListPage& entry = it->second;
+            const bool synced = entry.synced_writes == entry.writes;
+            ++entry.writes;
+            if (synced) {
+                entry.synced_writes = entry.writes;
+            }
+        });
+    }
 }
 
 template <class P>

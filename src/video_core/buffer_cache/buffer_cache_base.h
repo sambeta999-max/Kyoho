@@ -7,13 +7,16 @@
 #pragma once
 
 #include <algorithm>
+#include <cstdlib>
 #include <array>
 #include <bit>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <numeric>
+#include <optional>
 #include <span>
+#include <unordered_map>
 #include <vector>
 
 #include "common/container/unordered_map.h"
@@ -37,6 +40,7 @@
 #include "video_core/dirty_flags.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/kepler_compute.h"
+#include "video_core/gpu_split.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/memory_manager.h"
 #include "video_core/surface.h"
@@ -317,6 +321,35 @@ public:
 
     bool DMAClear(GPUVAddr src_address, u64 amount, u32 value);
 
+    /// Command lists the GPU writes, on a split GPU thread (GpuSplit::MarkCommandListPage).
+    /// While collecting (a compute dispatch or a DMA operation being recorded), writes to command
+    /// list pages are noted; CopyListPages then records copies of those pages into host memory
+    /// after the work. Ported from Eglantine 8f1435f8db ("nx2: read GPU-written command lists from
+    /// copies instead of draining", buffer_cache.h / buffer_cache_base.h)
+    void CollectListCopies(bool collect) {
+        collect_list_copies = collect;
+        if (!collect) {
+            list_copy_requests.clear();
+        }
+    }
+    /// True when it recorded copies, which the GPU completes at `tick`
+    bool CopyListPages(u64 tick);
+    /// The tick of the last copy CopyListPages recorded
+    [[nodiscard]] u64 LastListCopyTick() const noexcept {
+        return last_list_copy_tick;
+    }
+    enum class ListRead { Unknown, Copied, Synced };
+    /// Front of the split, without the cache's lock: Synced when guest memory holds the page
+    /// `device_addr` lies in (flushed with the back idle and written by no GPU work since), else
+    /// Copied with `out` filled from the copy made after its last write once the GPU finished it.
+    /// Unknown otherwise: the caller drains the split and flushes
+    ListRead ReadListCopy(DAddr device_addr, std::span<u8> out);
+    /// Front of the split, the back idle: the command list page was flushed to guest memory
+    void NoteListSynced(DAddr page);
+    /// CPU and inline writes reach guest memory: a synced page stays synced, but its copy no
+    /// longer holds the page
+    void NoteListHostWrite(DAddr device_addr, u64 size);
+
     /// Return true when a CPU region is modified from the GPU
     [[nodiscard]] bool IsRegionGpuModified(DAddr addr, size_t size);
 
@@ -436,6 +469,16 @@ private:
 
     void MarkWrittenBuffer(BufferId buffer_id, DAddr device_addr, u32 size, bool needs_sync = false);
 
+    /// Counts a GPU write to the command list pages in the range (making their copies stale)
+    /// and, while collecting, asks for new copies
+    void NoteListWrite(BufferId buffer_id, DAddr device_addr, u64 size);
+
+    /// Queues a GPU-written range for the download at the next fence when AsyncBufferDownloads,
+    /// otherwise only its parts on pages the CPU reads or writes or on command list pages
+    void AddFenceDownload(DAddr device_addr, u64 size);
+    /// Notes device pages the guest CPU wrote or read (AddFenceDownload)
+    void NoteCpuAccess(DAddr device_addr, u64 size);
+
     [[nodiscard]] BufferId FindBuffer(DAddr device_addr, u32 size, bool sparse_compatible);
 
     void SynchronizeBufferWrites(Buffer& buffer);
@@ -517,6 +560,37 @@ private:
 
     MemoryTracker memory_tracker;
     Common::RangeSet<DAddr> uncommitted_gpu_modified_ranges;
+    /// A bit per device page the guest CPU wrote or read, once AsyncBufferDownloads is off
+    static constexpr size_t FENCE_DOWNLOAD_PAGES = size_t{1} << (36 - 12);
+    std::vector<u64> cpu_accessed_pages;
+
+    /// Whether GPU-written buffer ranges are copied back to guest memory at the next fence;
+    /// otherwise only when something flushes them (a guest CPU read with reactive flushing, a
+    /// DMA read), as upstream yuzu below High GPU accuracy, except on pages the CPU reads or
+    /// writes and on command list pages (AddFenceDownload). Not for Switch 2 titles: they signal
+    /// fences per compute dispatch and their dispatches write large storage buffers, so Fast
+    /// Fusion copied 1-8 MiB ranges ~600 times a second, ~40% of the host GPU's time, which the
+    /// front of the split GPU thread waited behind for each command list the GPU wrote.
+    /// Ported from Eglantine be449da3db ("buffer_cache: no buffer downloads at every fence for
+    /// Switch 2 titles", buffer_cache.h / buffer_cache_base.h). EDEN_NX2_BUFFER_DOWNLOADS=0/1
+    /// forces either way
+public:
+    /// Whether every GPU-written range is downloaded at the next fence (AsyncBufferDownloads)
+    [[nodiscard]] bool HasFenceDownloads() const {
+        return AsyncBufferDownloads();
+    }
+
+private:
+    bool AsyncBufferDownloads() const {
+        static const int forced = [] {
+            const char* value = std::getenv("EDEN_NX2_BUFFER_DOWNLOADS");
+            return value == nullptr ? -1 : (value[0] == '0' ? 0 : 1);
+        }();
+        if (forced >= 0) {
+            return forced == 1;
+        }
+        return gpu_memory == nullptr || !gpu_memory->UsesNativeTiling();
+    }
     Common::RangeSet<DAddr> gpu_modified_ranges;
     std::deque<Common::RangeSet<DAddr>> committed_gpu_modified_ranges;
 
@@ -553,6 +627,30 @@ private:
 
     std::array<BufferId, ((1ULL << Tegra::MaxwellDeviceMemoryManager::AS_BITS) >> CACHING_PAGEBITS)> page_table;
     Common::ScratchBuffer<u8> tmp_buffer;
+
+    /// A command list page (CopyListPages): the GPU writes noted to it and its last copy
+    using ListStaging = decltype(std::declval<Runtime&>().DownloadStagingBuffer(size_t{}, true));
+    struct ListPage {
+        u64 writes{};      ///< GPU writes noted to the page
+        u64 copy_writes{}; ///< `writes` when the copy was made: the copy is current while equal
+        u64 copy_tick{};   ///< GPU tick that completes the copy
+        /// `writes` when the front last flushed the page: guest memory holds it while equal
+        u64 synced_writes{~u64{0}};
+        u32 copy_begin{}; ///< Bytes of the page the copy holds (a buffer can end inside it)
+        u32 copy_end{};
+        /// Written outside a compute dispatch or a DMA operation (a draw's storage writes) at
+        /// least once: the front can not tell from what it pushed whether such a write is still
+        /// queued, so the lists of the page always drain the split instead
+        bool draw_written{};
+        std::optional<ListStaging> copy;
+    };
+    std::mutex list_mutex; ///< list_pages: the split's front reads the copies
+    std::unordered_map<DAddr, ListPage> list_pages;
+    /// Copies replaced while the GPU may still write them: freed once it is past their tick
+    std::vector<std::pair<u64, ListStaging>> retired_list_copies;
+    boost::container::small_vector<std::pair<BufferId, DAddr>, 8> list_copy_requests;
+    bool collect_list_copies{};
+    u64 last_list_copy_tick{};
 };
 
 } // namespace VideoCommon

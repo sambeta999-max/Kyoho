@@ -182,6 +182,15 @@ private:
     void SplitPullerMethod(VideoCommon::GpuSplit& split, const Engines::Puller::MethodCall& call);
     /// Whether a command list the front is about to read holds data the GPU wrote
     bool SplitReadsGpuWritten(VideoCommon::GpuSplit& split, GPUVAddr address, size_t size);
+    /// Reads a command list on pages the GPU wrote into command_headers, from the copies the
+    /// buffer cache made after the work that wrote them or from guest memory for pages flushed
+    /// since. False when not all are current: the caller drains, flushes and reads guest memory
+    bool SplitReadGpuWrittenCommands(VideoCommon::GpuSplit& split, GPUVAddr address, u32 count);
+    /// With the back idle: flushes the pages of [address, +size) and notes the command list
+    /// pages among them synced
+    void SplitFlushCommandPages(VideoCommon::GpuSplit& split, GPUVAddr address, size_t size);
+    /// Whether the method can write memory command lists are read from, as compute and DMA work
+    bool IsSplitWriter(u32 subchannel, u32 method) const;
 
 public:
     Common::ScratchBuffer<CommandHeader> command_headers; ///< Buffer for list of commands fetched at once

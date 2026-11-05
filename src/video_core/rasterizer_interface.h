@@ -93,6 +93,23 @@ public:
     virtual void FlushRegion(DAddr addr, u64 size,
                              VideoCommon::CacheType which = VideoCommon::CacheType::All) = 0;
 
+    /// Split GPU thread, from its front: where the words of a command list the GPU wrote are
+    enum class GpuWrittenList {
+        Unknown, ///< Neither: the caller drains, flushes the page and notes it synced
+        Copied,  ///< `out` (within one 4 KiB page) is filled from the copy made after its writer
+        Synced,  ///< Guest memory holds the page: no GPU work wrote it since it was flushed
+    };
+    virtual GpuWrittenList ReadGpuWrittenCommandList([[maybe_unused]] DAddr addr,
+                                                     [[maybe_unused]] std::span<u8> out) {
+        return GpuWrittenList::Unknown;
+    }
+
+    /// Split GPU thread, on its back: submits the command list page copies recorded so far
+    virtual void FlushListCopies() {}
+
+    /// Split GPU thread: its front flushed this command list page with the back idle
+    virtual void NoteGpuWrittenCommandListSynced([[maybe_unused]] DAddr page) {}
+
     /// Check if the the specified memory area requires flushing to CPU Memory.
     virtual bool MustFlushRegion(DAddr addr, u64 size,
                                  VideoCommon::CacheType which = VideoCommon::CacheType::All) = 0;

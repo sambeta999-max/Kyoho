@@ -928,6 +928,12 @@ void RasterizerVulkan::DispatchCompute() {
         return;
     }
     std::scoped_lock lock{texture_cache.mutex, buffer_cache.mutex};
+    // Command list pages the dispatch writes are copied for the split's front right after it
+    buffer_cache.CollectListCopies(true);
+    SCOPE_EXIT {
+        RecordListCopies();
+        buffer_cache.CollectListCopies(false);
+    };
     capture.bindings.clear();
     if (!pipeline->Configure(*kepler_compute, *gpu_memory, scheduler, buffer_cache,
                              texture_cache)) {
@@ -1033,6 +1039,36 @@ void Vulkan::RasterizerVulkan::DisableGraphicsUniformBuffer(size_t stage, u32 in
 
 void RasterizerVulkan::FlushAll() {}
 
+void RasterizerVulkan::RecordListCopies() {
+    buffer_cache.CopyListPages(scheduler.CurrentTick());
+}
+
+void RasterizerVulkan::FlushListCopies() {
+    // Submitting after every dispatch that writes a list page made Fast Fusion submit ~2800
+    // times a second (each ends the render pass); the front waits for few of those copies, the
+    // others go with a later submission
+    if (buffer_cache.LastListCopyTick() >= scheduler.CurrentTick()) {
+        scheduler.Flush();
+    }
+}
+
+VideoCore::RasterizerInterface::GpuWrittenList RasterizerVulkan::ReadGpuWrittenCommandList(
+    DAddr addr, std::span<u8> out) {
+    // No cache lock: the front only reads the copies, under their own lock
+    switch (buffer_cache.ReadListCopy(addr, out)) {
+    case BufferCache::ListRead::Copied:
+        return GpuWrittenList::Copied;
+    case BufferCache::ListRead::Synced:
+        return GpuWrittenList::Synced;
+    default:
+        return GpuWrittenList::Unknown;
+    }
+}
+
+void RasterizerVulkan::NoteGpuWrittenCommandListSynced(DAddr page) {
+    buffer_cache.NoteListSynced(page);
+}
+
 void RasterizerVulkan::FlushRegion(DAddr addr, u64 size, VideoCommon::CacheType which) {
     if (addr == 0 || size == 0) {
         return;
@@ -1073,6 +1109,17 @@ VideoCore::RasterizerDownloadArea RasterizerVulkan::GetFlushArea(DAddr addr, u64
         auto area = texture_cache.GetFlushArea(addr, size);
         if (area) {
             return *area;
+        }
+    }
+    {
+        // Without the buffer downloads at every fence, the first CPU read of GPU-written buffer
+        // memory flushes it, and the pages it reads keep being downloaded at fences
+        // (BufferCache::AddFenceDownload); otherwise the fences bring everything
+        std::scoped_lock lock{buffer_cache.mutex};
+        if (!buffer_cache.HasFenceDownloads()) {
+            if (auto area = buffer_cache.GetFlushArea(addr, size)) {
+                return *area;
+            }
         }
     }
     VideoCore::RasterizerDownloadArea new_area{
@@ -1316,6 +1363,8 @@ void RasterizerVulkan::AccelerateInlineToMemory(GPUVAddr address, size_t copy_si
     gpu_memory->WriteBlockUnsafe(address, memory.data(), copy_size);
     {
         std::unique_lock lock{buffer_cache.mutex};
+        // Guest memory has the words now: a command list copy of the page no longer does
+        buffer_cache.NoteListHostWrite(*cpu_addr, copy_size);
         if (!buffer_cache.InlineMemory(*cpu_addr, copy_size, memory)) {
             buffer_cache.WriteMemory(*cpu_addr, copy_size);
         }
@@ -1386,12 +1435,23 @@ AccelerateDMA::AccelerateDMA(BufferCache& buffer_cache_, TextureCache& texture_c
 
 bool AccelerateDMA::BufferClear(GPUVAddr src_address, u64 amount, u32 value) {
     std::scoped_lock lock{buffer_cache.mutex};
-    return buffer_cache.DMAClear(src_address, amount, value);
+    buffer_cache.CollectListCopies(true);
+    const bool cleared = buffer_cache.DMAClear(src_address, amount, value);
+    RecordListCopies();
+    return cleared;
 }
 
 bool AccelerateDMA::BufferCopy(GPUVAddr src_address, GPUVAddr dest_address, u64 amount) {
     std::scoped_lock lock{buffer_cache.mutex};
-    return buffer_cache.DMACopy(src_address, dest_address, amount);
+    buffer_cache.CollectListCopies(true);
+    const bool copied = buffer_cache.DMACopy(src_address, dest_address, amount);
+    RecordListCopies();
+    return copied;
+}
+
+void AccelerateDMA::RecordListCopies() {
+    buffer_cache.CopyListPages(scheduler.CurrentTick());
+    buffer_cache.CollectListCopies(false);
 }
 
 template <bool IS_IMAGE_UPLOAD>

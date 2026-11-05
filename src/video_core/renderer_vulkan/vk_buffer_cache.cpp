@@ -422,14 +422,32 @@ void GlobalMemoryTable::Register(GPUVAddr gpu_addr, u64 size, VkBuffer buffer,
     if (size == 0) {
         return;
     }
-    RecentRegistration& last = recent[(gpu_addr >> 6) % recent.size()];
-    if (last.gpu_addr == gpu_addr && last.size == size && last.buffer == buffer &&
-        last.host_address == host_address) {
+    const GPUVAddr end_addr = gpu_addr + size;
+    const VkDeviceAddress delta = host_address - gpu_addr;
+    std::vector<Mapping>& mappings = registered[buffer];
+    auto mapping = std::ranges::find(mappings, delta, &Mapping::delta);
+    if (mapping == mappings.end()) {
+        mapping = mappings.insert(mappings.end(), Mapping{.delta = delta, .ranges = {}});
+    }
+    auto& ranges = mapping->ranges;
+    if (std::ranges::any_of(ranges, [&](const auto& range) {
+            return range.first <= gpu_addr && end_addr <= range.second;
+        })) {
         return;
     }
-    last = RecentRegistration{gpu_addr, size, buffer, host_address};
+    // Keep the ranges sorted and merged
+    ranges.emplace_back(gpu_addr, end_addr);
+    std::ranges::sort(ranges);
+    size_t merged = 0;
+    for (size_t i = 1; i < ranges.size(); ++i) {
+        if (ranges[i].first <= ranges[merged].second) {
+            ranges[merged].second = (std::max)(ranges[merged].second, ranges[i].second);
+        } else {
+            ranges[++merged] = ranges[i];
+        }
+    }
+    ranges.resize(merged + 1);
 
-    const GPUVAddr end_addr = gpu_addr + size;
     for (GPUVAddr page_addr = Common::AlignDown(gpu_addr, Shader::GLOBAL_MEMORY_PAGE_SIZE);
          page_addr < end_addr; page_addr += Shader::GLOBAL_MEMORY_PAGE_SIZE) {
         const u32 begin = static_cast<u32>((std::max)(gpu_addr, page_addr) - page_addr);
@@ -468,6 +486,8 @@ void GlobalMemoryTable::RegisterPage(u64 page, u32 begin, u32 end, VkBuffer buff
             std::atomic_thread_fence(std::memory_order_release);
             entry.end = end;
             if (owners[slot] != buffer) {
+                // The previous owner registers this page again the next time it is bound
+                registered.erase(owners[slot]);
                 owners[slot] = buffer;
                 owner_slots[buffer].push_back(slot);
             }
@@ -500,11 +520,17 @@ void GlobalMemoryTable::RegisterPage(u64 page, u32 begin, u32 end, VkBuffer buff
     entry.tag = tag;
     std::atomic_thread_fence(std::memory_order_release);
     entry.end = end;
+    if (owners[slot] != VK_NULL_HANDLE) {
+        // Evicted: its owner registers this page again the next time it is bound
+        registered.erase(owners[slot]);
+    }
     owners[slot] = buffer;
     owner_slots[buffer].push_back(slot);
 }
 
 void GlobalMemoryTable::Unregister(VkBuffer buffer) {
+    // Vulkan may hand the same handle to a new buffer
+    registered.erase(buffer);
     const auto it = owner_slots.find(buffer);
     if (it == owner_slots.end()) {
         return;
@@ -522,11 +548,6 @@ void GlobalMemoryTable::Unregister(VkBuffer buffer) {
         owners[slot] = VK_NULL_HANDLE;
     }
     owner_slots.erase(it);
-    for (RecentRegistration& registration : recent) {
-        if (registration.buffer == buffer) {
-            registration = {};
-        }
-    }
 }
 
 StagingBufferRef BufferCacheRuntime::UploadStagingBuffer(size_t size) {
@@ -583,6 +604,14 @@ bool BufferCacheRuntime::IsFree(u64 tick) {
 
 void BufferCacheRuntime::Wait(u64 tick) {
     scheduler.Wait(tick);
+}
+
+bool BufferCacheRuntime::IsSubmitted(u64 tick) const noexcept {
+    return tick < scheduler.CurrentTick();
+}
+
+void BufferCacheRuntime::WaitSubmittedTick(u64 tick) {
+    scheduler.GetMasterSemaphore().Wait(tick);
 }
 
 void BufferCacheRuntime::Finish() {

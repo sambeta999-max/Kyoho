@@ -121,11 +121,10 @@ public:
     void Unregister(VkBuffer buffer);
 
 private:
-    struct RecentRegistration {
-        GPUVAddr gpu_addr;
-        u64 size;
-        VkBuffer buffer;
-        VkDeviceAddress host_address;
+    /// GPU address ranges registered for one buffer at one mapping (host address - GPU address)
+    struct Mapping {
+        VkDeviceAddress delta;
+        std::vector<std::pair<GPUVAddr, GPUVAddr>> ranges;
     };
 
     void RegisterPage(u64 page, u32 begin, u32 end, VkBuffer buffer, VkDeviceAddress base);
@@ -135,7 +134,8 @@ private:
     std::span<u8> mapped;
     std::vector<VkBuffer> owners;
     std::unordered_map<VkBuffer, std::vector<u32>> owner_slots;
-    std::array<RecentRegistration, 1024> recent{};
+    /// What each buffer has registered, so that binding it again costs no table work
+    std::unordered_map<VkBuffer, std::vector<Mapping>> registered;
     bool full_warned{};
 };
 
@@ -159,6 +159,12 @@ public:
     bool IsFree(u64 tick);
 
     void Wait(u64 tick);
+
+    /// Waits for a submitted tick without flushing: safe on threads other than the GPU thread
+    void WaitSubmittedTick(u64 tick);
+
+    /// Whether the submission of a tick was handed to the scheduler's worker
+    [[nodiscard]] bool IsSubmitted(u64 tick) const noexcept;
 
     void Finish();
 
