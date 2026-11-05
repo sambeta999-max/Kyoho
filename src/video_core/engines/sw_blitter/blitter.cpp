@@ -204,7 +204,8 @@ bool SoftwareBlitEngine::Blit(Fermi2D::Surface& src, Fermi2D::Surface& dst,
     if (src.linear == Fermi2D::MemoryLayout::BlockLinear) {
         UnswizzleSubrect(impl->src_buffer, tmp_buffer, src_bytes_per_pixel, src.width, src.height,
                          src.depth, config.src_x0, config.src_y0, src_extent_x, src_extent_y,
-                         src.block_height, src.block_depth, src_extent_x * src_bytes_per_pixel);
+                         src.block_height, src.block_depth, src_extent_x * src_bytes_per_pixel,
+                         memory_manager.UsesNativeTiling());
     } else {
         ProcessPitchLinear<false>(tmp_buffer, impl->src_buffer, src_extent_x, src_extent_y,
                                   src.pitch, config.src_x0, config.src_y0, src_bytes_per_pixel);
@@ -228,7 +229,8 @@ bool SoftwareBlitEngine::Blit(Fermi2D::Surface& src, Fermi2D::Surface& dst,
     if (dst.linear == Fermi2D::MemoryLayout::BlockLinear) {
         SwizzleSubrect(tmp_buffer2, impl->dst_buffer, dst_bytes_per_pixel, dst.width, dst.height,
                        dst.depth, config.dst_x0, config.dst_y0, dst_extent_x, dst_extent_y,
-                       dst.block_height, dst.block_depth, dst_extent_x * dst_bytes_per_pixel);
+                       dst.block_height, dst.block_depth, dst_extent_x * dst_bytes_per_pixel,
+                       memory_manager.UsesNativeTiling());
     } else {
         ProcessPitchLinear<true>(impl->dst_buffer, tmp_buffer2, dst_extent_x, dst_extent_y,
                                  dst.pitch, config.dst_x0, config.dst_y0,
