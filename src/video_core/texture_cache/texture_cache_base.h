@@ -353,6 +353,9 @@ private:
     [[nodiscard]] ImageId InsertImage(const ImageInfo& info, GPUVAddr gpu_addr,
                                       RelaxedOptions options);
 
+    /// Whether the copies of an alias write every level and layer of an image whole
+    [[nodiscard]] bool AliasCoversImage(const ImageBase& image, const AliasedImage& alias) const;
+
     /// Create a new image and join perfectly matching existing images
     /// Remove joined images from the cache
     [[nodiscard]] ImageId JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DAddr cpu_addr);

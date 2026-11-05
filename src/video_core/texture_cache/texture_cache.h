@@ -1833,6 +1833,33 @@ ImageId TextureCache<P>::InsertImage(const ImageInfo& info, GPUVAddr gpu_addr,
 }
 
 template <class P>
+bool TextureCache<P>::AliasCoversImage(const ImageBase& image, const AliasedImage& alias) const {
+    const Extent2D block{
+        .width = DefaultBlockWidth(image.info.format),
+        .height = DefaultBlockHeight(image.info.format),
+    };
+    const bool is_3d = image.info.type == ImageType::e3D;
+    const s32 layers = is_3d ? 1 : image.info.resources.layers;
+    for (s32 level = 0; level < image.info.resources.levels; ++level) {
+        Extent3D size = MipSize(image.info.size, level);
+        size.width = Common::DivCeil(size.width, block.width);
+        size.height = Common::DivCeil(size.height, block.height);
+        const bool level_covered = std::ranges::any_of(alias.copies, [&](const ImageCopy& copy) {
+            return copy.dst_subresource.base_level == level &&
+                   copy.dst_subresource.base_layer == 0 &&
+                   copy.dst_subresource.num_layers >= layers && copy.dst_offset.x == 0 &&
+                   copy.dst_offset.y == 0 && copy.dst_offset.z == 0 &&
+                   copy.extent.width >= size.width && copy.extent.height >= size.height &&
+                   copy.extent.depth >= (is_3d ? size.depth : 1);
+        });
+        if (!level_covered) {
+            return false;
+        }
+    }
+    return true;
+}
+
+template <class P>
 ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DAddr cpu_addr) {
     ImageInfo new_info = info;
     const size_t size_bytes = CalculateGuestSizeInBytes(new_info);
@@ -1966,9 +1993,6 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
         DeleteImage(overlap_id);
     }
 
-    // TODO: Only upload what we need
-    RefreshContents(new_image, new_image_id);
-
     if (can_rescale) {
         ScaleUp(new_image);
     } else {
@@ -2012,6 +2036,41 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
             new_image.overlapping_images.size() > 1) {
             new_image.flags |= ImageFlagBits::BadOverlap;
         }
+    }
+
+    // A new image that takes nothing from GPU-modified overlaps is in the state a CPU write
+    // leaves an image in: CPU-modified and untracked, so its first use (PrepareImage) uploads the
+    // guest memory, or skips the upload when that use is a full clear. One that an alias copy of
+    // GPU-modified contents covers whole needs no upload either: the copy replaces all of it, and
+    // the guest memory is not newer (a CPU write marks the overlap CPU-modified). Uploading every
+    // new image here made the render targets a pool hands out cost a CPU unswizzle each time:
+    // Ocarina of Time's forest resizes its shadow targets every frame while the camera moves
+    // (1127 to 949 square), about 1.2 GB a second of uploads.
+    bool copies_gpu_contents = false;
+    bool covered = false;
+    for (const auto& copy_object : join_copies_to_do) {
+        const Image& overlap = slot_images[copy_object.id];
+        if (False(overlap.flags & ImageFlagBits::GpuModified)) {
+            continue;
+        }
+        copies_gpu_contents = true;
+        if (!covered && copy_object.is_alias && overlap.IsSafeGpuCopy() &&
+            overlap.info.num_samples == new_image.info.num_samples) {
+            const auto alias_pointer = join_alias_indices.find(copy_object.id);
+            if (alias_pointer != join_alias_indices.end()) {
+                covered = AliasCoversImage(new_image,
+                                           new_image.aliased_images[alias_pointer->second]);
+            }
+        }
+    }
+    if (!copies_gpu_contents) {
+        runtime.TransitionImageLayout(new_image);
+    } else if (covered) {
+        new_image.flags &= ~ImageFlagBits::CpuModified;
+        TrackImage(new_image, new_image_id);
+        runtime.TransitionImageLayout(new_image);
+    } else {
+        RefreshContents(new_image, new_image_id);
     }
 
     for (const auto& copy_object : join_copies_to_do) {
