@@ -55,6 +55,14 @@ public:
 
     /// Discards held pictures, as after a seek
     virtual void Flush() = 0;
+
+    /// Whether input given to Decode is still being decoded (frame parallel decoders)
+    virtual bool Pending() const {
+        return false;
+    }
+
+    /// Waits for the oldest input still being decoded and appends its picture
+    virtual void Output(std::vector<DecodedVideoFrame>& frames) {}
 };
 
 } // namespace VideoCommon

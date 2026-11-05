@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <atomic>
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
@@ -449,6 +450,7 @@ private:
     void DropInput() {
         inputs.clear();
         ++input_generation;
+        decoder_pending = false;
     }
 
     void WriteAndTrim() {
@@ -476,7 +478,8 @@ private:
         std::unique_lock lock{mutex};
         while (true) {
             work_ready.wait(lock, [this] {
-                return quit || write_wanted || (!inputs.empty() && DecodedAhead() < MaxDecodedAhead);
+                return quit || write_wanted ||
+                       ((!inputs.empty() || decoder_pending) && DecodedAhead() < MaxDecodedAhead);
             });
             if (quit) {
                 return;
@@ -484,6 +487,26 @@ private:
             if (write_wanted) {
                 write_wanted = false;
                 WriteAndTrimNow(lock);
+                continue;
+            }
+            if (inputs.empty()) {
+                // No more input for now: take the pictures a frame parallel decoder still holds
+                decoding = true;
+                const u64 generation = input_generation;
+                lock.unlock();
+                std::vector<VideoCommon::DecodedVideoFrame> frames;
+                {
+                    const std::scoped_lock decoder_lock{decoder_mutex};
+                    if (decoder && generation == input_generation) {
+                        decoder->Output(frames);
+                    }
+                    decoder_pending = decoder && decoder->Pending();
+                }
+                lock.lock();
+                decoding = false;
+                if (generation == input_generation) {
+                    Decoded(false, std::move(frames), lock);
+                }
                 continue;
             }
             Input input = std::move(inputs.front());
@@ -502,6 +525,7 @@ private:
                         decoder->Drain(frames);
                     }
                 }
+                decoder_pending = decoder && decoder->Pending();
             }
             lock.lock();
             decoding = false;
@@ -773,6 +797,9 @@ private:
     u64 input_generation{};
     /// The worker is decoding an input
     bool decoding{};
+    /// The decoder holds input it has not returned a picture for (frame parallel AV1); written
+    /// with decoder_mutex held, read with mutex held
+    std::atomic<bool> decoder_pending{};
     /// Pictures may be written: images were handed back or pictures published
     bool write_wanted{};
 
