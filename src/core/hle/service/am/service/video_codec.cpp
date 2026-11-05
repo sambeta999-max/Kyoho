@@ -399,12 +399,16 @@ private:
             const std::scoped_lock lock{mutex};
             PublishHeld();
             result = Kernel::ResultInvalidState;
-            // Input is always taken; a full queue only leaves the submission-ready event
-            // unsignaled (SignalSubmissionReady), as in Eglantine's decoder (nx2_gsv.h,
-            // SubmitInput). Mario Tennis Fever submits while the queue is full and never sends
-            // input it was refused again: its movies lost frames and showed broken pictures
-            // until the next key frame.
-            if (decoder) {
+            // A full queue (MaxQueuedInputs) leaves the submission-ready event unsignaled, and
+            // input is refused only well past it. Mario Tennis Fever submits a little past the
+            // event (up to 10 queued) and never sends input it was refused again: refused at 8,
+            // its movies lost frames and showed broken pictures until the next key frame. Kirby
+            // Air Riders submits every frame without the event and submits refused input again;
+            // taking all of it (as Eglantine's decoder does, nx2_gsv.h SubmitInput), it read a
+            // whole movie ahead (2300 inputs) and played it at 12 pictures a second meanwhile.
+            if (decoder && inputs.size() >= MaxAcceptedInputs) {
+                result = ResultInputQueueFull;
+            } else if (decoder) {
                 const s64 pts = static_cast<s64>(u64{packet[5]} | (u64{packet[6]} << 32));
                 const bool end_of_stream = (packet[7] & 0xff) != 0;
                 // Submissions that only signal the end of the stream carry no input
@@ -597,6 +601,10 @@ private:
     // MaxDecodedAhead).
     static constexpr size_t MaxQueuedInputs = 8;
     static constexpr size_t MaxDecodedAhead = 2;
+    // Input queued past the event before it is refused (see SubmitInputBuffer)
+    static constexpr size_t MaxAcceptedInputs = 2 * MaxQueuedInputs;
+    // Module 111 (codec), description 3603: the result nn::codec clients treat as "try again"
+    static constexpr Result ResultInputQueueFull{static_cast<ErrorModule>(111), 3603};
     static constexpr size_t MaxBufferedPictures = 16;
     // How long a decoded picture waits for the client's next request before it is written
     static constexpr std::chrono::milliseconds PublishDelay{2};
