@@ -3165,7 +3165,9 @@ void Framebuffer::CreateFramebuffer(TextureCacheRuntime& runtime,
                                     ImageView* depth_buffer, bool is_rescaled_) {
     boost::container::small_vector<VkImageView, NUM_RT * 2 + 2> attachments;
     RenderPassKey renderpass_key{};
-    s32 num_layers = 1;
+    // Every attachment must cover all framebuffer layers (VUID-VkFramebufferCreateInfo-flags-04535);
+    // the largest count overran a 1-layer colour target beside a 4-layer depth array (NVIDIA loss).
+    s32 num_layers = (std::numeric_limits<s32>::max)();
 
     is_rescaled = is_rescaled_;
     const auto& resolution = runtime.resolution;
@@ -3184,7 +3186,7 @@ void Framebuffer::CreateFramebuffer(TextureCacheRuntime& runtime,
                                               : color_buffer->size.height);
         attachments.push_back(color_buffer->RenderTarget());
         renderpass_key.color_formats[index] = color_buffer->format;
-        num_layers = (std::max)(num_layers, color_buffer->range.extent.layers);
+        num_layers = (std::min)(num_layers, color_buffer->range.extent.layers);
         images[num_images] = color_buffer->ImageHandle();
         image_ranges[num_images] = MakeSubresourceRange(color_buffer);
         rt_map[index] = num_images;
@@ -3201,7 +3203,7 @@ void Framebuffer::CreateFramebuffer(TextureCacheRuntime& runtime,
                                               : depth_buffer->size.height);
         attachments.push_back(depth_buffer->RenderTarget());
         renderpass_key.depth_format = depth_buffer->format;
-        num_layers = (std::max)(num_layers, depth_buffer->range.extent.layers);
+        num_layers = (std::min)(num_layers, depth_buffer->range.extent.layers);
         images[num_images] = depth_buffer->ImageHandle();
         const VkImageSubresourceRange subresource_range = MakeSubresourceRange(depth_buffer);
         image_ranges[num_images] = subresource_range;
@@ -3214,6 +3216,10 @@ void Framebuffer::CreateFramebuffer(TextureCacheRuntime& runtime,
     } else {
         renderpass_key.depth_format = PixelFormat::Invalid;
     }
+    if (num_layers == (std::numeric_limits<s32>::max)()) {
+        num_layers = 1;
+    }
+    layers = static_cast<u32>((std::max)(num_layers, 1));
     renderpass_key.samples = samples;
     const bool do_resolve_color = ENABLE_MSAA_TILER_RESOLVE &&
         samples != VK_SAMPLE_COUNT_1_BIT && num_colors > 0 && runtime.device.IsTiler();
@@ -3238,7 +3244,6 @@ void Framebuffer::CreateFramebuffer(TextureCacheRuntime& runtime,
     render_area.height = (std::min)(render_area.height, height);
 
     if (do_resolve_color) {
-        const u32 layers = static_cast<u32>((std::max)(num_layers, 1));
         for (size_t index = 0; index < NUM_RT; ++index) {
             const PixelFormat format = renderpass_key.color_formats[index];
             if (format == PixelFormat::Invalid) {
@@ -3254,7 +3259,6 @@ void Framebuffer::CreateFramebuffer(TextureCacheRuntime& runtime,
     }
 
     if (do_resolve_depth_stencil) {
-        const u32 layers = static_cast<u32>((std::max)(num_layers, 1));
         const VkFormat vk_format =
             MaxwellToVK::SurfaceFormat(runtime.device, FormatType::Optimal, true,
                                        renderpass_key.depth_format)
@@ -3274,7 +3278,7 @@ void Framebuffer::CreateFramebuffer(TextureCacheRuntime& runtime,
         .pAttachments = attachments.data(),
         .width = render_area.width,
         .height = render_area.height,
-        .layers = static_cast<u32>((std::max)(num_layers, 1)),
+        .layers = layers,
     });
 }
 

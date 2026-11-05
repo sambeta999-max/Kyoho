@@ -730,6 +730,17 @@ void RasterizerVulkan::Clear(u32 layer_count) {
     texture_cache.UpdateRenderTargets(true);
     const Framebuffer* const framebuffer = texture_cache.GetFramebuffer();
     const VkExtent2D render_area = framebuffer->RenderArea();
+    // A framebuffer takes the fewest layers of its attachments: clip the guest's layer range to
+    // them, and skip a clear that names none. From Orchid 5ecbc5ba3 (adapted from
+    // zortos293/Eglantine de8e2defd).
+    const u32 base_array_layer = regs.clear_surface.layer;
+    const u32 framebuffer_layers = framebuffer->Layers();
+    if (base_array_layer >= framebuffer_layers || layer_count == 0) {
+        return;
+    }
+    const u32 clear_layer_count = (std::min)(layer_count, framebuffer_layers - base_array_layer);
+    const bool clear_covers_all_layers =
+        base_array_layer == 0 && clear_layer_count == framebuffer_layers;
     if (auto& capture{VideoCommon::DrawCapture::Get()}; capture.Active()) {
         const auto& targets{texture_cache.CaptureRenderTargets()};
         const u32 rt{regs.clear_surface.RT};
@@ -765,8 +776,8 @@ void RasterizerVulkan::Clear(u32 layer_count) {
     VkClearRect clear_rect{
         .rect = regs.clear_control.use_scissor ? GetScissorState(regs, 0, up_scale, down_shift)
                                                : default_scissor,
-        .baseArrayLayer = regs.clear_surface.layer,
-        .layerCount = layer_count,
+        .baseArrayLayer = base_array_layer,
+        .layerCount = clear_layer_count,
     };
     const auto clamp_rect_to_render_area = [render_area](VkRect2D& rect) -> bool {
         const auto clamp_axis = [](s32& offset, u32& extent, u32 limit) {
@@ -816,7 +827,7 @@ void RasterizerVulkan::Clear(u32 layer_count) {
         clear_rect.rect.extent.width >= render_area.width &&
         clear_rect.rect.extent.height >= render_area.height;
     const bool can_defer_clear = ENABLE_DEFERRED_CLEAR && (!regs.clear_control.use_scissor || clear_covers_render_area) &&
-                                 regs.clear_surface.layer == 0 &&
+                                 clear_covers_all_layers &&
                                  !scheduler.IsRenderPassActive() &&
                                  (!use_color || color_full_channels) && ds_deferrable;
     if (!can_defer_clear) {
