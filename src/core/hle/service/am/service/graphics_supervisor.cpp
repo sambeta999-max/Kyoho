@@ -449,8 +449,34 @@ class IVi2Session final : public ServiceFramework<IVi2Session> {
         u32 available_notification{};
         std::shared_ptr<android::BufferQueueProducer> producer;
         std::array<std::optional<s32>, 15> queued{};
+        /// The image presented in each queued slot, and the images the client has presented.
+        std::array<u32, 15> queued_image{};
+        std::vector<u32> images;
         std::optional<size_t> player_display;
     };
+
+    /// The slots a client is told it may present to next. The display holds the image on screen
+    /// and the ones queued behind it until a later flip retires them, one per vblank. A client
+    /// renders into its own few images and takes the next free slot to present one; reporting
+    /// slots free while every image it presents is still held let it render into the image the
+    /// display shows or is about to show. Welcome Tour presents 2 images about 63 times a second
+    /// against 60 flips: all 15 slots filled, frames reached the screen 14 vblanks late, and the
+    /// image composited then held a later, often black, frame. So no slot is reported free until
+    /// one of the client's images is retired, which paces such a client to the display as the
+    /// console's one flip per vblank does (Eglantine 3b3d243c0d sleeps each present to the next
+    /// vblank instead). A client with more images than the display holds is not held back.
+    static u64 PresentableSlots(const ClientState& state) {
+        for (const u32 image : state.images) {
+            bool held{};
+            for (size_t slot = 0; slot < state.queued.size(); ++slot) {
+                held |= state.queued[slot].has_value() && state.queued_image[slot] == image;
+            }
+            if (!held) {
+                return state.available;
+            }
+        }
+        return state.images.empty() ? state.available : 0;
+    }
 
 public:
     explicit IVi2Session(Core::System& system, u64 aruid, std::shared_ptr<NativeImageRegistry> images) : ServiceFramework{system, "IVi2Session"}, m_images{std::move(images)}, m_aruid{aruid}, m_context{system, "Vi2Session"} {
@@ -749,7 +775,7 @@ private:
             }
         }
         const auto state = std::ranges::find(m_client_states, token, &ClientState::token);
-        const u64 available = result.IsSuccess() ? state->available : 0;
+        const u64 available = result.IsSuccess() ? PresentableSlots(*state) : 0;
         LOG_DEBUG(Service_AM, "VI2 client availability token={:#x}, layer={}, mask={:#x}, result={:#x}", token, id, available, result.raw);
         IPC::ResponseBuilder rb{ctx, 4};
         rb.Push(result.raw);
@@ -767,7 +793,7 @@ private:
             if (token && state != m_client_states.end()) {
                 // Unlike present (229), cancel has no image or input GPU fence.
                 state->available |= u64{1} << slot;
-                available = state->available;
+                available = PresentableSlots(*state);
                 result = ResultSuccess;
             }
         }
@@ -905,7 +931,11 @@ private:
             return Kernel::ResultInvalidState;
         }
         state.queued[slot] = queue_slot;
+        state.queued_image[slot] = image->id;
         state.available &= ~(u64{1} << slot);
+        if (std::ranges::find(state.images, image->id) == state.images.end()) {
+            state.images.push_back(image->id);
+        }
         if (!m_release_poll) {
             m_release_poll = Core::Timing::CreateEvent("NativeViBufferRelease", [this](s64, std::chrono::nanoseconds) -> std::optional<std::chrono::nanoseconds> {
                 const auto guard = LockService();
@@ -929,7 +959,7 @@ private:
             result = Kernel::ResultNotFound;
             if (token && state != m_client_states.end()) {
                 result = QueueNativeImage(*state, packet);
-                available = state->available;
+                available = PresentableSlots(*state);
             }
         }
         LOG_DEBUG(Service_AM, "VI2 present token={:#x}, image={}, slot={}, mask={:#x}, result={:#x}", token, packet[5], packet[4], available, result.raw);
