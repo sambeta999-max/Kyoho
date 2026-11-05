@@ -29,12 +29,15 @@ public:
     }
 
     struct RegisteredAction {
-        explicit RegisteredAction(u32 expected_value_, std::function<void()>&& action_)
-            : expected_value{expected_value_}, action{std::move(action_)} {}
+        explicit RegisteredAction(u32 expected_value_, u64 id_, std::function<void()>&& action_)
+            : expected_value{expected_value_}, id{id_}, action{std::move(action_)} {}
         u32 expected_value;
+        u64 id;
         std::function<void()> action;
     };
-    using ActionHandle = std::list<RegisteredAction>::iterator;
+    /// Id of a registered action; 0 for one that already ran when it was registered. A list
+    /// iterator could not tell a freed node from a later action allocated at its address.
+    using ActionHandle = u64;
 
     template <typename Func>
     ActionHandle RegisterGuestAction(u32 syncpoint_id, u32 expected_value, Func&& action) {
@@ -87,8 +90,11 @@ private:
     std::array<std::list<RegisteredAction>, NUM_MAX_SYNCPOINTS> host_action_storage;
 
     std::mutex guard;
+    u64 last_action_id{}; ///< Guarded by guard
     std::condition_variable wait_guest_cv;
     std::condition_variable wait_host_cv;
+    std::condition_variable actions_done_cv;
+    u32 running_actions{}; ///< Increments running due actions outside the guard (guard held)
 };
 
 } // namespace Host1x
