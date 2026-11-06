@@ -727,7 +727,7 @@ void RasterizerVulkan::Clear(u32 layer_count) {
         return;
     }
 
-    std::scoped_lock lock{texture_cache.mutex};
+    std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     texture_cache.UpdateRenderTargets(true);
     const Framebuffer* const framebuffer = texture_cache.GetFramebuffer();
     const VkExtent2D render_area = framebuffer->RenderArea();
@@ -831,6 +831,23 @@ void RasterizerVulkan::Clear(u32 layer_count) {
                                  clear_covers_all_layers &&
                                  !scheduler.IsRenderPassActive() &&
                                  (!use_color || color_full_channels) && ds_deferrable;
+    // A clear writes every texel of the target's memory, and Switch 2 programs also use render
+    // target memory as scratch: Star Fox's upscaler network keeps its layer buffers in a 1536x1408
+    // RGBA16F target it clears each frame and reads the zeroed padding back through storage
+    // buffers. The buffer cache holds those bytes apart from the image, so a whole-target zero
+    // clear fills them too, or the network reads older frames' values. Done before the render
+    // pass begins: filling a buffer ends it.
+    if (use_color && color_full_channels && clear_covers_render_area && clear_covers_all_layers &&
+        framebuffer->HasAspectColorBit(regs.clear_surface.RT) &&
+        !IsPixelFormatSignedInteger(VideoCore::Surface::PixelFormatFromRenderTargetFormat(
+            regs.rt[regs.clear_surface.RT].format)) &&
+        std::ranges::all_of(regs.clear_color, [](f32 c) { return c == 0.0f; })) {
+        const auto rt_memory = texture_cache.RenderTargetMemory(regs.clear_surface.RT);
+        if (rt_memory && std::get<2>(*rt_memory) <= render_area.width &&
+            std::get<3>(*rt_memory) <= render_area.height) {
+            buffer_cache.ClearAliasedBuffers(std::get<0>(*rt_memory), std::get<1>(*rt_memory), 0);
+        }
+    }
     if (!can_defer_clear) {
         scheduler.RequestRenderpass(framebuffer);
     }

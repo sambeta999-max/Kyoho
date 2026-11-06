@@ -315,6 +315,29 @@ bool BufferCache<P>::DMAClear(GPUVAddr dst_address, u64 amount, u32 value) {
 }
 
 template <class P>
+void BufferCache<P>::ClearAliasedBuffers(GPUVAddr gpu_addr, u64 size, u32 value) {
+    const std::optional<DAddr> device_addr = gpu_memory->GpuToCpuAddress(gpu_addr);
+    if (!device_addr) {
+        return;
+    }
+    size = gpu_memory->MaxContinuousRange(gpu_addr, size);
+    const DAddr range_end = *device_addr + size;
+    ForEachBufferInRange(*device_addr, size, [&](BufferId buffer_id, Buffer& buffer) {
+        const DAddr begin = Common::AlignUp((std::max)(buffer.CpuAddr(), *device_addr), 4);
+        const DAddr end =
+            Common::AlignDown((std::min)(buffer.CpuAddr() + buffer.SizeBytes(), range_end), 4);
+        if (begin >= end) {
+            return;
+        }
+        const u32 offset = buffer.Offset(begin);
+        const u32 bytes = static_cast<u32>(end - begin);
+        runtime.ClearBuffer(buffer, offset, bytes, value);
+        buffer.MarkUsage(offset, bytes);
+        NoteListWrite(buffer_id, begin, bytes);
+    });
+}
+
+template <class P>
 std::pair<typename P::Buffer*, u32> BufferCache<P>::ObtainBuffer(GPUVAddr gpu_addr, u32 size,
                                                                  ObtainBufferSynchronize sync_info,
                                                                  ObtainBufferOperation post_op) {
@@ -572,7 +595,7 @@ void BufferCache<P>::BindComputeStorageBuffer(size_t ssbo_index, u32 cbuf_index,
     channel_state->compute_storage_buffers[ssbo_index] =
         ssbo_addr == 0 ? NULL_BINDING
                        : StorageBufferBinding(ssbo_addr, cbuf_index, is_written,
-                                              indirect_offset != ~0U);
+                                              indirect_offset != ~0U, kepler_compute->IsAmpere());
 }
 
 template <class P>
@@ -2493,14 +2516,15 @@ GPUVAddr BufferCache<P>::StoragePointerAddress(GPUVAddr cbuf_address, u32 cbuf_o
 
 template <class P>
 Binding BufferCache<P>::StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
-                                             bool is_written, bool table_entry) const {
+                                             bool is_written, bool table_entry,
+                                             bool native_pointer) const {
     const GPUVAddr gpu_addr = gpu_memory->Read<u64>(ssbo_addr);
 
     if (gpu_addr == 0) {
         return NULL_BINDING;
     }
 
-    const auto size = [&]() {
+    u32 size = [&]() {
         const u32 memory_layout_size =
             static_cast<u32>(gpu_memory->GetMemoryLayoutSize(gpu_addr));
         if (table_entry) {
@@ -2508,6 +2532,14 @@ Binding BufferCache<P>::StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
             // grass instances, 12-18 MiB in, as Lichii 1038827cf found). Read-only ones extend to
             // the end of the mapping up to 64 MiB; a written binding marks all of itself modified.
             return (std::min)(memory_layout_size, static_cast<u32>(is_written ? 8_MiB : 64_MiB));
+        }
+        if (native_pointer) {
+            // A Switch 2 compute program's pointer is bare: the word after it is another parameter
+            // (Star Fox's post-process passes keep pointer structs whose next word is a count), not
+            // an NVN buffer size, and taking it as one dropped every write past it, leaving stale
+            // tiles of older frames on fast motion. After Lichii 2e12e0def
+            // (src/video_core/buffer_cache/buffer_cache.h).
+            return (std::min)(memory_layout_size, static_cast<u32>(8_MiB));
         }
         const u64 next_qword = gpu_memory->Read<u64>(ssbo_addr + 8);
         const u32 packed_size = static_cast<u32>(next_qword);
@@ -2519,6 +2551,10 @@ Binding BufferCache<P>::StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
         }
         return (std::min)(memory_layout_size, static_cast<u32>(8_MiB));
     }();
+    if (native_pointer && size != 0) {
+        // Stop where the mapping stops being contiguous.
+        size = static_cast<u32>(gpu_memory->MaxContinuousRange(gpu_addr, size));
+    }
 
     // Alignment only applies to the offset of the buffer
     const u32 alignment = runtime.GetStorageBufferAlignment();

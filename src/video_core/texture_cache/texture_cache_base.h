@@ -172,6 +172,11 @@ public:
     /// Mark an image as modified from the GPU
     void MarkModification(ImageId id) noexcept;
 
+    /// The guest memory of color render target `index` when its image is one unscaled 2D level and
+    /// layer, as {address, size, width, height}
+    [[nodiscard]] std::optional<std::tuple<GPUVAddr, u32, u32, u32>> RenderTargetMemory(
+        u32 index) const noexcept;
+
     /// Fill image_view_ids with the graphics/compute images in indices
     void FillImageViews(std::span<ImageViewInOut> views, bool compute, bool blacklist = true);
 

@@ -332,6 +332,10 @@ public:
 
     bool DMAClear(GPUVAddr src_address, u64 amount, u32 value);
 
+    /// Fills the cached buffers over [gpu_addr, gpu_addr + size) with value, for a render target
+    /// clear on memory that programs also use as storage buffers. Creates no buffer.
+    void ClearAliasedBuffers(GPUVAddr gpu_addr, u64 size, u32 value);
+
     /// Command lists the GPU writes, on a split GPU thread (GpuSplit::MarkCommandListPage).
     /// While collecting (a compute dispatch or a DMA operation being recorded), writes to command
     /// list pages are noted; CopyListPages then records copies of those pages into host memory
@@ -530,8 +534,10 @@ private:
     void DeleteBuffer(BufferId buffer_id, bool do_not_mark = false);
 
     /// table_entry: the pointer at ssbo_addr is an entry of a pointer table (no size after it)
+    /// native_pointer: a Switch 2 compute program's bare pointer (no size after it either)
     [[nodiscard]] Binding StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
-                                               bool is_written, bool table_entry = false) const;
+                                               bool is_written, bool table_entry = false,
+                                               bool native_pointer = false) const;
 
     /// Where the pointer of a storage buffer descriptor is: the constant buffer word at
     /// cbuf_address + cbuf_offset, or the table entry that word points to (0 for a null table)

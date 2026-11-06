@@ -239,6 +239,22 @@ void TextureCache<P>::FillImageViews(std::span<ImageViewInOut> views, bool compu
 }
 
 template <class P>
+std::optional<std::tuple<GPUVAddr, u32, u32, u32>> TextureCache<P>::RenderTargetMemory(
+    u32 index) const noexcept {
+    const ImageViewId id = render_targets.color_buffer_ids[index];
+    if (!id || !slot_image_views[id].image_id) {
+        return std::nullopt;
+    }
+    const ImageBase& image = slot_images[slot_image_views[id].image_id];
+    if (image.info.type != ImageType::e2D || image.info.resources.levels != 1 ||
+        image.info.resources.layers != 1 || True(image.flags & ImageFlagBits::Rescaled)) {
+        return std::nullopt;
+    }
+    return std::tuple{image.gpu_addr, image.guest_size_bytes, image.info.size.width,
+                      image.info.size.height};
+}
+
+template <class P>
 std::string TextureCache<P>::CaptureDescribe(ImageViewId id) {
     if (!id) {
         return "null";
