@@ -396,7 +396,10 @@ void Scheduler::InvalidateState() {
 }
 
 void Scheduler::EndPendingOperations() {
-    query_cache->CounterReset(VideoCommon::QueryType::ZPassPixelCount64);
+    // Pause, don't reset: a submission can land between a guest's counter reset and its report,
+    // and resetting here dropped the samples counted so far (the report then read too low, and
+    // Ocarina of Time's occlusion-culled draws were skipped). From Lichii 5b89a3daf.
+    query_cache->CounterClose(VideoCommon::QueryType::ZPassPixelCount64);
     EndRenderPass();
 }
 
