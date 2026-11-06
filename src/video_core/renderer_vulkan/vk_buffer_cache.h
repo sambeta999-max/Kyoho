@@ -105,7 +105,7 @@ class QuadStripIndexBuffer;
 /// host buffer removes its entries.
 class GlobalMemoryTable {
 public:
-    static constexpr u32 TABLE_BITS = 17;
+    static constexpr u32 TABLE_BITS = 20;
 
     explicit GlobalMemoryTable(const Device& device, MemoryAllocator& memory_allocator);
 
