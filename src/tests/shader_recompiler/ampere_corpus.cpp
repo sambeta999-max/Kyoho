@@ -8,6 +8,7 @@
 // EDEN_CORPUS_OUT=<file> also writes the summary there.
 
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -45,6 +46,14 @@ public:
         stage = stage_;
         is_ampere = true;
         std::memcpy(&sph, header.data(), std::min(header.size(), sizeof(sph)));
+        // Task and mesh programs need SET_MESH_SHADER_A/B and SET_MESH_INIT_SHADER, which are
+        // not in the dump: EDEN_CORPUS_MESH=<a>,<b>,<init> (hex), else triangles with 64
+        // vertices, 126 primitives, 32 threads and 5 payload lines.
+        mesh_registers = {0x4 | (64U << 4) | (126U << 13), 32U << 20, 32U | (5U << 12) | (5U << 22)};
+        if (const char* const regs{std::getenv("EDEN_CORPUS_MESH")}) {
+            std::sscanf(regs, "%x,%x,%x", &mesh_registers[0], &mesh_registers[1],
+                        &mesh_registers[2]);
+        }
     }
 
     u64 ReadInstruction(u32 address) override {
@@ -95,7 +104,8 @@ std::optional<Stage> StageFromSuffix(const std::string& suffix) {
         {"vs", Stage::VertexB},  {"va", Stage::VertexA},
         {"tc", Stage::TessellationControl}, {"te", Stage::TessellationEval},
         {"gs", Stage::Geometry}, {"fs", Stage::Fragment},
-        {"cs", Stage::Compute},
+        {"cs", Stage::Compute},  {"ts", Stage::Task},
+        {"ms", Stage::Mesh},
     };
     const auto it{stages.find(suffix)};
     return it == stages.end() ? std::nullopt : std::optional{it->second};

@@ -423,47 +423,79 @@ std::optional<StorageBufferAddr> Track(const IR::Value& value, const Bias* bias)
     return BreadthFirstSearch(value, pred);
 }
 
-/// Returns true when a word is data read from memory (directly or plus an offset), not something
-/// computed from constant buffer words. A phi is when all its defined inputs are: a pointer loaded
-/// under a condition, undefined on the other path (Ocarina of Time's vegetation culling picks one
-/// of two tables that way).
-bool IsLoadedWord(const IR::Value& value, int depth = 2, int phi_depth = 4) {
+/// Whether a word is data read from memory: yes, no, or only through phis already being visited
+/// (the value a loop carries around, which is whatever the loop is entered with)
+enum class LoadedWord { No, Yes, Cycle };
+
+LoadedWord LoadedWordKind(const IR::Value& value, int depth,
+                          std::unordered_map<const IR::Inst*, LoadedWord>& phis) {
     if (value.IsImmediate()) {
-        return false;
+        return LoadedWord::No;
     }
     const IR::Inst* inst{value.InstRecursive()};
     switch (inst->GetOpcode()) {
     case IR::Opcode::Phi: {
-        if (phi_depth <= 0) {
-            return false;
+        // A phi being visited is a cycle back to it; once done, its result is known
+        if (const auto it{phis.find(inst)}; it != phis.end()) {
+            return it->second;
         }
-        bool loaded{};
+        if (phis.size() >= 256) {
+            return LoadedWord::No;
+        }
+        phis.emplace(inst, LoadedWord::Cycle);
+        LoadedWord result{LoadedWord::Cycle};
         for (size_t arg = 0; arg < inst->NumArgs(); ++arg) {
             const IR::Value input{inst->Arg(arg)};
             if (!input.IsImmediate() &&
                 input.InstRecursive()->GetOpcode() == IR::Opcode::UndefU32) {
                 continue;
             }
-            if (!IsLoadedWord(input, depth, phi_depth - 1)) {
-                return false;
+            const LoadedWord kind{LoadedWordKind(input, depth, phis)};
+            if (kind == LoadedWord::No) {
+                result = LoadedWord::No;
+                break;
             }
-            loaded = true;
+            if (kind == LoadedWord::Yes) {
+                result = LoadedWord::Yes;
+            }
         }
-        return loaded;
+        phis[inst] = result;
+        return result;
     }
     case IR::Opcode::CompositeExtractU32x2:
     case IR::Opcode::CompositeExtractU32x3:
     case IR::Opcode::CompositeExtractU32x4:
         if (inst->Arg(0).IsImmediate()) {
-            return false;
+            return LoadedWord::No;
         }
-        return IsMemoryRead(*inst->Arg(0).InstRecursive());
-    case IR::Opcode::IAdd32:
-        return depth > 0 && (IsLoadedWord(inst->Arg(0), depth - 1, phi_depth) ||
-                             IsLoadedWord(inst->Arg(1), depth - 1, phi_depth));
-    default:
-        return IsMemoryRead(*inst);
+        return IsMemoryRead(*inst->Arg(0).InstRecursive()) ? LoadedWord::Yes : LoadedWord::No;
+    case IR::Opcode::IAdd32: {
+        if (depth <= 0) {
+            return LoadedWord::No;
+        }
+        const LoadedWord lhs{LoadedWordKind(inst->Arg(0), depth - 1, phis)};
+        const LoadedWord rhs{LoadedWordKind(inst->Arg(1), depth - 1, phis)};
+        if (lhs == LoadedWord::Yes || rhs == LoadedWord::Yes) {
+            return LoadedWord::Yes;
+        }
+        return lhs == LoadedWord::Cycle || rhs == LoadedWord::Cycle ? LoadedWord::Cycle
+                                                                     : LoadedWord::No;
     }
+    default:
+        return IsMemoryRead(*inst) ? LoadedWord::Yes : LoadedWord::No;
+    }
+}
+
+/// Returns true when a word is data read from memory (directly or plus an offset), not something
+/// computed from constant buffer words. A phi is when all its defined inputs are: a pointer loaded
+/// under a condition, undefined on the other path (Ocarina of Time's vegetation culling picks one
+/// of two tables that way), or a pointer a loop carries around, whose phis form cycles longer than
+/// any fixed depth (the fern and grass task program keeps its pool pointer through a loop that
+/// leaves with a call; with the cycle cut short, tracking took the constant buffer word the
+/// pointer is loaded from for its base, and the loop read the pointer's own 64-byte buffer).
+bool IsLoadedWord(const IR::Value& value) {
+    std::unordered_map<const IR::Inst*, LoadedWord> phis;
+    return LoadedWordKind(value, 2, phis) == LoadedWord::Yes;
 }
 
 /// Constant buffer words a value is a sum of (immediate index and offset). Only additions (and the
@@ -561,11 +593,15 @@ struct TableLoad {
 small_vector<TableLoad, 2> FindTableLoads(const LowAddrInfo& addr) {
     small_vector<TableLoad, 2> result;
     small_vector<IR::Value, 8> pending{addr.value};
-    for (size_t step = 0; step < pending.size() && step < 16; ++step) {
+    std::unordered_set<const IR::Inst*> visited;
+    for (size_t step = 0; step < pending.size() && step < 256; ++step) {
         if (pending[step].IsImmediate()) {
             continue;
         }
         const IR::Inst* const inst{pending[step].InstRecursive()};
+        if (!visited.insert(inst).second) {
+            continue;
+        }
         switch (inst->GetOpcode()) {
         case IR::Opcode::CompositeExtractU32x2:
         case IR::Opcode::CompositeExtractU32x4: {
