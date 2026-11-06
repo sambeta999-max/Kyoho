@@ -198,8 +198,43 @@ TEST_CASE("Ampere corpus coverage", "[.][corpus]") {
                 Maxwell::TranslateProgram(inst_pool, block_pool, env, cfg, host_info)};
             // EDEN_CORPUS_IR=<dir> writes each program's IR there as <program>.ir
             if (const char* ir_dir{std::getenv("EDEN_CORPUS_IR")}) {
-                std::ofstream{std::filesystem::path{ir_dir} / (name + ".ir")}
-                    << IR::DumpProgram(program);
+                std::ofstream out{std::filesystem::path{ir_dir} / (name + ".ir")};
+                out << IR::DumpProgram(program);
+                // The resources the program binds, after the IR
+                const Info& info{program.info};
+                const auto indirect = [](u32 offset) {
+                    return offset != ~0U ? fmt::format(" -> [{:#x}]", offset) : std::string{};
+                };
+                for (const auto& desc : info.storage_buffers_descriptors) {
+                    out << fmt::format("ssbo c{}[{:#x}]{}{}", desc.cbuf_index, desc.cbuf_offset,
+                                       indirect(desc.indirect_offset),
+                                       desc.is_written ? " written" : "")
+                        << '\n';
+                }
+                for (const auto& desc : info.global_pointer_descriptors) {
+                    out << fmt::format("global c{}[{:#x}]{}{}", desc.cbuf_index, desc.cbuf_offset,
+                                       indirect(desc.indirect_offset),
+                                       desc.is_written ? " written" : "")
+                        << '\n';
+                }
+                for (size_t index = 0; index < info.texture_descriptors.size(); ++index) {
+                    const auto& desc{info.texture_descriptors[index]};
+                    const std::string secondary{
+                        desc.has_secondary
+                            ? fmt::format(" | c{}[{:#x}]<<{}", desc.secondary_cbuf_index,
+                                          desc.secondary_cbuf_offset, desc.secondary_shift_left)
+                            : std::string{}};
+                    out << fmt::format("tex{} c{}[{:#x}]<<{}{} count={} handle_program={}", index,
+                                       desc.cbuf_index, desc.cbuf_offset, desc.shift_left,
+                                       secondary, desc.count,
+                                       static_cast<s32>(desc.handle_program))
+                        << '\n';
+                }
+                for (size_t index = 0; index < info.handle_programs.size(); ++index) {
+                    out << fmt::format("handle_program{} {:#x}", index,
+                                       fmt::join(info.handle_programs[index], ","))
+                        << '\n';
+                }
             }
             const bool skipped{std::ranges::any_of(gaps, [&](const auto& item) {
                 return item.second.programs.contains(name);

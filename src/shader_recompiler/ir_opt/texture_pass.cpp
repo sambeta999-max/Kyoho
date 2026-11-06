@@ -551,6 +551,7 @@ bool BuildHandleNode(const IR::Value& value, std::vector<u32>& code, int& budget
             return true;
         }
         default:
+            g_handle_failure = source->GetOpcode();
             return false;
         }
     };
@@ -566,8 +567,81 @@ bool BuildHandleNode(const IR::Value& value, std::vector<u32>& code, int& budget
         return load_word(inst, 0);
     case IR::Opcode::CompositeExtractU32x2: {
         const IR::Value element{inst->Arg(1)};
-        if (!element.IsImmediate() || inst->Arg(0).IsImmediate()) return false;
-        return load_word(inst->Arg(0).InstRecursive(), element.U32() * 4);
+        if (!element.IsImmediate() || inst->Arg(0).IsImmediate() || element.U32() > 1) return false;
+        // One half of a 64-bit value: a two-word load, or 64-bit shifts of one (a handle packed
+        // with its sampler in a 64-bit word, as Ocarina of Time's materials keep them)
+        const auto half = [&](const auto& self, const IR::Value& value, u32 high) -> bool {
+            if (value.IsImmediate()) {
+                emit(Op::Immediate);
+                code.push_back(static_cast<u32>(value.U64() >> (high * 32)));
+                return true;
+            }
+            const IR::Inst* const source{value.InstRecursive()};
+            const auto shift_amount = [&] { return BuildHandleProgram(source->Arg(1), code, budget, block); };
+            const auto immediate = [&](u32 imm) {
+                emit(Op::Immediate);
+                code.push_back(imm);
+            };
+            switch (source->GetOpcode()) {
+            case IR::Opcode::CompositeConstructU32x2:
+                return BuildHandleProgram(source->Arg(high), code, budget, block);
+            case IR::Opcode::PackUint2x32:
+            case IR::Opcode::UnpackUint2x32:
+                return self(self, source->Arg(0), high);
+            case IR::Opcode::ShiftLeftLogical64:
+                // lo' = lo << s; hi' = s < 32 ? hi << s | lo >> (32 - s) : lo << (s - 32), where a
+                // shift by 32 or more gives 0
+                if (high == 0) {
+                    if (!self(self, source->Arg(0), 0) || !shift_amount()) return false;
+                    emit(Op::Shl);
+                    return true;
+                }
+                if (!shift_amount()) return false;
+                immediate(32);
+                emit(Op::ULt);
+                if (!self(self, source->Arg(0), 1) || !shift_amount()) return false;
+                emit(Op::Shl);
+                if (!self(self, source->Arg(0), 0)) return false;
+                immediate(32);
+                if (!shift_amount()) return false;
+                emit(Op::Sub);
+                emit(Op::Shr);
+                emit(Op::Or);
+                if (!self(self, source->Arg(0), 0) || !shift_amount()) return false;
+                immediate(32);
+                emit(Op::Sub);
+                emit(Op::Shl);
+                emit(Op::Select);
+                return true;
+            case IR::Opcode::ShiftRightLogical64:
+                // hi' = hi >> s; lo' = s < 32 ? lo >> s | hi << (32 - s) : hi >> (s - 32)
+                if (high == 1) {
+                    if (!self(self, source->Arg(0), 1) || !shift_amount()) return false;
+                    emit(Op::Shr);
+                    return true;
+                }
+                if (!shift_amount()) return false;
+                immediate(32);
+                emit(Op::ULt);
+                if (!self(self, source->Arg(0), 0) || !shift_amount()) return false;
+                emit(Op::Shr);
+                if (!self(self, source->Arg(0), 1)) return false;
+                immediate(32);
+                if (!shift_amount()) return false;
+                emit(Op::Sub);
+                emit(Op::Shl);
+                emit(Op::Or);
+                if (!self(self, source->Arg(0), 1) || !shift_amount()) return false;
+                immediate(32);
+                emit(Op::Sub);
+                emit(Op::Shr);
+                emit(Op::Select);
+                return true;
+            default:
+                return load_word(source, high * 4);
+            }
+        };
+        return half(half, inst->Arg(0), element.U32());
     }
     case IR::Opcode::Phi: {
         // Keep the incoming value that is defined; of two, the one made uniform (the
@@ -1034,7 +1108,8 @@ public:
                    desc.secondary_cbuf_index == existing.secondary_cbuf_index &&
                    desc.secondary_cbuf_offset == existing.secondary_cbuf_offset &&
                    desc.secondary_shift_left == existing.secondary_shift_left &&
-                   desc.count == existing.count && desc.size_shift == existing.size_shift;
+                   desc.count == existing.count && desc.size_shift == existing.size_shift &&
+                   desc.handle_program == existing.handle_program;
         })};
         // TODO: Read this from TIC
         texture_descriptors[index].is_multisample |= desc.is_multisample;
