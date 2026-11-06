@@ -556,6 +556,9 @@ private:
     boost::container::small_vector<ImageId, 4> join_right_aliased_ids;
     ::Common::unordered_set<ImageId> join_ignore_textures;
     boost::container::small_vector<ImageId, 4> join_bad_overlap_ids;
+    boost::container::small_vector<ImageId, 4> join_dead_ids;
+    /// JoinImages is creating a render target
+    bool join_render_target = false;
     struct JoinCopy {
         bool is_alias;
         ImageId id;

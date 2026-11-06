@@ -8,6 +8,7 @@
 
 #include <array>
 #include <optional>
+#include <unordered_set>
 #include <vector>
 #include <boost/container/small_vector.hpp>
 
@@ -121,7 +122,10 @@ struct ImageBase {
     boost::container::small_vector<SubresourceBase, 16> slice_subresources;
 
     std::vector<AliasedImage> aliased_images;
-    std::vector<ImageId> overlapping_images;
+    /// Images sharing memory with this one that it can't alias. A set: a render target pool that
+    /// hands out new sizes every frame (Ocarina of Time's shadow maps) leaves thousands of them
+    /// overlapping each other, and deleting one removes it from every other's list.
+    std::unordered_set<ImageId> overlapping_images;
     ImageMapId map_view_id{};
 };
 

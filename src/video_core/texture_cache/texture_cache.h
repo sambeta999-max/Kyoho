@@ -1961,6 +1961,38 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
     ForEachSparseImageInRegion(channel_state->gpu_memory.GetID(), gpu_addr, size_bytes,
                                region_check_gpu);
 
+    // Render targets handed out by a ring allocator (Ocarina of Time's per-frame targets, at new
+    // addresses every frame) land on the memory of older targets. An image the new render target
+    // covers whole and nobody used for two frames is dead: its memory now belongs to the new one,
+    // as on the console. Left for the garbage collector, hundreds of them overlap each other and
+    // every lookup, creation and deletion walks them.
+    if (join_render_target) {
+        const GPUVAddr new_end = gpu_addr + CalculateGuestSizeInBytes(new_info);
+        const auto is_dead = [&](ImageId overlap_id) {
+            ImageBase& overlap = slot_images[overlap_id];
+            if (overlap.gpu_addr < gpu_addr || overlap.gpu_addr + overlap.guest_size_bytes > new_end ||
+                lru_cache.Tick(overlap.lru_index) + 2 > frame_tick ||
+                True(overlap.flags & (ImageFlagBits::IsDecoding | ImageFlagBits::Remapped |
+                                      ImageFlagBits::Sparse))) {
+                return false;
+            }
+            join_dead_ids.push_back(overlap_id);
+            return true;
+        };
+        const auto dead_begin = std::remove_if(join_bad_overlap_ids.begin(),
+                                               join_bad_overlap_ids.end(), is_dead);
+        join_bad_overlap_ids.erase(dead_begin, join_bad_overlap_ids.end());
+        for (const ImageId dead_id : join_dead_ids) {
+            Image& dead = slot_images[dead_id];
+            if (True(dead.flags & ImageFlagBits::Tracked)) {
+                UntrackImage(dead, dead_id);
+            }
+            UnregisterImage(dead_id);
+            DeleteImage(dead_id);
+        }
+        join_dead_ids.clear();
+    }
+
     bool can_rescale = info.rescaleable;
     bool any_rescaled = false;
     for (const auto& copy : join_copies_to_do) {
@@ -2042,8 +2074,8 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
     }
     for (const ImageId aliased_id : join_bad_overlap_ids) {
         ImageBase& aliased = slot_images[aliased_id];
-        aliased.overlapping_images.push_back(new_image_id);
-        new_image.overlapping_images.push_back(aliased_id);
+        aliased.overlapping_images.insert(new_image_id);
+        new_image.overlapping_images.insert(aliased_id);
         if (aliased.info.resources.levels == 1 && aliased.info.block.depth == 0 &&
             aliased.overlapping_images.size() > 1) {
             aliased.flags |= ImageFlagBits::BadOverlap;
@@ -2325,7 +2357,9 @@ ImageViewId TextureCache<P>::FindRenderTargetView(const ImageInfo& info, GPUVAdd
     bool delete_state = has_deleted_images;
     do {
         has_deleted_images = false;
+        join_render_target = true;
         image_id = FindOrInsertImage(info, gpu_addr);
+        join_render_target = false;
         delete_state |= has_deleted_images;
     } while (has_deleted_images);
     has_deleted_images = delete_state;
@@ -2759,9 +2793,8 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
     }
     for (const ImageId overlap_id : image.overlapping_images) {
         ImageBase& other_image = slot_images[overlap_id];
-        [[maybe_unused]] const size_t num_removed_overlaps = std::erase_if(
-            other_image.overlapping_images,
-            [image_id](const ImageId other_overlap_id) { return other_overlap_id == image_id; });
+        [[maybe_unused]] const size_t num_removed_overlaps =
+            other_image.overlapping_images.erase(image_id);
         other_image.CheckBadOverlapState();
         ASSERT_MSG(num_removed_overlaps == 1, "Invalid number of removed overlapps: {}",
                    num_removed_overlaps);
