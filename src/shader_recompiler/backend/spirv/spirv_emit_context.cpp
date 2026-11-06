@@ -1115,6 +1115,44 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
         define(&StorageDefinitions::U32x2, storage_types.U32x2, U32[2], sizeof(u32[2]));
     std::tie(load_global_func_u32x4, write_global_func_u32x4) =
         define(&StorageDefinitions::U32x4, storage_types.U32x4, U32[4], sizeof(u32[4]));
+
+    // Global atomics take the same route as the loads and stores: a storage buffer of the
+    // program, else the global memory table; an address in neither returns zero and writes
+    // nothing. Inc and Dec (index 5 and 6) have no single SPIR-V instruction and stay unsupported
+    using AtomicOp = Id (Sirit::Module::*)(Id, Id, Id, Id, Id);
+    constexpr std::array<AtomicOp, 11> atomic_ops{
+        &Sirit::Module::OpAtomicIAdd, &Sirit::Module::OpAtomicSMin, &Sirit::Module::OpAtomicUMin,
+        &Sirit::Module::OpAtomicSMax, &Sirit::Module::OpAtomicUMax, nullptr,
+        nullptr,                      &Sirit::Module::OpAtomicAnd,  &Sirit::Module::OpAtomicOr,
+        &Sirit::Module::OpAtomicXor,  &Sirit::Module::OpAtomicExchange,
+    };
+    const Id scope{Const(static_cast<u32>(spv::Scope::Device))};
+    const Id semantics{u32_zero_value};
+    for (size_t op = 0; op < atomic_ops.size(); ++op) {
+        if (atomic_ops[op] == nullptr || ((info.used_global_atomics_u32 >> op) & 1) == 0) {
+            continue;
+        }
+        const AtomicOp atomic{atomic_ops[op]};
+        const Id function_type{TypeFunction(U32[1], U64, U32[1])};
+        const Id func_id{OpFunction(U32[1], spv::FunctionControlMask::MaskNone, function_type)};
+        const Id addr{OpFunctionParameter(U64)};
+        const Id data{OpFunctionParameter(U32[1])};
+        define_body(&StorageDefinitions::U32, addr, storage_types.U32.element, 2,
+                    [&](Id pointer) {
+                        OpReturnValue((this->*atomic)(U32[1], pointer, scope, semantics, data));
+                    });
+        if (use_table) {
+            define_table_lookup(
+                addr, psb_u32, 2,
+                [&](Id pointer) {
+                    OpReturnValue((this->*atomic)(U32[1], pointer, scope, semantics, data));
+                },
+                [&] { OpReturnValue(u32_zero_value); });
+        }
+        OpReturnValue(u32_zero_value);
+        OpFunctionEnd();
+        global_atomic_func_u32[op] = func_id;
+    }
 }
 
 void EmitContext::DefineRescalingInput(const Info& info) {

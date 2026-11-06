@@ -389,6 +389,15 @@ void VisitUsages(Info& info, IR::Inst& inst) {
     case IR::Opcode::GlobalAtomicOr32:
     case IR::Opcode::GlobalAtomicXor32:
     case IR::Opcode::GlobalAtomicExchange32:
+        info.used_global_atomics_u32 |=
+            1U << (static_cast<u32>(inst.GetOpcode()) -
+                   static_cast<u32>(IR::Opcode::GlobalAtomicIAdd32));
+        info.stores_global_memory = true;
+        info.uses_int64 = true;
+        info.uses_global_memory = true;
+        info.used_constant_buffer_types |= IR::Type::U32 | IR::Type::U32x2;
+        info.used_storage_buffer_types |= IR::Type::U32 | IR::Type::U32x2 | IR::Type::U32x4;
+        break;
     case IR::Opcode::GlobalAtomicIAdd64:
     case IR::Opcode::GlobalAtomicSMin64:
     case IR::Opcode::GlobalAtomicUMin64:
