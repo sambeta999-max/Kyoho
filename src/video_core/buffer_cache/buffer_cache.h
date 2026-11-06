@@ -7,6 +7,7 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <memory>
 #include <numeric>
@@ -2064,6 +2065,25 @@ void BufferCache<P>::TouchBuffer(Buffer& buffer, BufferId buffer_id) noexcept {
 
 template <class P>
 bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 size) {
+    // An upload over a clean word of the tracker (no CPU or untracked page, word_manager.h)
+    // finds and changes nothing: walk only the dirty ones. EDEN_BUFFER_VERIFY_CLEAN_WORDS walks
+    // every word and checks the clean ones against a recount. From Lichii 440f0c2ac
+    // (SynchronizeBuffer in src/video_core/buffer_cache/buffer_cache.h), without its switch.
+    static const bool verify_clean = std::getenv("EDEN_BUFFER_VERIFY_CLEAN_WORDS") != nullptr;
+    if (verify_clean) [[unlikely]] {
+        static std::atomic<u32> logged{};
+        if (!memory_tracker.CleanWordsHold(device_addr, size) &&
+            logged.fetch_add(1, std::memory_order_relaxed) < 64) {
+            LOG_ERROR(HW_GPU, "clean tracker words wrong near {:#x}+{:#x}", device_addr, size);
+        }
+    }
+    const auto for_each_upload_range = [&](auto&& func) {
+        if (verify_clean) {
+            memory_tracker.ForEachUploadRange(device_addr, size, func);
+        } else {
+            memory_tracker.ForEachDirtyUploadRange(device_addr, size, func);
+        }
+    };
 #ifdef __ANDROID__
     const bool use_optimized_vertex_buffers = Settings::values.use_optimized_vertex_buffers.GetValue();
 #else
@@ -2086,7 +2106,7 @@ bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 si
             total_size_bytes += range_size;
             largest_copy = (std::max)(largest_copy, range_size);
         };
-        memory_tracker.ForEachUploadRange(device_addr, size, [&](u64 device_addr_out, u64 range_size) {
+        for_each_upload_range([&](u64 device_addr_out, u64 range_size) {
             DAddr upload_start = device_addr_out;
             gpu_modified_ranges.ForEachInRange(device_addr_out, range_size, [&](DAddr gpu_start, DAddr gpu_end) {
                 add_upload(upload_start, gpu_start);
@@ -2106,7 +2126,7 @@ bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 si
         u64 total_size_bytes = 0;
         u64 largest_copy = 0;
         DAddr buffer_start = buffer.CpuAddr();
-        memory_tracker.ForEachUploadRange(device_addr, size, [&](u64 device_addr_out, u64 range_size) {
+        for_each_upload_range([&](u64 device_addr_out, u64 range_size) {
             copies.push_back(BufferCopy{
                 .src_offset = total_size_bytes,
                 .dst_offset = device_addr_out - buffer_start,
