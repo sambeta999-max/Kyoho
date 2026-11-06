@@ -469,6 +469,16 @@ void MemoryManager::ReadBlock(GPUVAddr gpu_src_addr, void* dest_buffer, std::siz
 }
 
 void MemoryManager::ReadBlockUnsafe(GPUVAddr gpu_src_addr, void* dest_buffer, const std::size_t size) const {
+    // Small reads within one 4 KiB page (texture and sampler descriptors, several per draw): one
+    // translation and a copy, as Read<T> does, instead of the page walk (~3% of the GPU thread
+    // in title 1). Anything else, unmapped or sparse pages included, takes the full path.
+    constexpr std::size_t SmallPage = 0x1000;
+    if (size <= SmallPage && (gpu_src_addr & (SmallPage - 1)) + size <= SmallPage) {
+        if (const u8* const pointer = GetPointer(gpu_src_addr)) {
+            std::memcpy(dest_buffer, pointer, size);
+            return;
+        }
+    }
     ReadBlockImpl(gpu_src_addr, dest_buffer, size, VideoCommon::CacheType::None, true);
 }
 

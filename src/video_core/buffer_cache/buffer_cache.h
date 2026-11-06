@@ -1241,8 +1241,15 @@ void BufferCache<P>::BindHostComputeUniformBuffers() {
                 return alignment > 1 && (offset % alignment) != 0;
             }
         }();
+        // Small buffers the GPU has not written are streamed, as graphics ones are: synchronizing
+        // them made every dispatch re-protect pages an inline upload had just unprotected (two
+        // VirtualProtect calls per dispatch, ~4,000 dispatches a second in title 1).
+        const bool use_fast_buffer =
+            needs_alignment_stream ||
+            (has_host_buffer && size <= channel_state->uniform_buffer_skip_cache_size &&
+             !memory_tracker.IsRegionGpuModified(binding.device_addr, size));
         if constexpr (!IS_OPENGL) {
-            if (needs_alignment_stream) {
+            if (use_fast_buffer) {
                 const std::span<u8> span =
                     runtime.BindMappedUniformBuffer(0, binding_index, size);
                 device_memory.ReadBlockUnsafe(binding.device_addr, span.data(), size);
