@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <deque>
 #include <functional>
 #include <memory>
@@ -176,7 +177,7 @@ public:
             const u64 word =
                 command_list_pages[page / 64].load(std::memory_order_relaxed) >> (page % 64);
             if (word == 0) {
-                page = (page / 64 + 1) * 64;
+                page = NextCommandListWord(page / 64 + 1, last / 64) * 64;
                 continue;
             }
             if ((word & 1) != 0) {
@@ -188,6 +189,20 @@ public:
     /// 64 pages of the command list page bits, from page index * 64
     [[nodiscard]] u64 CommandListPageWord(size_t index) const noexcept {
         return command_list_pages[index].load(std::memory_order_relaxed);
+    }
+    /// The first word index in [index, last_word] that may hold a command list page, or one past
+    /// last_word: one summary bit per word, set with it and never cleared
+    [[nodiscard]] u64 NextCommandListWord(u64 index, u64 last_word) const noexcept {
+        last_word = (std::min<u64>)(last_word, DevicePages / 64 - 1);
+        while (index <= last_word) {
+            const u64 summary =
+                command_list_summary[index / 64].load(std::memory_order_relaxed) >> (index % 64);
+            if (summary != 0) {
+                return index + std::countr_zero(summary);
+            }
+            index = (index / 64 + 1) * 64;
+        }
+        return last_word + 1;
     }
     /// Whether any page was marked: the buffer cache skips its checks until then
     [[nodiscard]] bool HasCommandListPages() const noexcept {
@@ -245,6 +260,8 @@ private:
     std::unique_ptr<std::atomic<u64>[]> gpu_written;
     /// A bit per device page of the GPU-written command lists the front read (same layout)
     std::unique_ptr<std::atomic<u64>[]> command_list_pages;
+    /// Bit per word of command_list_pages: set once the word has a page (NextCommandListWord)
+    std::unique_ptr<std::atomic<u64>[]> command_list_summary;
     std::atomic<bool> has_command_list_pages{};
     u64 ReserveData(u32 amount, u64& offset);
     void Run(std::stop_token stop_token);

@@ -476,6 +476,7 @@ private:
     /// Queues a GPU-written range for the download at the next fence when AsyncBufferDownloads,
     /// otherwise only its parts on pages the CPU reads or writes or on command list pages
     void AddFenceDownload(DAddr device_addr, u64 size);
+    [[nodiscard]] u64 NextCpuAccessedWord(u64 index, u64 last_word) const noexcept;
     /// Notes device pages the guest CPU wrote or read (AddFenceDownload)
     void NoteCpuAccess(DAddr device_addr, u64 size);
 
@@ -563,6 +564,8 @@ private:
     /// A bit per device page the guest CPU wrote or read, once AsyncBufferDownloads is off
     static constexpr size_t FENCE_DOWNLOAD_PAGES = size_t{1} << (36 - 12);
     std::vector<u64> cpu_accessed_pages;
+    /// Bit per word of cpu_accessed_pages, set once the word has a page (AddFenceDownload)
+    std::vector<u64> cpu_accessed_summary;
 
     /// Whether GPU-written buffer ranges are copied back to guest memory at the next fence;
     /// otherwise only when something flushes them (a guest CPU read with reactive flushing, a

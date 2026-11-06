@@ -54,6 +54,7 @@ GpuSplit::GpuSplit(Core::System& system_) : system{system_} {
     tasks.resize(TaskCapacity);
     gpu_written = std::make_unique<std::atomic<u64>[]>(DevicePages / 64);
     command_list_pages = std::make_unique<std::atomic<u64>[]>(DevicePages / 64);
+    command_list_summary = std::make_unique<std::atomic<u64>[]>(DevicePages / 64 / 64);
 }
 
 void GpuSplit::MarkCommandListPage(DAddr address) noexcept {
@@ -65,6 +66,9 @@ void GpuSplit::MarkCommandListPage(DAddr address) noexcept {
     const u64 bit = u64{1} << (page % 64);
     if ((word.load(std::memory_order_relaxed) & bit) == 0) {
         word.fetch_or(bit, std::memory_order_relaxed);
+        const u64 index = page / 64;
+        command_list_summary[index / 64].fetch_or(u64{1} << (index % 64),
+                                                  std::memory_order_relaxed);
         has_command_list_pages.store(true, std::memory_order_relaxed);
     }
 }

@@ -1644,19 +1644,47 @@ void BufferCache<P>::AddFenceDownload(DAddr device_addr, u64 size) {
         word >>= page % 64;
         if (word == 0) {
             add_run(page);
-            page = (index + 1) * 64;
+            // Skip the words with no page of either kind, 64 at a time by their summary bits
+            // (storage buffers of megabytes, most of their words empty)
+            const u64 last_word = last / 64;
+            u64 next = NextCpuAccessedWord(index + 1, last_word);
+            if (split != nullptr) {
+                next = (std::min)(next, split->NextCommandListWord(index + 1, last_word));
+            }
+            page = next * 64;
             continue;
         }
+        // Whole runs of set or clear bits at once: compute dispatches mark storage buffers of
+        // megabytes written, a page at a time this took ~3% of the back thread (Ocarina of Time).
+        // A run past `last` is clamped to `end` by add_run.
         if ((word & 1) != 0) {
             if (run_begin == ~u64{0}) {
                 run_begin = page;
             }
+            page += std::countr_one(word);
         } else {
             add_run(page);
+            page += std::countr_zero(word);
         }
-        ++page;
     }
     add_run(last + 1);
+}
+
+template <class P>
+u64 BufferCache<P>::NextCpuAccessedWord(u64 index, u64 last_word) const noexcept {
+    // The first word of cpu_accessed_pages from `index` on that may have a page, by its summary
+    // bit (set with it, never cleared); past last_word when there is none up to it
+    if (cpu_accessed_summary.empty()) {
+        return last_word + 1;
+    }
+    while (index <= last_word) {
+        const u64 summary = cpu_accessed_summary[index / 64] >> (index % 64);
+        if (summary != 0) {
+            return index + std::countr_zero(summary);
+        }
+        index = (index / 64 + 1) * 64;
+    }
+    return index;
 }
 
 template <class P>
@@ -1669,8 +1697,12 @@ void BufferCache<P>::NoteCpuAccess(DAddr device_addr, u64 size) {
     }
     const u64 last =
         (std::min<u64>)((device_addr + size - 1) >> DEVICE_PAGEBITS, FENCE_DOWNLOAD_PAGES - 1);
+    if (cpu_accessed_summary.empty()) {
+        cpu_accessed_summary.resize(FENCE_DOWNLOAD_PAGES / 64 / 64);
+    }
     for (u64 page = device_addr >> DEVICE_PAGEBITS; page <= last; ++page) {
         cpu_accessed_pages[page / 64] |= u64{1} << (page % 64);
+        cpu_accessed_summary[page / 64 / 64] |= u64{1} << (page / 64 % 64);
     }
 }
 
