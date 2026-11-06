@@ -550,6 +550,8 @@ void Maxwell3D::FrontClassify(u32 method, u32 amount) {
         return;
     case MAXWELL3D_REG_INDEX(wait_for_idle):
     case MAXWELL3D_REG_INDEX(invalidate_texture_data_cache):
+        // Its back action waits for idle, which writes pending query reports (NotifyWFI): MME
+        // reads after it see their timestamps (Ocarina of Time reads them)
         split.ClassifySync();
         return;
     case MAXWELL3D_REG_INDEX(inline_data): {
@@ -630,8 +632,9 @@ bool Maxwell3D::FrontReadEarly(GPUVAddr address, std::span<u32> data) {
         ++reads;
         if (!std::ranges::equal(drained, data)) {
             if (++differing <= 32) {
-                LOG_ERROR(HW_GPU, "split early read at {:#x}: {} words, first {:#x} vs drained {:#x}",
-                          address, data.size(), data[0], drained[0]);
+                const auto word = std::ranges::mismatch(data, drained).in1 - data.begin();
+                LOG_ERROR(HW_GPU, "split early read at {:#x}: {} words, word {} {:#x} vs drained {:#x}",
+                          address, data.size(), word, data[word], drained[word]);
             }
             std::ranges::copy(drained, data.begin());
         }
