@@ -57,7 +57,14 @@ inline std::optional<NativeImageRequirements> CalculateNativeImageRequirements(
     }
     const u64 block_height = 1ULL << preference[4];
     const u64 aligned_height = (height + block_height - 1) & ~(block_height - 1);
-    return NativeImageRequirements{pitch_gobs * 64 * aligned_height, 64 * block_height};
+    // The base needs GOB alignment, not whole-block alignment: NVN places window textures at
+    // 4 KiB offsets in their pool (Star Fox: 128-row blocks at pool offset 0x1000), and the
+    // SDK's NativeWindow::Initialize (sdk+0x5e69c0) rejects a texture whose offset is not a
+    // multiple of the alignment returned here (raised to at least 4 KiB by
+    // nn::gsv::shim::CalculateRequirements). The window then never registers and the first
+    // acquire calls through a null window. Lichii returns 0x1000 for this request too
+    // (nx2_image_layout.h, Nx2CalculateNativeImageRequirements).
+    return NativeImageRequirements{pitch_gobs * 64 * aligned_height, 0x1000};
 }
 
 } // namespace Service::AM
