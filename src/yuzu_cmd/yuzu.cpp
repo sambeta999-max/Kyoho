@@ -31,6 +31,7 @@
 #include "common/settings.h"
 #include "common/string_util.h"
 #include "core/core.h"
+#include "core/perf_stats.h"
 #include "core/core_timing.h"
 #include "core/cpu_manager.h"
 #include "core/crypto/key_manager.h"
@@ -209,9 +210,19 @@ void WriteBmp(const std::string& path, const std::vector<u8>& pixels, u32 width,
 // k/b/x/y/p = A/B/X/Y/+, q/e/w/m = L/R/L+R/-, u/d/l/r = D-pad, n/v/f/h = left stick
 // up/down/left/right (held 1.5 s).
 // Screenshots go to EDEN_SCRIPT_OUT (a path prefix) as <prefix>_<sec>s.bmp; z takes a burst of
-// consecutive frames (EDEN_SCRIPT_BURST).
+// consecutive frames (EDEN_SCRIPT_BURST). With EDEN_SCRIPT_FPS=<n>, times count presented game
+// frames (time * n) instead of seconds, so builds of different speed press at the same point.
 void RunScript(std::stop_token stop, SdlState* state, std::string script, std::string out) {
     const auto start = std::chrono::steady_clock::now();
+    const char* script_fps = std::getenv("EDEN_SCRIPT_FPS");
+    const double frames_per_unit = script_fps ? std::atof(script_fps) : 0.0;
+    const auto reached = [&](double at) {
+        if (frames_per_unit > 0.0) {
+            return static_cast<double>(state->system.GetPerfStats().GetTotalGameFrames()) >=
+                   at * frames_per_unit;
+        }
+        return std::chrono::steady_clock::now() - start >= std::chrono::duration<double>(at);
+    };
     size_t pos = 0;
     while (pos < script.size() && !stop.stop_requested()) {
         const size_t end = (std::min)(script.find(',', pos), script.size());
@@ -222,14 +233,14 @@ void RunScript(std::stop_token stop, SdlState* state, std::string script, std::s
         }
         const char kind = action[0];
         const double at = std::atof(action.c_str() + 1);
-        while (!stop.stop_requested() &&
-               std::chrono::steady_clock::now() - start < std::chrono::duration<double>(at)) {
+        while (!stop.stop_requested() && !reached(at)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
         }
         if (stop.stop_requested()) {
             return;
         }
-        LOG_INFO(Frontend, "script: {}", action);
+        LOG_INFO(Frontend, "script: {} (frame {})", action,
+                 state->system.GetPerfStats().GetTotalGameFrames());
         if (kind == 'g') {
             // RenderDoc capture of the next presented frame (run under renderdoccmd with
             // renderdoc_hotkey enabled)

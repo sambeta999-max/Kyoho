@@ -420,6 +420,12 @@ void RasterizerVulkan::CaptureDraw(u32 event, const GraphicsPipeline& pipeline) 
                                  static_cast<u32>(maxwell3d->draw_manager.draw_state.topology),
                                  hashes[1] != 0 ? hashes[1] : hashes[0], hashes[2], hashes[3],
                                  hashes[4], hashes[5])};
+    if (mesh_draw) {
+        text += fmt::format("\n  mesh shader_a={:#x} shader_b={:#x} init={:#x}",
+                            regs.reg_array[Maxwell::MeshShaderA],
+                            regs.reg_array[Maxwell::MeshShaderB],
+                            regs.reg_array[Maxwell::MeshInitShader]);
+    }
     text += fmt::format("\n  state depth_test={} depth_write={} depth_func={} cull={}/{} "
                         "mask0={:#x} rt_count={} rt_map={}{}{}{}{}{}{}{}",
                         regs.depth_test_enable, regs.depth_write_enabled,
@@ -429,6 +435,20 @@ void RasterizerVulkan::CaptureDraw(u32 event, const GraphicsPipeline& pipeline) 
                         regs.rt_control.Map(1), regs.rt_control.Map(2), regs.rt_control.Map(3),
                         regs.rt_control.Map(4), regs.rt_control.Map(5), regs.rt_control.Map(6),
                         regs.rt_control.Map(7));
+    {
+        const auto& vt{regs.viewport_transform[0]};
+        const auto& vp{regs.viewports[0]};
+        text += fmt::format("\n  view scale={},{},{} translate={},{},{} range={},{} depth_mode={} "
+                            "front={:#x} flip_y={} z01={} minmax_z={}{} gclip={}",
+                            vt.scale_x, vt.scale_y, vt.scale_z, vt.translate_x, vt.translate_y,
+                            vt.translate_z, vp.depth_range_near, vp.depth_range_far,
+                            static_cast<u32>(regs.depth_mode), static_cast<u32>(regs.gl_front_face),
+                            regs.window_origin.flip_y.Value(),
+                            regs.viewport_clip_control.depth_0_to_1.Value(),
+                            regs.viewport_clip_control.pixel_min_z.Value(),
+                            regs.viewport_clip_control.pixel_max_z.Value(),
+                            static_cast<u32>(regs.viewport_clip_control.geometry_clip.Value()));
+    }
     const auto& targets{texture_cache.CaptureRenderTargets()};
     for (size_t index = 0; index < targets.color_buffer_ids.size(); ++index) {
         if (targets.color_buffer_ids[index]) {
@@ -472,6 +492,20 @@ void RasterizerVulkan::CaptureDumpTargets(u32 event, const char* suffix) {
         file.write(reinterpret_cast<const char*>(texels.data()),
                    static_cast<std::streamsize>(texels.size()));
         capture.Line(fmt::format("  dump e{}{} rt{} {}x{} fmt={} {}", event, suffix, index, width, height,
+                                 static_cast<u32>(texture_cache.GetImageView(id).format), path));
+    }
+    // The depth target too, as <out>/f<n>_e<event>_zeta.bin
+    std::vector<u8> texels;
+    u32 width{};
+    u32 height{};
+    if (const auto id{targets.depth_buffer_id};
+        id && texture_cache.CaptureDownload(id, texels, width, height)) {
+        std::string path{capture.DumpPath(event, 0, suffix)};
+        path.replace(path.size() - std::string_view{"rt0.bin"}.size(), std::string::npos,
+                     "zeta.bin");
+        std::ofstream{path, std::ios::binary}.write(reinterpret_cast<const char*>(texels.data()),
+                                                    static_cast<std::streamsize>(texels.size()));
+        capture.Line(fmt::format("  dump e{}{} zeta {}x{} fmt={} {}", event, suffix, width, height,
                                  static_cast<u32>(texture_cache.GetImageView(id).format), path));
     }
 }
@@ -745,12 +779,12 @@ void RasterizerVulkan::Clear(u32 layer_count) {
     if (auto& capture{VideoCommon::DrawCapture::Get()}; capture.Active()) {
         const auto& targets{texture_cache.CaptureRenderTargets()};
         const u32 rt{regs.clear_surface.RT};
-        capture.Line(fmt::format("e{} clear mask={:#x} rt{} {} zeta {} color={},{},{},{}",
+        capture.Line(fmt::format("e{} clear mask={:#x} rt{} {} zeta {} color={},{},{},{} depth={}",
                                  capture.NextEvent(), regs.clear_surface.raw, rt,
                                  texture_cache.CaptureDescribe(targets.color_buffer_ids[rt]),
                                  texture_cache.CaptureDescribe(targets.depth_buffer_id),
                                  regs.clear_color[0], regs.clear_color[1], regs.clear_color[2],
-                                 regs.clear_color[3]));
+                                 regs.clear_color[3], regs.clear_depth));
     }
 
     constexpr bool ENABLE_DEFERRED_CLEAR = true;

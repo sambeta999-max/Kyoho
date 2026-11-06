@@ -38,6 +38,11 @@ public:
     void EndSystemFrame();
     void EndGameFrame();
 
+    /// Game frames since boot (never reset)
+    u64 GetTotalGameFrames() const {
+        return total_game_frames.load(std::memory_order_relaxed);
+    }
+
     PerfStatsResults GetAndResetStats(std::chrono::microseconds current_system_time_us);
 
     /**
@@ -73,6 +78,7 @@ private:
     u32 system_frames = 0;
     /// Cumulative number of game frames (GSP frame submissions) since last reset
     std::atomic<u32> game_frames = 0;
+    std::atomic<u64> total_game_frames = 0;
 
     /// Point when the previous system frame ended
     Clock::time_point previous_frame_end = reset_point;
