@@ -672,6 +672,7 @@ void RasterizerVulkan::DrawTexture() {
         gpu.TickWork();
     };
     FlushWork();
+    gpu_memory->FlushCaching();
 
     std::scoped_lock l{texture_cache.mutex};
     texture_cache.SynchronizeDescriptors(false);
@@ -1376,20 +1377,31 @@ void RasterizerVulkan::AccelerateInlineToMemory(GPUVAddr address, size_t copy_si
         return;
     }
     gpu_memory->WriteBlockUnsafe(address, memory.data(), copy_size);
+    bool uploaded;
     {
         std::unique_lock lock{buffer_cache.mutex};
         // Guest memory has the words now: a command list copy of the page no longer does
         buffer_cache.NoteListHostWrite(*cpu_addr, copy_size);
-        if (!buffer_cache.InlineMemory(*cpu_addr, copy_size, memory)) {
-            buffer_cache.WriteMemory(*cpu_addr, copy_size);
-        }
+        uploaded = buffer_cache.InlineMemory(*cpu_addr, copy_size, memory);
     }
+    // Images and pending query results over the words must not be written back over them
     {
         std::scoped_lock lock_texture{texture_cache.mutex};
         texture_cache.WriteMemory(*cpu_addr, copy_size);
     }
-    pipeline_cache.InvalidateRegion(*cpu_addr, copy_size);
     query_cache.InvalidateRegion(*cpu_addr, copy_size);
+    if (!uploaded) {
+        // Games make thousands of small inline writes between draws (Ocarina of Time's compute
+        // uploads), and marking each CPU-modified in the buffer cache, under its lock, and
+        // invalidating shaders took most of their time. No GPU data is on these pages
+        // (InlineMemory), so nothing downloads over them meanwhile; the buffer and shader caches
+        // see the merged ranges at the next FlushCaching, before any of their data is used.
+        // From Lichii 1c7c24683 (AccelerateInlineToMemory in vk_rasterizer.cpp), which defers
+        // the texture cache too.
+        gpu_memory->AccumulateInvalidation(address, copy_size);
+        return;
+    }
+    pipeline_cache.InvalidateRegion(*cpu_addr, copy_size);
 }
 
 std::optional<FramebufferTextureInfo> RasterizerVulkan::AccelerateDisplay(

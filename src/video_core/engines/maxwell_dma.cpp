@@ -70,6 +70,9 @@ void MaxwellDMA::Launch() {
         ReleaseSemaphore();
         return;
     }
+    // Writes left for the caches (MemoryManager::AccumulateInvalidation) reach them before a copy
+    // or clear reads or writes through them
+    memory_manager.FlushCaching();
     if (auto& capture{VideoCommon::DrawCapture::Get()}; capture.Active()) {
         const GPUVAddr dst{static_cast<GPUVAddr>(regs.offset_out)};
         const u64 bytes{u64{regs.line_length_in} *
