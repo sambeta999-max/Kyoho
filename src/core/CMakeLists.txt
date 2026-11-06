@@ -551,6 +551,9 @@ add_library(core STATIC
     hle/service/audio/final_output_recorder_manager_for_applet.h
     hle/service/audio/final_output_recorder_manager.cpp
     hle/service/audio/final_output_recorder_manager.h
+    hle/service/audio/hardware_audio_codec.cpp
+    hle/service/audio/hardware_audio_codec.h
+    hle/service/audio/hardware_audio_codec_protocol.h
     hle/service/audio/hardware_opus_decoder_manager.cpp
     hle/service/audio/hardware_opus_decoder_manager.h
     hle/service/audio/hardware_opus_decoder.cpp

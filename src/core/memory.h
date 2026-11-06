@@ -199,6 +199,12 @@ public:
     u32 Read32(Common::ProcessAddress addr);
 
     /**
+     * Reads a 32-bit value with acquire ordering (a shared ring index another thread publishes).
+     * Returns false when the address is unmapped or not 4-byte aligned.
+     */
+    bool Read32Acquire(Common::ProcessAddress addr, u32& value);
+
+    /**
      * Reads a 64-bit unsigned value from the current process' address space
      * at the given virtual address.
      *

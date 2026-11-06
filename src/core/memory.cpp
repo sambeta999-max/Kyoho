@@ -160,6 +160,24 @@ struct Memory::Impl {
         }
     }
 
+    bool Read32Acquire(const Common::ProcessAddress addr, u32& value) {
+        value = 0;
+        if (!current_page_table || (addr & 3) != 0) {
+            return false;
+        }
+        auto* pointer = GetPointerImpl(GetInteger(addr), [] {}, [&] {
+            HandleRasterizerDownload(GetInteger(addr), sizeof(u32));
+        });
+        if (!pointer) {
+            return false;
+        }
+        u32_le actual{};
+        static_cast<void>(Common::AtomicCompareAndSwap(reinterpret_cast<u32_le*>(pointer),
+                                                     u32_le{0}, u32_le{0}, actual));
+        value = actual;
+        return true;
+    }
+
     u64 Read64(const Common::ProcessAddress addr) {
         if ((addr & 7) == 0) {
             return Read<u64_le>(addr);
@@ -854,6 +872,10 @@ u16 Memory::Read16(const Common::ProcessAddress addr) {
 
 u32 Memory::Read32(const Common::ProcessAddress addr) {
     return impl->Read32(addr);
+}
+
+bool Memory::Read32Acquire(const Common::ProcessAddress addr, u32& value) {
+    return impl->Read32Acquire(addr, value);
 }
 
 u64 Memory::Read64(const Common::ProcessAddress addr) {

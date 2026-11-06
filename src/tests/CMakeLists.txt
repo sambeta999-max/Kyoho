@@ -17,6 +17,7 @@ add_executable(tests
     common/undefined_fix.cpp
     common/unique_function.cpp
     core/core_timing.cpp
+    audio_core/batch_decoder.cpp
     core/graphics_supervisor.cpp
     core/native_gpu_characteristics.cpp
     core/nup_container.cpp
@@ -42,7 +43,7 @@ add_executable(tests
 
 create_target_directory_groups(tests)
 
-target_link_libraries(tests PRIVATE common core input_common video_core)
+target_link_libraries(tests PRIVATE common core audio_core input_common video_core)
 target_link_libraries(tests PRIVATE ${PLATFORM_LIBRARIES} Catch2::Catch2WithMain Threads::Threads)
 # The NUP test writes containers with SHA-256 hashes, as the reader checks them
 if (TARGET OpenSSL::Crypto)
