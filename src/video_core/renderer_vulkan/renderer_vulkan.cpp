@@ -307,6 +307,41 @@ void RendererVulkan::RenderScreenshot(std::span<const Tegra::FramebufferConfig> 
         framebuffers, renderer_settings.screenshot_layer_stack, screenshot_layer_scratch);
 
     const auto& layout{renderer_settings.screenshot_framebuffer_layout};
+    if (std::getenv("EDEN_SCREENSHOT_NOWAIT")) {
+        // Debug: copy the frame out without waiting for the GPU, so consecutive screenshots see
+        // the frames as the window does (waiting serializes the host GPU and hides races)
+        struct Pending {
+            Frame frame;
+            vk::Buffer buffer;
+        };
+        constexpr VkFormat format = VK_FORMAT_B8G8R8A8_UNORM;
+        auto pending = std::make_shared<Pending>();
+        pending->frame.image =
+            CreateWrappedImage(memory_allocator, VkExtent2D{layout.width, layout.height}, format);
+        pending->frame.image_view = CreateWrappedImageView(device, pending->frame.image, format);
+        pending->frame.framebuffer =
+            blit_capture.CreateFramebuffer(device, layout, *pending->frame.image_view, format);
+        pending->buffer = CreateWrappedBuffer(memory_allocator, layout.width * layout.height * 4,
+                                              MemoryUsage::Download);
+        blit_capture.DrawToFrame(device, rasterizer, &pending->frame, screenshot_layers, layout, 1,
+                                 format);
+        scheduler.RequestOutsideRenderPassOperationContext();
+        scheduler.Record([image = *pending->frame.image, buffer = *pending->buffer,
+                          extent = VkExtent3D{layout.width, layout.height, 1}](
+                             vk::CommandBuffer cmdbuf) {
+            DownloadColorImage(cmdbuf, image, buffer, extent);
+        });
+        const u64 tick = scheduler.CurrentTick();
+        std::thread([this, pending, tick, bits = renderer_settings.screenshot_bits,
+                     callback = renderer_settings.screenshot_complete_callback] {
+            scheduler.GetMasterSemaphore().Wait(tick);
+            pending->buffer.Invalidate();
+            std::memcpy(bits, pending->buffer.Mapped().data(), pending->buffer.Mapped().size());
+            callback(false);
+        }).detach();
+        renderer_settings.screenshot_requested = false;
+        return;
+    }
     const auto dst_buffer = RenderToBuffer(screenshot_layers, layout, VK_FORMAT_B8G8R8A8_UNORM,
                                            layout.width * layout.height * 4);
 

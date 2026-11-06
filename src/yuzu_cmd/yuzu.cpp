@@ -9,6 +9,7 @@
 #include <mutex>
 #include <regex>
 #include <string>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -207,7 +208,8 @@ void WriteBmp(const std::string& path, const std::vector<u8>& pixels, u32 width,
 // keys to other windows. The buttons are the keyboard keys of the cli-key.ini mappings:
 // k/b/x/y/p = A/B/X/Y/+, q/e/w/m = L/R/L+R/-, u/d/l/r = D-pad, n/v/f/h = left stick
 // up/down/left/right (held 1.5 s).
-// Screenshots go to EDEN_SCRIPT_OUT (a path prefix) as <prefix>_<sec>s.bmp.
+// Screenshots go to EDEN_SCRIPT_OUT (a path prefix) as <prefix>_<sec>s.bmp; z takes a burst of
+// consecutive frames (EDEN_SCRIPT_BURST).
 void RunScript(std::stop_token stop, SdlState* state, std::string script, std::string out) {
     const auto start = std::chrono::steady_clock::now();
     size_t pos = 0;
@@ -240,6 +242,33 @@ void RunScript(std::stop_token stop, SdlState* state, std::string script, std::s
             const char* frames = std::getenv("EDEN_DRAW_FRAMES");
             VideoCommon::DrawCapture::Get().Request(
                 frames ? static_cast<u32>((std::max)(1, std::atoi(frames))) : 1U);
+            continue;
+        }
+        if (kind == 'z') {
+            // EDEN_SCRIPT_BURST (default 8) screenshots of consecutive presented frames, as
+            // <prefix>_<sec>s_<n>.bmp, to see flicker between frames
+            const char* burst = std::getenv("EDEN_SCRIPT_BURST");
+            const int count = burst ? (std::max)(1, std::atoi(burst)) : 8;
+            const auto layout = Layout::DefaultFrameLayout(1280, 720);
+            for (int i = 0; i < count && !stop.stop_requested(); ++i) {
+                auto pixels =
+                    std::make_shared<std::vector<u8>>(size_t{layout.width} * layout.height * 4);
+                auto done = std::make_shared<std::atomic_bool>(false);
+                const std::string path = fmt::format("{}_{}s_{}.bmp", out, action.substr(1), i);
+                state->system.Renderer().RequestScreenshot(
+                    pixels->data(),
+                    [pixels, path, layout, done](bool invert_y) {
+                        WriteBmp(path, *pixels, layout.width, layout.height, invert_y);
+                        done->store(true);
+                    },
+                    layout);
+                // With EDEN_SCREENSHOT_NOWAIT the next request goes in once this one is taken
+                const bool nowait = std::getenv("EDEN_SCREENSHOT_NOWAIT") != nullptr;
+                while (!stop.stop_requested() &&
+                       (nowait ? state->system.Renderer().IsScreenshotPending() : !done->load())) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+            }
             continue;
         }
         if (kind == 's') {
