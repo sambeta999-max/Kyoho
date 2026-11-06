@@ -507,8 +507,9 @@ public:
             {102, &IVi2Session::CloseDisplay, "CloseDisplay"},
             {103, &IVi2Session::QueryDisplayRefreshRate, "QueryDisplayRefreshRate"},
             {354, &IVi2Session::QueryDisplayRefreshRate, "QueryDisplayRefreshRate"},
-            {106, &IVi2Session::QueryDisplayHdrStatus, "QueryDisplayHdrStatus"},
-            {104, &IVi2Session::QueryDisplayHdrOutput, "QueryDisplayHdrOutput"},
+            {104, &IVi2Session::QueryDisplayHdrStatus, "QueryDisplayHdrStatus"},
+            {105, &IVi2Session::QueryDisplayHdrPaperWhite, "QueryDisplayHdrPaperWhite"},
+            {106, &IVi2Session::QueryDisplayBufferMaxResolution, "QueryDisplayBufferMaxResolution"},
             {301, &IVi2Session::SetDisplayParameter, "SetDisplayParameter"},
             {111, &IVi2Session::OpenEndpoint, "OpenEndpoint"},
             {112, &IVi2Session::CloseEndpoint, "CloseEndpoint"},
@@ -634,37 +635,41 @@ private:
         rb.Push(result.raw);
         rb.Push<u64>(result.IsSuccess() ? 1 : 0);
     }
-    // Command 106 takes a display name and returns the HDR output state as a u64, which
-    // nn::vi2::QueryDisplayHdrStatus maps 1 to SDR and 2 to HDR. The emulated display is SDR.
-    void QueryDisplayHdrStatus(HLERequestContext& ctx) {
-        const auto* packet = ctx.CommandBuffer();
+    // Commands 104 to 106 take a display name. nn::vi2's clients (sdk 0x5db2d0, 0x5db4c0,
+    // 0x5db6a0) read a u64 output format and a u16 peak luminance (QueryDisplayHdrStatus, 1 SDR,
+    // 2 HDR), a u16 paper white in nits (QueryDisplayHdrPaperWhite), and a u64 mode
+    // (QueryDisplayBufferMaxResolution).
+    Result CheckDisplayQuery(const u32* packet, u32 command) {
         const u64 name = u64{packet[2]} | (u64{packet[3]} << 32);
-        Result result = Kernel::ResultInvalidCombination;
-        if (packet[0] == 0x7a && packet[1] == 2) {
-            result = name == 0x00746c7561666564ULL || GetPlayerDisplayIndex(name)
-                         ? ResultSuccess : Kernel::ResultNotFound;
+        if (packet[0] != 16 + command || packet[1] != 2) {
+            return Kernel::ResultInvalidCombination;
         }
-        LOG_DEBUG(Service_AM, "VI2 HDR status display={:#x}, result={:#x}", name, result.raw);
-        IPC::ResponseBuilder rb{ctx, 4};
-        rb.Push(result.raw);
-        rb.Push<u64>(result.IsSuccess() ? 1 : 0);
+        return name == 0x00746c7561666564ULL || GetPlayerDisplayIndex(name) ? ResultSuccess
+                                                                             : Kernel::ResultNotFound;
     }
-    // Command 104 takes a display name and returns a u64 and a u16 (nn::vi2's client reads words
-    // 3-4 and the low half of word 5). nn::vi2::QueryDisplayHdrStatus takes the u64 as the output
-    // format (1 SDR, 2 HDR) and passes the u16 on with it. An SDR display has no HDR luminance.
-    void QueryDisplayHdrOutput(HLERequestContext& ctx) {
-        const auto* packet = ctx.CommandBuffer();
-        const u64 name = u64{packet[2]} | (u64{packet[3]} << 32);
-        Result result = Kernel::ResultInvalidCombination;
-        if (packet[0] == 0x78 && packet[1] == 2) {
-            result = name == 0x00746c7561666564ULL || GetPlayerDisplayIndex(name)
-                         ? ResultSuccess : Kernel::ResultNotFound;
-        }
-        LOG_DEBUG(Service_AM, "VI2 HDR output display={:#x}, result={:#x}", name, result.raw);
+    // The emulated display is SDR and has no HDR peak luminance.
+    void QueryDisplayHdrStatus(HLERequestContext& ctx) {
+        const Result result = CheckDisplayQuery(ctx.CommandBuffer(), 104);
         IPC::ResponseBuilder rb{ctx, 5};
         rb.Push(result.raw);
         rb.Push<u64>(result.IsSuccess() ? 1 : 0);
         rb.Push<u32>(0);
+    }
+    // The BT.2408 reference white, as Lichii answers (src/core/hle/service/nx2_gsv.h).
+    void QueryDisplayHdrPaperWhite(HLERequestContext& ctx) {
+        const Result result = CheckDisplayQuery(ctx.CommandBuffer(), 105);
+        IPC::ResponseBuilder rb{ctx, 3};
+        rb.Push(result.raw);
+        rb.Push<u32>(result.IsSuccess() ? 203 : 0);
+    }
+    // Lichii found Fire Emblem: Fortune's Weave mapping the mode 1 to 1280x720, 2 to 1920x1080 and
+    // 4 or 8 to 2560x1440 (src/core/hle/service/nx2_gsv.h). Report a 1080p display, the
+    // console's own screen and a common TV; 1 held titles to 720p.
+    void QueryDisplayBufferMaxResolution(HLERequestContext& ctx) {
+        const Result result = CheckDisplayQuery(ctx.CommandBuffer(), 106);
+        IPC::ResponseBuilder rb{ctx, 4};
+        rb.Push(result.raw);
+        rb.Push<u64>(result.IsSuccess() ? 2 : 0);
     }
     void CloseDisplay(HLERequestContext& ctx) {
         const auto* packet = ctx.CommandBuffer();
