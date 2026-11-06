@@ -74,7 +74,8 @@ public:
             {0, D<&IUserService::CreateUserShimScopedObject>, "CreateUserShimScopedObject"},
             {3, D<&IUserService::CreateVirtualCameraShimScopedObject>,
              "CreateVirtualCameraShimScopedObject"},
-            {22, D<&IUserService::NoOp>, "Unknown22"},
+            {11, D<&IUserService::GetChattingState>, "GetChattingState"},
+            {22,D<&IUserService::NoOp>, "Unknown22"},
             {23, D<&IUserService::SetU32>, "Unknown23"},
             {61, D<&IUserService::NoOp>, "Unknown61"},
         };
@@ -84,6 +85,13 @@ public:
 private:
     Result NoOp() {
         LOG_WARNING(Service, "(STUBBED) called");
+        R_SUCCEED();
+    }
+
+    // nn::chat::GetChattingUid (sdk 0x6be460) passes a 0xf0-byte fixed-size pointer buffer and
+    // takes the Uid at offset 0x18; Star Fox asks every frame. Nobody is chatting.
+    Result GetChattingState(OutLargeData<std::array<u8, 0xf0>, BufferAttr_HipcPointer> out_state) {
+        out_state->fill(0);
         R_SUCCEED();
     }
 
