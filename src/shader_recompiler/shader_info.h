@@ -175,6 +175,10 @@ struct StorageBufferDescriptor {
     u32 cbuf_offset;
     u32 count;
     bool is_written;
+    /// When set, the buffer pointer is a table entry: it is read from this offset in the memory
+    /// the constant buffer pointer points to. Global memory accesses find such a buffer through
+    /// the global memory table (its binding registers it there), not by its address.
+    u32 indirect_offset{~0U};
 
     auto operator<=>(const StorageBufferDescriptor&) const = default;
 };

@@ -274,8 +274,10 @@ public:
 
     void UnbindGraphicsStorageBuffers(size_t stage);
 
+    /// indirect_offset: when not ~0, the pointer is read from that offset in the memory the
+    /// constant buffer pointer points to (Shader::StorageBufferDescriptor::indirect_offset)
     bool BindGraphicsStorageBuffer(size_t stage, size_t ssbo_index, u32 cbuf_index, u32 cbuf_offset,
-                                   bool is_written);
+                                   bool is_written, u32 indirect_offset = ~0U);
 
     void UnbindGraphicsTextureBuffers(size_t stage);
 
@@ -285,7 +287,7 @@ public:
     void UnbindComputeStorageBuffers();
 
     void BindComputeStorageBuffer(size_t ssbo_index, u32 cbuf_index, u32 cbuf_offset,
-                                  bool is_written);
+                                  bool is_written, u32 indirect_offset = ~0U);
 
     void UnbindComputeTextureBuffers();
 
@@ -516,8 +518,14 @@ private:
 
     void DeleteBuffer(BufferId buffer_id, bool do_not_mark = false);
 
+    /// table_entry: the pointer at ssbo_addr is an entry of a pointer table (no size after it)
     [[nodiscard]] Binding StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
-                                               bool is_written) const;
+                                               bool is_written, bool table_entry = false) const;
+
+    /// Where the pointer of a storage buffer descriptor is: the constant buffer word at
+    /// cbuf_address + cbuf_offset, or the table entry that word points to (0 for a null table)
+    [[nodiscard]] GPUVAddr StoragePointerAddress(GPUVAddr cbuf_address, u32 cbuf_offset,
+                                                 u32 indirect_offset) const;
 
     [[nodiscard]] TextureBufferBinding GetTextureBufferBinding(GPUVAddr gpu_addr, u32 size,
                                                                PixelFormat format);

@@ -29,6 +29,8 @@ struct StorageBufferAddr {
 
     u32 index;
     u32 offset;
+    /// Offset of the buffer pointer in the memory the constant buffer pointer points to
+    u32 indirect{~0U};
 };
 
 /// Block iterator to a global memory instruction and the storage buffer it uses
@@ -516,6 +518,71 @@ std::optional<StorageBufferAddr> TrackPointerPair(const LowAddrInfo& info) {
     return result;
 }
 
+/// A pointer read from a table at a constant buffer pointer plus a fixed offset: the table entry,
+/// as a storage buffer whose pointer the binding reads from the table. The access stays global and
+/// finds the buffer through the global memory table, where the binding registers it; without the
+/// binding, memory that no other storage buffer covers is missing from the table and reads 0
+/// (Ocarina of Time's culling and vegetation programs read their instance and material data
+/// through such pointers).
+std::optional<StorageBufferAddr> TrackTableEntry(const LowAddrInfo& addr) {
+    // The low word of the pointer, plus offsets: an element of a 64 or 128-bit load
+    const IR::Inst* extract{};
+    small_vector<IR::Value, 4> pending{addr.value};
+    for (size_t step = 0; step < pending.size() && step < 8 && !extract; ++step) {
+        if (pending[step].IsImmediate()) {
+            continue;
+        }
+        const IR::Inst* const inst{pending[step].InstRecursive()};
+        switch (inst->GetOpcode()) {
+        case IR::Opcode::CompositeExtractU32x2:
+        case IR::Opcode::CompositeExtractU32x4:
+            if (!inst->Arg(0).IsImmediate() && inst->Arg(1).IsImmediate()) {
+                const IR::Opcode load{inst->Arg(0).InstRecursive()->GetOpcode()};
+                if (load == IR::Opcode::LoadGlobal64 || load == IR::Opcode::LoadGlobal128) {
+                    extract = inst;
+                }
+            }
+            break;
+        case IR::Opcode::IAdd32:
+            pending.push_back(inst->Arg(0));
+            pending.push_back(inst->Arg(1));
+            break;
+        default:
+            break;
+        }
+    }
+    if (!extract || extract->Arg(1).U32() % 2 != 0) {
+        return std::nullopt;
+    }
+    // The table: a pointer read whole from a constant buffer, plus a fixed offset
+    IR::Inst* const load{extract->Arg(0).InstRecursive()};
+    const std::optional<LowAddrInfo> table{TrackLowAddress(load)};
+    if (!table || table->value.IsImmediate()) {
+        return std::nullopt;
+    }
+    const IR::Inst* word{table->value.InstRecursive()};
+    if (word->GetOpcode() == IR::Opcode::CompositeExtractU32x2 && word->Arg(1).IsImmediate() &&
+        word->Arg(1).U32() == 0 && !word->Arg(0).IsImmediate()) {
+        word = word->Arg(0).InstRecursive();
+    }
+    if ((word->GetOpcode() != IR::Opcode::GetCbufU32 &&
+         word->GetOpcode() != IR::Opcode::GetCbufU32x2) ||
+        !word->Arg(0).IsImmediate() || !word->Arg(1).IsImmediate()) {
+        return std::nullopt;
+    }
+    const s64 indirect{s64{table->imm_offset} + s64{extract->Arg(1).U32()} * 4};
+    const u32 offset{word->Arg(1).U32()};
+    if (indirect < 0 || !Common::IsAligned(static_cast<u64>(indirect), 8) ||
+        !Common::IsAligned(offset, 8)) {
+        return std::nullopt;
+    }
+    return StorageBufferAddr{
+        .index = word->Arg(0).U32(),
+        .offset = offset,
+        .indirect = static_cast<u32>(indirect),
+    };
+}
+
 /// Collects the storage buffer used by a global memory instruction and the instruction itself
 void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info) {
     // NVN puts storage buffers in a specific range, we have to bias towards these addresses to
@@ -551,7 +618,13 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info) 
         // The pointer itself was read from memory: the address it was read from says nothing
         // about where it points (Donkey Kong Bananza stores through pointers it loads from a list
         // at c0[0x110], which tracking would take for offsets into the list). Leave it to the
-        // global memory fallbacks.
+        // global memory fallbacks, with the table entry bound when the table is at a fixed place.
+        if (const std::optional<StorageBufferAddr> entry{TrackTableEntry(*low_addr_info)}) {
+            info.set.insert(*entry);
+            if (IsGlobalMemoryWrite(inst)) {
+                info.writes.insert(*entry);
+            }
+        }
         LOG_INFO(Shader,
                  "Global memory address is a pointer read from memory, using global fallbacks");
         return;
@@ -710,6 +783,7 @@ void GlobalMemoryToStorageBufferPass(IR::Program& program, const HostTranslateIn
             .cbuf_offset = storage_buffer.offset,
             .count = 1,
             .is_written = info.writes.contains(storage_buffer),
+            .indirect_offset = storage_buffer.indirect,
         });
     }
     for (const StorageInst& storage_inst : info.to_replace) {
@@ -729,7 +803,8 @@ void JoinStorageInfo(Info& base, Info& source) {
     for (auto& desc : source.storage_buffers_descriptors) {
         auto it{std::ranges::find_if(descriptors, [&desc](const auto& existing) {
             return desc.cbuf_index == existing.cbuf_index &&
-                   desc.cbuf_offset == existing.cbuf_offset && desc.count == existing.count;
+                   desc.cbuf_offset == existing.cbuf_offset && desc.count == existing.count &&
+                   desc.indirect_offset == existing.indirect_offset;
         })};
         if (it != descriptors.end()) {
             it->is_written |= desc.is_written;

@@ -32,10 +32,10 @@ void GlobalStorageOp(EmitContext& ctx, Register address, bool pointer_based, std
                      std::string_view else_expr = {}) {
     const size_t num_buffers{ctx.info.storage_buffers_descriptors.size()};
     for (size_t index = 0; index < num_buffers; ++index) {
-        if (!ctx.info.nvn_buffer_used[index]) {
+        const auto& ssbo{ctx.info.storage_buffers_descriptors[index]};
+        if (!ctx.info.nvn_buffer_used[index] || ssbo.indirect_offset != ~0U) {
             continue;
         }
-        const auto& ssbo{ctx.info.storage_buffers_descriptors[index]};
         const u64 ssbo_align_mask{~(ctx.profile.min_ssbo_alignment - 1U)};
         ctx.Add("LDC.U64 DC.x,c{}[{}];"    // unaligned_ssbo_addr
                 "AND.U64 DC.x,DC.x,{};"    // ssbo_addr = unaligned_ssbo_addr & ssbo_align_mask

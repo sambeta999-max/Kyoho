@@ -391,6 +391,15 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
             const auto& stage_cbufs{maxwell3d->state.shader_stages[stage].const_buffers};
             for (const auto& desc : info.storage_buffers_descriptors) {
                 const GPUVAddr ssbo_addr{stage_cbufs[desc.cbuf_index].address + desc.cbuf_offset};
+                if (desc.indirect_offset != ~0U) {
+                    const GPUVAddr table{gpu_memory->Read<u64>(ssbo_addr)};
+                    capture.bindings.push_back(fmt::format(
+                        "  s{} ssbo c{}[{:#x}] -> [{:#x}] = {:#x} table entry{}", stage,
+                        desc.cbuf_index, desc.cbuf_offset, desc.indirect_offset,
+                        table != 0 ? gpu_memory->Read<u64>(table + desc.indirect_offset) : 0,
+                        desc.is_written ? " written" : ""));
+                    continue;
+                }
                 const GPUVAddr ssbo_base{gpu_memory->Read<u64>(ssbo_addr)};
                 const u32 ssbo_size{gpu_memory->Read<u32>(ssbo_addr + 8)};
                 std::string guest;
@@ -417,7 +426,8 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
             for (const auto& desc : info.storage_buffers_descriptors) {
                 ASSERT(desc.count == 1);
                 buffer_cache.BindGraphicsStorageBuffer(stage, ssbo_index, desc.cbuf_index,
-                                                       desc.cbuf_offset, desc.is_written);
+                                                       desc.cbuf_offset, desc.is_written,
+                                                       desc.indirect_offset);
                 ++ssbo_index;
             }
         }

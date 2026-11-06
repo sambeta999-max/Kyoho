@@ -161,7 +161,7 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
     for (const auto& desc : info.storage_buffers_descriptors) {
         ASSERT(desc.count == 1);
         buffer_cache.BindComputeStorageBuffer(ssbo_index, desc.cbuf_index, desc.cbuf_offset,
-                                              desc.is_written);
+                                              desc.is_written, desc.indirect_offset);
         ++ssbo_index;
     }
 
@@ -238,6 +238,15 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
     if (auto& capture{VideoCommon::DrawCapture::Get()}; capture.Active()) {
         for (const auto& desc : info.storage_buffers_descriptors) {
             const GPUVAddr ssbo_addr{cbufs[desc.cbuf_index].Address() + desc.cbuf_offset};
+            if (desc.indirect_offset != ~0U) {
+                const GPUVAddr table{gpu_memory.Read<u64>(ssbo_addr)};
+                capture.bindings.push_back(fmt::format(
+                    "  ssbo c{}[{:#x}] -> [{:#x}] = {:#x} table entry{}", desc.cbuf_index,
+                    desc.cbuf_offset, desc.indirect_offset,
+                    table != 0 ? gpu_memory.Read<u64>(table + desc.indirect_offset) : 0,
+                    desc.is_written ? " written" : ""));
+                continue;
+            }
             capture.bindings.push_back(fmt::format(
                 "  ssbo c{}[{:#x}] = {:#x} size {:#x}{}", desc.cbuf_index, desc.cbuf_offset,
                 gpu_memory.Read<u64>(ssbo_addr), gpu_memory.Read<u32>(ssbo_addr + 8),

@@ -461,7 +461,8 @@ void BufferCache<P>::UnbindGraphicsStorageBuffers(size_t stage) {
 
 template <class P>
 bool BufferCache<P>::BindGraphicsStorageBuffer(size_t stage, size_t ssbo_index, u32 cbuf_index,
-                                               u32 cbuf_offset, bool is_written) {
+                                               u32 cbuf_offset, bool is_written,
+                                               u32 indirect_offset) {
     const bool already_enabled =
         ((channel_state->enabled_storage_buffers[stage] >> ssbo_index) & 1U) != 0;
     if constexpr (requires { runtime.ShouldLimitDynamicStorageBuffers(); }) {
@@ -484,9 +485,12 @@ bool BufferCache<P>::BindGraphicsStorageBuffer(size_t stage, size_t ssbo_index, 
     }
 
     const auto& cbufs = maxwell3d->state.shader_stages[stage];
-    const GPUVAddr ssbo_addr = cbufs.const_buffers[cbuf_index].address + cbuf_offset;
+    const GPUVAddr ssbo_addr = StoragePointerAddress(cbufs.const_buffers[cbuf_index].address,
+                                                     cbuf_offset, indirect_offset);
     channel_state->storage_buffers[stage][ssbo_index] =
-        StorageBufferBinding(ssbo_addr, cbuf_index, is_written);
+        ssbo_addr == 0 ? NULL_BINDING
+                       : StorageBufferBinding(ssbo_addr, cbuf_index, is_written,
+                                              indirect_offset != ~0U);
     return (channel_state->storage_buffers[stage][ssbo_index].buffer_id != NULL_BUFFER_ID);
 }
 
@@ -525,7 +529,7 @@ void BufferCache<P>::UnbindComputeStorageBuffers() {
 
 template <class P>
 void BufferCache<P>::BindComputeStorageBuffer(size_t ssbo_index, u32 cbuf_index, u32 cbuf_offset,
-                                              bool is_written) {
+                                              bool is_written, u32 indirect_offset) {
     if (ssbo_index >= channel_state->compute_storage_buffers.size()) [[unlikely]] {
         LOG_ERROR(HW_GPU, "Storage buffer index {} exceeds maximum storage buffer count",
                   ssbo_index);
@@ -560,9 +564,12 @@ void BufferCache<P>::BindComputeStorageBuffer(size_t ssbo_index, u32 cbuf_index,
     ASSERT(((launch_desc.const_buffer_enable_mask >> cbuf_index) & 1) != 0);
 
     const auto& cbufs = launch_desc.const_buffer_config;
-    const GPUVAddr ssbo_addr = cbufs[cbuf_index].Address() + cbuf_offset;
+    const GPUVAddr ssbo_addr =
+        StoragePointerAddress(cbufs[cbuf_index].Address(), cbuf_offset, indirect_offset);
     channel_state->compute_storage_buffers[ssbo_index] =
-        StorageBufferBinding(ssbo_addr, cbuf_index, is_written);
+        ssbo_addr == 0 ? NULL_BINDING
+                       : StorageBufferBinding(ssbo_addr, cbuf_index, is_written,
+                                              indirect_offset != ~0U);
 }
 
 template <class P>
@@ -2418,8 +2425,19 @@ void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
 }
 
 template <class P>
+GPUVAddr BufferCache<P>::StoragePointerAddress(GPUVAddr cbuf_address, u32 cbuf_offset,
+                                               u32 indirect_offset) const {
+    const GPUVAddr ssbo_addr = cbuf_address + cbuf_offset;
+    if (indirect_offset == ~0U) {
+        return ssbo_addr;
+    }
+    const GPUVAddr table = gpu_memory->Read<u64>(ssbo_addr);
+    return table != 0 ? table + indirect_offset : 0;
+}
+
+template <class P>
 Binding BufferCache<P>::StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
-                                             bool is_written) const {
+                                             bool is_written, bool table_entry) const {
     const GPUVAddr gpu_addr = gpu_memory->Read<u64>(ssbo_addr);
 
     if (gpu_addr == 0) {
@@ -2429,6 +2447,12 @@ Binding BufferCache<P>::StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
     const auto size = [&]() {
         const u32 memory_layout_size =
             static_cast<u32>(gpu_memory->GetMemoryLayoutSize(gpu_addr));
+        if (table_entry) {
+            // A bare pointer to a pool: its records can lie far past the base (Ocarina of Time's
+            // grass instances, 12-18 MiB in, as Lichii 1038827cf found). Read-only ones extend to
+            // the end of the mapping up to 64 MiB; a written binding marks all of itself modified.
+            return (std::min)(memory_layout_size, static_cast<u32>(is_written ? 8_MiB : 64_MiB));
+        }
         const u64 next_qword = gpu_memory->Read<u64>(ssbo_addr + 8);
         const u32 packed_size = static_cast<u32>(next_qword);
         const bool next_qword_is_size = static_cast<u32>(next_qword >> 32) == 0 &&
