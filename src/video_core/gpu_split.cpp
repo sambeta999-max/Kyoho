@@ -21,6 +21,7 @@
 #include "video_core/engines/engine_interface.h"
 #include "video_core/gpu.h"
 #include "video_core/gpu_split.h"
+#include "video_core/memory_manager.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_base.h"
 
@@ -166,6 +167,7 @@ void GpuSplit::Push(const Entry& entry) {
         Relax(spins);
     }
     entries[head % EntryCapacity] = entry;
+    ConsumeClassification(head + 1);
     entry_head.store(head + 1, std::memory_order_seq_cst);
     if (back_sleeping.load(std::memory_order_seq_cst)) {
         entry_head.notify_one();
@@ -253,6 +255,95 @@ void GpuSplit::PushTask(std::function<void()>&& task) {
     tasks[task_head % TaskCapacity] = std::move(task);
     ++task_head;
     Push(Entry{.kind = Kind::Task, .data_end = data_head});
+}
+
+void GpuSplit::ConsumeClassification(u64 position) {
+    const Effect effect = pending_classified ? pending_effect : Effect::Unknown;
+    if (effect == Effect::Unknown) {
+        last_unknown = position;
+    } else if (effect == Effect::Gpu) {
+        last_gpu = position;
+    }
+    if (pending_begin < pending_end) {
+        if (noted_writes.size() >= MaxNotedWrites) {
+            last_unknown = position;
+            noted_writes.clear();
+        } else if (!noted_writes.empty() && pending_begin <= noted_writes.back().end &&
+                   noted_writes.back().begin <= pending_end) {
+            // Joined with the previous write, it retires with this one (conservative)
+            NotedWrite& last = noted_writes.back();
+            last.begin = (std::min)(last.begin, pending_begin);
+            last.end = (std::max)(last.end, pending_end);
+            last.position = position;
+        } else {
+            noted_writes.push_back({pending_begin, pending_end, position});
+        }
+    }
+    if (pending_sync) {
+        last_sync = position;
+    }
+    pending_classified = false;
+    pending_begin = ~DAddr{0};
+    pending_end = 0;
+    pending_sync = false;
+}
+
+void GpuSplit::ClassifyGpuWrite(const Tegra::MemoryManager& memory, GPUVAddr address, u64 size) {
+    Classify(Effect::None);
+    if (size > 0x10000) {
+        Classify(Effect::Unknown);
+        return;
+    }
+    constexpr GPUVAddr page_mask = PageSize - 1;
+    const GPUVAddr end = address + size;
+    for (GPUVAddr page = address & ~page_mask; page < end; page += page_mask + 1) {
+        const auto device = memory.GpuToCpuAddress(page);
+        if (!device) {
+            // It may be mapped by the time the back writes
+            Classify(Effect::Unknown);
+            return;
+        }
+        const GPUVAddr begin = (std::max)(page, address);
+        const GPUVAddr last = (std::min)(page + page_mask + 1, end);
+        ClassifyWrite(*device + (begin - page), *device + (last - page));
+    }
+}
+
+u64 GpuSplit::ReadTarget(DAddr begin, DAddr end) {
+    const u64 executed = entry_tail.load(std::memory_order_acquire);
+    while (!noted_writes.empty() && noted_writes.front().position <= executed) {
+        noted_writes.pop_front();
+    }
+    u64 target = (std::max)(last_unknown, (std::min)(last_gpu, last_sync));
+    // Positions grow towards the back: the newest overlap is the latest
+    for (auto it = noted_writes.rbegin(); it != noted_writes.rend(); ++it) {
+        if (it->begin < end && begin < it->end) {
+            target = (std::max)(target, it->position);
+            break;
+        }
+    }
+    return target;
+}
+
+void GpuSplit::Hold(u64 target) {
+    hold_at.store(target, std::memory_order_seq_cst);
+    int spins = 0;
+    for (;;) {
+        const u64 tail = entry_tail.load(std::memory_order_seq_cst);
+        if (tail >= target) {
+            // Idle: nothing can be pushed while held. Parked: the back stored `parked` after its
+            // last entry and checks hold_at again before it leaves (Run)
+            if (tail == entry_head.load(std::memory_order_relaxed) ||
+                parked.load(std::memory_order_seq_cst) == tail + 1) {
+                return;
+            }
+        }
+        Relax(spins);
+    }
+}
+
+void GpuSplit::Release() {
+    hold_at.store(~u64{0}, std::memory_order_seq_cst);
 }
 
 void GpuSplit::Drain(std::source_location where) {
@@ -365,6 +456,21 @@ void GpuSplit::Run(std::stop_token stop_token) {
             }
         }
         for (; tail != head; ++tail) {
+            if (tail >= hold_at.load(std::memory_order_seq_cst)) [[unlikely]] {
+                // The front reads guest memory (Hold): wait between two entries
+                parked.store(tail + 1, std::memory_order_seq_cst);
+                int spins = 0;
+                for (;;) {
+                    while (tail >= hold_at.load(std::memory_order_seq_cst)) {
+                        Relax(spins);
+                    }
+                    parked.store(0, std::memory_order_seq_cst);
+                    if (tail < hold_at.load(std::memory_order_seq_cst)) {
+                        break;
+                    }
+                    parked.store(tail + 1, std::memory_order_seq_cst);
+                }
+            }
             Entry& entry = entries[tail % EntryCapacity];
             try {
                 Execute(entry);

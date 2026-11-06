@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <thread>
@@ -21,6 +22,7 @@ class System;
 
 namespace Tegra {
 class DmaPusher;
+class MemoryManager;
 namespace Engines {
 class EngineInterface;
 }
@@ -103,6 +105,41 @@ public:
     [[nodiscard]] u64 Executed() const noexcept {
         return entry_tail.load(std::memory_order_acquire);
     }
+
+    /// What the next pushed entry may write to guest memory, set by the front before it pushes
+    /// it. Unclassified entries (and every task) are Unknown. From Lichii e691cc3f2
+    /// (SplitWriteTracker, src/video_core/split_write_tracker.h), adapted.
+    enum class Effect : u8 {
+        None,    ///< Only the ranges noted with ClassifyWrite
+        Gpu,     ///< Host GPU work (draws): the guest relies on it after a wait for idle only
+        Unknown, ///< Anything, at once
+    };
+    void Classify(Effect effect) noexcept {
+        pending_effect = pending_classified ? (std::max)(pending_effect, effect) : effect;
+        pending_classified = true;
+    }
+    /// The next entry writes device memory [begin, end)
+    void ClassifyWrite(DAddr begin, DAddr end) noexcept {
+        pending_begin = (std::min)(pending_begin, begin);
+        pending_end = (std::max)(pending_end, end);
+    }
+    /// The next entry writes GPU memory [address, +size) of `memory`: an unknown write where it
+    /// is unmapped now or too large to track
+    void ClassifyGpuWrite(const Tegra::MemoryManager& memory, GPUVAddr address, u64 size);
+    /// The next entry waits for idle: the GPU work before it is done once it ran
+    void ClassifySync() noexcept {
+        pending_sync = true;
+    }
+    /// The position the back has to reach before a front read of device memory [begin, end)
+    /// sees what the guest may rely on: every unknown write, the GPU work before the last wait
+    /// for idle and the noted writes to the range (MME DMA reads run ahead of the pipeline on
+    /// the console: a game waits for idle before it reads what draws write)
+    [[nodiscard]] u64 ReadTarget(DAddr begin, DAddr end);
+    /// Parks the back between two entries once it executed everything before `target` (or
+    /// everything pushed), as idle as after Drain; the front may then use the rasterizer until
+    /// Release. Nothing may be pushed meanwhile.
+    void Hold(u64 target);
+    void Release();
 
     /// Work that can write command lists the GPU fills in (compute dispatches, DMA copies, inline
     /// uploads) was just pushed
@@ -223,6 +260,24 @@ private:
     u64 data_head{};
     u64 task_head{};
     u64 last_writer{}; ///< Entries pushed when the last writer was (NoteWriter)
+    struct NotedWrite {
+        DAddr begin;
+        DAddr end;
+        u64 position; ///< Executed once the back passed it
+    };
+    static constexpr size_t MaxNotedWrites = 512;
+    std::deque<NotedWrite> noted_writes;
+    u64 last_unknown{}; ///< Positions just past the last entry of each kind
+    u64 last_gpu{};
+    u64 last_sync{};
+    Effect pending_effect{};
+    bool pending_classified{};
+    DAddr pending_begin{~DAddr{0}};
+    DAddr pending_end{};
+    bool pending_sync{};
+    void ConsumeClassification(u64 position);
+    alignas(64) std::atomic<u64> hold_at{~u64{0}}; ///< Written by the front
+    std::atomic<u64> parked{}; ///< Back: one past the entry it waits before (Hold), or 0
     alignas(64) std::atomic<u64> entry_tail{}; ///< Written by the back
     std::atomic<u64> data_tail{};
     std::atomic<u64> task_tail{};

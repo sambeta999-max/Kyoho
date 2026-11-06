@@ -497,6 +497,7 @@ void DmaPusher::SplitPullerMethod(VideoCommon::GpuSplit& split,
     case Engines::Puller::SplitPlace::State:
         return;
     case Engines::Puller::SplitPlace::Back:
+        puller.ClassifyBackAction(*this, call);
         split.PushTask(puller.MakeBackAction(*this, call));
         return;
     case Engines::Puller::SplitPlace::Front:

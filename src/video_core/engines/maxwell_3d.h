@@ -3184,6 +3184,13 @@ public:
                               u32 amount) override;
     void FrontWrite(u32 method, u32 argument) override;
     void FrontMultiWrite(u32 method, const u32* base_start, u32 amount) override;
+    /// Tells the split what the method the front sends next may write (GpuSplit::Classify);
+    /// before the front registers take it
+    void FrontClassify(u32 method, u32 amount);
+    /// Notes a write of [address, +size) for the entry pushed next, or an unknown write
+    void FrontClassifyWrite(GPUVAddr address, u64 size);
+    /// MME DMA read waiting only for the queued work it depends on; false when it can't
+    bool FrontReadEarly(GPUVAddr address, std::span<u32> data);
     /// Logs where the front's copy differs from the registers; the back must be idle
     void VerifyFrontRegisters();
     bool IsMacroData(u32 method) const override;

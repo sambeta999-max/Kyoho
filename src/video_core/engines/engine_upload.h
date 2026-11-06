@@ -57,6 +57,9 @@ struct Registers {
     } dest;
 };
 
+/// The guest memory an inline upload with these registers writes, as [address, +size)
+[[nodiscard]] std::pair<GPUVAddr, u64> DestinationRange(const Registers& regs, bool is_linear);
+
 class State {
 public:
     explicit State(MemoryManager& memory_manager_, Registers& regs_);

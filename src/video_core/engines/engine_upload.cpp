@@ -25,6 +25,22 @@ State::State(MemoryManager& memory_manager_, Registers& regs_)
 
 State::~State() = default;
 
+std::pair<GPUVAddr, u64> DestinationRange(const Registers& regs, bool is_linear) {
+    if (is_linear) {
+        // The lines ProcessData writes: line_count of line_length_in bytes, pitch apart
+        if (regs.line_count == 0) {
+            return {regs.dest.Address(), 0};
+        }
+        return {regs.dest.Address(),
+                u64{regs.line_count - 1} * regs.dest.pitch + regs.line_length_in};
+    }
+    // The block linear surface it swizzles into; bytes as elements give the same size
+    return {regs.dest.Address(),
+            Tegra::Texture::CalculateSize(true, 1, regs.dest.width, regs.dest.height,
+                                          regs.dest.depth, regs.dest.BlockHeight(),
+                                          regs.dest.BlockDepth())};
+}
+
 void State::BindRasterizer(VideoCore::RasterizerInterface* rasterizer_) {
     rasterizer = rasterizer_;
 }

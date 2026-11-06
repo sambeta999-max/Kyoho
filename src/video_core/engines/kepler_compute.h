@@ -247,6 +247,8 @@ public:
                               u32 amount) override;
     void FrontWrite(u32 method, u32 argument) override;
     void FrontMultiWrite(u32 method, const u32* base_start, u32 amount) override;
+    /// Tells the split what the method the front sends next may write (GpuSplit::Classify)
+    void FrontClassify(u32 method);
 
     /// Uses the macros of the TSG, which the 3D and compute classes share
     void SetNativeMacroContext(std::shared_ptr<NativeMacroContext> context) {

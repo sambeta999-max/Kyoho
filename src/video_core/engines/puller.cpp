@@ -18,6 +18,7 @@
 #include "video_core/engines/puller.h"
 #include "video_core/engines/semaphore.h"
 #include "video_core/gpu.h"
+#include "video_core/gpu_split.h"
 #include "video_core/memory_manager.h"
 #include "video_core/rasterizer_interface.h"
 
@@ -335,6 +336,39 @@ std::optional<HostSemaphore> Puller::DecodeNativeAcquire(const DmaPusher& dma_pu
         return semaphore;
     default:
         return std::nullopt;
+    }
+}
+
+void Puller::ClassifyBackAction(const DmaPusher& dma_pusher, const MethodCall& method_call) const {
+    // Releases write their semaphore (with the timestamp of a long one), a wait for idle
+    // finishes the GPU work before it; the rest may write anything
+    using Effect = VideoCommon::GpuSplit::Effect;
+    auto& split = *VideoCommon::GpuSplit::Active();
+    if ((is_ampere_host || dma_pusher.channel_state.native_abi) &&
+        method_call.method == HOST_SEM_ADDR_LO + 4) {
+        const auto semaphore = HostSemaphore::Decode(
+            regs.reg_array[HOST_SEM_ADDR_LO], regs.reg_array[HOST_SEM_ADDR_LO + 1],
+            regs.reg_array[HOST_SEM_ADDR_LO + 2], regs.reg_array[HOST_SEM_ADDR_LO + 3],
+            regs.reg_array[HOST_SEM_ADDR_LO + 4]);
+        split.ClassifyGpuWrite(dma_pusher.memory_manager, semaphore.address, 16);
+        return;
+    }
+    switch (static_cast<BufferMethods>(method_call.method)) {
+    case BufferMethods::SemaphoreOperation:
+    case BufferMethods::SemaphoreRelease:
+        split.ClassifyGpuWrite(dma_pusher.memory_manager,
+                               regs.semaphore_address.SemaphoreAddress(), 16);
+        return;
+    case BufferMethods::WaitForIdle:
+        split.Classify(Effect::None);
+        split.ClassifySync();
+        return;
+    case BufferMethods::RefCnt:
+        split.Classify(Effect::None);
+        return;
+    default:
+        split.Classify(Effect::Unknown);
+        return;
     }
 }
 

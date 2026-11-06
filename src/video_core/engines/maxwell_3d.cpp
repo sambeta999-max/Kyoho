@@ -98,10 +98,12 @@ public:
         VideoCommon::GpuSplit::Active()->PushEngineMethod(maxwell3d, method, value);
     }
 
-    // Guest memory as of this point: everything sent before has to be executed
+    // Guest memory as of this point: what was sent before and may write it has to be executed
     void ReadMemory(GPUVAddr address, std::span<u32> data) override {
-        VideoCommon::GpuSplit::Active()->Drain();
-        memory_manager.ReadBlock(address, data.data(), data.size_bytes());
+        if (!maxwell3d.FrontReadEarly(address, data)) {
+            VideoCommon::GpuSplit::Active()->Drain();
+            memory_manager.ReadBlock(address, data.data(), data.size_bytes());
+        }
         if (auto& capture{VideoCommon::DrawCapture::Get()}; capture.Active()) {
             capture.Line(fmt::format("  macro read {:#x} {}", address,
                                      fmt::join(data.begin(), data.begin() + std::min<size_t>(data.size(), 8), ",")));
@@ -522,6 +524,108 @@ void Maxwell3D::EnableFrontMacros() {
     front_macros = true;
 }
 
+void Maxwell3D::FrontClassify(u32 method, u32 amount) {
+    // What the method may write once the back runs it, from the registers before it. The draws
+    // and state writes (which can issue a deferred draw) are GPU work; constant buffer data and
+    // reports write ranges the front knows; uploads and syncpoints may write anything.
+    using Effect = VideoCommon::GpuSplit::Effect;
+    auto& split = *VideoCommon::GpuSplit::Active();
+    constexpr u32 cb_data = MAXWELL3D_REG_INDEX(const_buffer.buffer);
+    split.Classify(Effect::Gpu);
+    if (method >= cb_data && method < cb_data + 16) {
+        FrontClassifyWrite(front_regs->const_buffer.Address() + front_regs->const_buffer.offset,
+                           u64{amount} * sizeof(u32));
+        return;
+    }
+    switch (method) {
+    case MAXWELL3D_REG_INDEX(report_semaphore.query):
+        // Payload, then the timestamp of a long report
+        FrontClassifyWrite(front_regs->report_semaphore.Address(), 16);
+        return;
+    case AMPERE_REPORT_SEMAPHORE_EXECUTE:
+        FrontClassifyWrite(
+            (GPUVAddr{front_regs->reg_array[AMPERE_REPORT_SEMAPHORE + 3] & 0xFF} << 32) |
+                front_regs->reg_array[AMPERE_REPORT_SEMAPHORE + 2],
+            16);
+        return;
+    case MAXWELL3D_REG_INDEX(wait_for_idle):
+    case MAXWELL3D_REG_INDEX(invalidate_texture_data_cache):
+        split.ClassifySync();
+        return;
+    case MAXWELL3D_REG_INDEX(inline_data): {
+        const auto [address, size] = Upload::DestinationRange(
+            front_regs->upload,
+            front_regs->launch_dma.memory_layout.Value() == Regs::LaunchDMA::Layout::Pitch);
+        FrontClassifyWrite(address, size);
+        return;
+    }
+    case MAXWELL3D_REG_INDEX(sync_info):
+        split.Classify(Effect::Unknown);
+        return;
+    default:
+        return;
+    }
+}
+
+void Maxwell3D::FrontClassifyWrite(GPUVAddr address, u64 size) {
+    VideoCommon::GpuSplit::Active()->ClassifyGpuWrite(memory_manager, address, size);
+}
+
+bool Maxwell3D::FrontReadEarly(GPUVAddr address, std::span<u32> data) {
+    // Draining made every MME DMA read wait for all queued work, and the front stopped running
+    // ahead (Ocarina of Time outdoors: 20k reads a second, the front waiting most of its time).
+    // The read only needs the queued work it depends on (GpuSplit::ReadTarget); the back then
+    // waits between two entries while the front reads and flushes the caches as after a drain.
+    // Pages GPU work ever wrote keep the drain. From Lichii e691cc3f2 (FrontDmaReadEarly in
+    // src/video_core/engines/maxwell_3d.cpp), adapted.
+    auto& split = *VideoCommon::GpuSplit::Active();
+    const u64 size = data.size_bytes();
+    if (size == 0) {
+        return false;
+    }
+    constexpr GPUVAddr page_mask = VideoCommon::GpuSplit::PageSize - 1;
+    u64 target = 0;
+    for (GPUVAddr page = address & ~page_mask; page < address + size; page += page_mask + 1) {
+        const auto device = memory_manager.GpuToCpuAddress(page);
+        if (!device) {
+            return false;
+        }
+        const DAddr device_page = *device & ~DAddr{page_mask};
+        if (split.WasGpuWritten(device_page, page_mask + 1)) {
+            return false;
+        }
+        // The words read: noted writes elsewhere in the page (reports next to the macro's data)
+        // don't hold it up
+        const GPUVAddr begin = (std::max)(page, address);
+        const GPUVAddr last = (std::min)(page + page_mask + 1, address + size);
+        target = (std::max)(target,
+                            split.ReadTarget(*device + (begin - page), *device + (last - page)));
+    }
+    split.Hold(target);
+    memory_manager.ReadBlock(address, data.data(), size);
+    split.Release();
+    // EDEN_GPU_SPLIT_VERIFY_READS: drain, read again and log the words that differ
+    static const bool verify = std::getenv("EDEN_GPU_SPLIT_VERIFY_READS") != nullptr;
+    if (verify) [[unlikely]] {
+        static u64 reads, differing;
+        std::vector<u32> drained(data.size());
+        split.Drain();
+        memory_manager.ReadBlock(address, drained.data(), size);
+        ++reads;
+        if (!std::ranges::equal(drained, data)) {
+            if (++differing <= 32) {
+                LOG_ERROR(HW_GPU, "split early read at {:#x}: {} words, first {:#x} vs drained {:#x}",
+                          address, data.size(), data[0], drained[0]);
+            }
+            std::ranges::copy(drained, data.begin());
+        }
+        if ((reads & 0xFFFF) == 0) {
+            LOG_WARNING(HW_GPU, "split early reads {} differing {}", reads, differing);
+        }
+    }
+    return true;
+}
+
 bool Maxwell3D::IsFrontMethod(u32 method) const {
     if (method >= MacroRegistersStart) {
         return true;
@@ -553,6 +657,7 @@ u32 Maxwell3D::FrontShadowRam(u32 method, u32 argument) {
 }
 
 void Maxwell3D::FrontWrite(u32 method, u32 argument) {
+    FrontClassify(method, 1);
     // CallMethod and ProcessMethodCall as far as they change registers
     const u32 value = FrontShadowRam(method, argument);
     front_regs->reg_array[method] = value;
@@ -577,16 +682,19 @@ void Maxwell3D::FrontMultiWrite(u32 method, const u32* base_start, u32 amount) {
     // CallMultiMethod as far as it changes registers
     if (method >= MAXWELL3D_REG_INDEX(const_buffer.buffer) &&
         method < MAXWELL3D_REG_INDEX(const_buffer.buffer) + 16) {
+        FrontClassify(method, amount);
         front_regs->const_buffer.offset += amount * static_cast<u32>(sizeof(u32));
         return;
     }
     switch (method) {
     case MAXWELL3D_REG_INDEX(inline_data):
+        FrontClassify(method, amount);
         return;
     case MAXWELL3D_REG_INDEX(draw_inline_index):
     case MAXWELL3D_REG_INDEX(inline_index_2x16.even):
     case MAXWELL3D_REG_INDEX(inline_index_4x8.index0):
         if (front_shadow->shadow_ram_control != Regs::ShadowRamControl::Replay) {
+            FrontClassify(method, amount);
             if (amount != 0) {
                 front_regs->reg_array[method] = FrontShadowRam(method, base_start[amount - 1]);
                 SyncAmpereBufferLimits(*front_regs, method);
@@ -675,6 +783,7 @@ void Maxwell3D::FrontFlushMacro(Core::System& system) {
     FrontMacroHost host{&system, *this, *front_regs, memory_manager};
     TuringMacro().Execute(MacroPositions()[entry], macro_params, host);
     auto& split = *VideoCommon::GpuSplit::Active();
+    split.Classify(VideoCommon::GpuSplit::Effect::Gpu);
     split.PushCall([](void* engine) {
         auto& maxwell3d = *static_cast<Maxwell3D*>(engine);
         maxwell3d.draw_manager.DrawDeferred(maxwell3d);

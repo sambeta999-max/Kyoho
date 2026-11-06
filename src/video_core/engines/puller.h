@@ -115,6 +115,8 @@ public:
     }
     /// The method's action with the registers as they are now, to run on the back
     std::function<void()> MakeBackAction(DmaPusher& dma_pusher, const MethodCall& method_call) const;
+    /// Tells the split what MakeBackAction's action may write (GpuSplit::Classify)
+    void ClassifyBackAction(const DmaPusher& dma_pusher, const MethodCall& method_call) const;
 private:
     static constexpr std::size_t NUM_REGS = 0x800;
     struct Regs {

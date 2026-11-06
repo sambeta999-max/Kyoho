@@ -213,7 +213,54 @@ bool KeplerCompute::IsFrontMethod(u32 method) const {
     }
 }
 
+void KeplerCompute::FrontClassify(u32 method) {
+    // What the method may write once the back runs it, from the registers before it: inline
+    // uploads and reports write ranges the front knows, launches whatever their QMD names
+    // (semaphore releases), the rest only registers. From Lichii e691cc3f2 (the compute
+    // classification in src/video_core/engines/kepler_compute.cpp), adapted.
+    using Effect = VideoCommon::GpuSplit::Effect;
+    auto& split = *VideoCommon::GpuSplit::Active();
+    const auto note = [&](GPUVAddr address, u64 size) {
+        split.ClassifyGpuWrite(memory_manager, address, size);
+    };
+    if (method >= Regs::NUM_REGS || !execution_mask[method]) {
+        split.Classify(Effect::None);
+        return;
+    }
+    switch (method) {
+    case KEPLER_COMPUTE_REG_INDEX(exec_upload):
+        split.Classify(Effect::None);
+        return;
+    case KEPLER_COMPUTE_REG_INDEX(data_upload): {
+        const auto [address, size] =
+            Upload::DestinationRange(front_regs->upload, front_regs->exec_upload.linear != 0);
+        note(address, size);
+        return;
+    }
+    case REPORT_SEMAPHORE_EXECUTE:
+        note((GPUVAddr{front_regs->reg_array[REPORT_SEMAPHORE + 3] & 0xFF} << 32) |
+                 front_regs->reg_array[REPORT_SEMAPHORE + 2],
+             16);
+        return;
+    case REPORT_SEMAPHORE_LEGACY_EXECUTE:
+        note((GPUVAddr{front_regs->reg_array[REPORT_SEMAPHORE_LEGACY] & 0xFF} << 32) |
+                 front_regs->reg_array[REPORT_SEMAPHORE_LEGACY + 1],
+             16);
+        return;
+    case KEPLER_COMPUTE_REG_INDEX(launch):
+    case SEND_SIGNALING_PCAS2_B:
+    case LOAD_INLINE_QMD_DATA_END - 1:
+        // Dispatches, with the releases of their QMD: GPU work, as the 3D engine's draws
+        split.Classify(Effect::Gpu);
+        return;
+    default:
+        split.Classify(Effect::Unknown);
+        return;
+    }
+}
+
 void KeplerCompute::FrontWrite(u32 method, u32 argument) {
+    FrontClassify(method);
     if (method < Regs::NUM_REGS) {
         front_regs->reg_array[method] = argument;
     }
@@ -222,6 +269,7 @@ void KeplerCompute::FrontWrite(u32 method, u32 argument) {
 void KeplerCompute::FrontMultiWrite(u32 method, const u32* base_start, u32 amount) {
     // CallMultiMethod sends data uploads to the upload engine without storing them
     if (method == KEPLER_COMPUTE_REG_INDEX(data_upload)) {
+        FrontClassify(method);
         return;
     }
     for (u32 i = 0; i < amount; ++i) {
