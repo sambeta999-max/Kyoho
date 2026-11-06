@@ -610,6 +610,15 @@ bool Maxwell3D::FrontReadEarly(GPUVAddr address, std::span<u32> data) {
     // flush them: a query reported before keeps its final value in the query cache until a
     // flush. Without one, guest memory holds the words and the back goes on meanwhile.
     split.WaitUntil(target);
+    // Work before the target may have written one of these pages for the first time (a draw's
+    // storage buffer): it is in a host buffer, not guest memory yet. Drain and flush then, as
+    // pointed out by Lichii 5f6066b26 ("quarantine unsafe early MME DMA reads").
+    constexpr u64 page_size = page_mask + 1;
+    for (size_t i = 0; i < num_ranges; ++i) {
+        if (split.WasGpuWritten(ranges[i].first & ~DAddr{page_mask}, page_size)) {
+            return false;
+        }
+    }
     const bool has_queries = std::ranges::any_of(
         ranges.begin(), ranges.begin() + num_ranges,
         [this](const std::pair<DAddr, u64>& range) {
