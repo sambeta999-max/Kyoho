@@ -474,7 +474,7 @@ IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Blo
 
     Optimization::PositionPass(env, program);
 
-    Optimization::GlobalMemoryToStorageBufferPass(program, normalized_host_info);
+    Optimization::GlobalMemoryToStorageBufferPass(env, program, normalized_host_info);
     Optimization::GeometryCompactionPass(program, normalized_host_info);
     Optimization::TexturePass(env, program, normalized_host_info);
 

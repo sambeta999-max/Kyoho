@@ -91,6 +91,11 @@ void ComputePipeline::Configure() {
                                               desc.is_written, desc.indirect_offset);
         ++ssbo_index;
     }
+    for (size_t index = 0; index < info.global_pointer_descriptors.size(); ++index) {
+        const auto& desc{info.global_pointer_descriptors[index]};
+        buffer_cache.BindComputeGlobalPointer(index, desc.cbuf_index, desc.cbuf_offset,
+                                              desc.is_written, desc.indirect_offset);
+    }
     texture_cache.SynchronizeDescriptors(true);
 
     boost::container::static_vector<VideoCommon::ImageViewInOut, MAX_TEXTURES + MAX_IMAGES> views;

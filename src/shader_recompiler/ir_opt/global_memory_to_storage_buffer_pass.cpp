@@ -6,14 +6,17 @@
 
 #include <algorithm>
 #include <optional>
+#include <span>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <boost/container/flat_set.hpp>
 #include <boost/container/small_vector.hpp>
 
 #include "common/alignment.h"
+#include "shader_recompiler/environment.h"
 #include "shader_recompiler/frontend/ir/basic_block.h"
 #include "shader_recompiler/frontend/ir/breadth_first_search.h"
 #include "shader_recompiler/frontend/ir/ir_emitter.h"
@@ -65,6 +68,10 @@ struct StorageInfo {
     /// instructions (the IR does not change while storage buffers are collected).
     std::unordered_map<const IR::Inst*, std::optional<StorageBufferAddr>> biased_tracks;
     std::unordered_map<const IR::Inst*, std::optional<StorageBufferAddr>> unbiased_tracks;
+    /// Buffers only reached through the global memory table: slots of pointer arrays indexed at
+    /// run time, and entries of the tables such slots point to (compute only)
+    small_vector<StorageBufferAddr, 16> global_pointers;
+    StorageWritesSet global_writes;
 };
 
 /// Returns true when the instruction returns data read from memory (loads and atomics)
@@ -417,13 +424,33 @@ std::optional<StorageBufferAddr> Track(const IR::Value& value, const Bias* bias)
 }
 
 /// Returns true when a word is data read from memory (directly or plus an offset), not something
-/// computed from constant buffer words
-bool IsLoadedWord(const IR::Value& value, int depth = 2) {
+/// computed from constant buffer words. A phi is when all its defined inputs are: a pointer loaded
+/// under a condition, undefined on the other path (Ocarina of Time's vegetation culling picks one
+/// of two tables that way).
+bool IsLoadedWord(const IR::Value& value, int depth = 2, int phi_depth = 4) {
     if (value.IsImmediate()) {
         return false;
     }
     const IR::Inst* inst{value.InstRecursive()};
     switch (inst->GetOpcode()) {
+    case IR::Opcode::Phi: {
+        if (phi_depth <= 0) {
+            return false;
+        }
+        bool loaded{};
+        for (size_t arg = 0; arg < inst->NumArgs(); ++arg) {
+            const IR::Value input{inst->Arg(arg)};
+            if (!input.IsImmediate() &&
+                input.InstRecursive()->GetOpcode() == IR::Opcode::UndefU32) {
+                continue;
+            }
+            if (!IsLoadedWord(input, depth, phi_depth - 1)) {
+                return false;
+            }
+            loaded = true;
+        }
+        return loaded;
+    }
     case IR::Opcode::CompositeExtractU32x2:
     case IR::Opcode::CompositeExtractU32x3:
     case IR::Opcode::CompositeExtractU32x4:
@@ -432,8 +459,8 @@ bool IsLoadedWord(const IR::Value& value, int depth = 2) {
         }
         return IsMemoryRead(*inst->Arg(0).InstRecursive());
     case IR::Opcode::IAdd32:
-        return depth > 0 &&
-               (IsLoadedWord(inst->Arg(0), depth - 1) || IsLoadedWord(inst->Arg(1), depth - 1));
+        return depth > 0 && (IsLoadedWord(inst->Arg(0), depth - 1, phi_depth) ||
+                             IsLoadedWord(inst->Arg(1), depth - 1, phi_depth));
     default:
         return IsMemoryRead(*inst);
     }
@@ -524,42 +551,59 @@ std::optional<StorageBufferAddr> TrackPointerPair(const LowAddrInfo& info) {
 /// binding, memory that no other storage buffer covers is missing from the table and reads 0
 /// (Ocarina of Time's culling and vegetation programs read their instance and material data
 /// through such pointers).
-std::optional<StorageBufferAddr> TrackTableEntry(const LowAddrInfo& addr) {
-    // The low word of the pointer, plus offsets: an element of a 64 or 128-bit load
-    const IR::Inst* extract{};
-    small_vector<IR::Value, 4> pending{addr.value};
-    for (size_t step = 0; step < pending.size() && step < 8 && !extract; ++step) {
+struct TableLoad {
+    LowAddrInfo table; ///< Address of the table the pointer is read from
+    s64 indirect;      ///< Offset of the pointer from the table address
+};
+
+/// The loads a pointer read from memory comes from: even elements of 64 or 128-bit loads its low
+/// word is (plus offsets), following phis of pointers loaded on different paths
+small_vector<TableLoad, 2> FindTableLoads(const LowAddrInfo& addr) {
+    small_vector<TableLoad, 2> result;
+    small_vector<IR::Value, 8> pending{addr.value};
+    for (size_t step = 0; step < pending.size() && step < 16; ++step) {
         if (pending[step].IsImmediate()) {
             continue;
         }
         const IR::Inst* const inst{pending[step].InstRecursive()};
         switch (inst->GetOpcode()) {
         case IR::Opcode::CompositeExtractU32x2:
-        case IR::Opcode::CompositeExtractU32x4:
-            if (!inst->Arg(0).IsImmediate() && inst->Arg(1).IsImmediate()) {
-                const IR::Opcode load{inst->Arg(0).InstRecursive()->GetOpcode()};
-                if (load == IR::Opcode::LoadGlobal64 || load == IR::Opcode::LoadGlobal128) {
-                    extract = inst;
-                }
+        case IR::Opcode::CompositeExtractU32x4: {
+            if (inst->Arg(0).IsImmediate() || !inst->Arg(1).IsImmediate() ||
+                inst->Arg(1).U32() % 2 != 0) {
+                break;
+            }
+            IR::Inst* const load{inst->Arg(0).InstRecursive()};
+            if (load->GetOpcode() != IR::Opcode::LoadGlobal64 &&
+                load->GetOpcode() != IR::Opcode::LoadGlobal128) {
+                break;
+            }
+            const std::optional<LowAddrInfo> table{TrackLowAddress(load)};
+            if (table && !table->value.IsImmediate() && result.size() < 4) {
+                result.push_back(TableLoad{
+                    .table = *table,
+                    .indirect = s64{table->imm_offset} + s64{inst->Arg(1).U32()} * 4,
+                });
             }
             break;
+        }
         case IR::Opcode::IAdd32:
-            pending.push_back(inst->Arg(0));
-            pending.push_back(inst->Arg(1));
+        case IR::Opcode::Phi:
+            for (size_t arg = 0; arg < inst->NumArgs(); ++arg) {
+                pending.push_back(inst->Arg(arg));
+            }
             break;
         default:
             break;
         }
     }
-    if (!extract || extract->Arg(1).U32() % 2 != 0) {
-        return std::nullopt;
-    }
+    return result;
+}
+
+/// The entry of a table at a constant buffer pointer plus a fixed offset a load reads
+std::optional<StorageBufferAddr> TrackTableEntry(const TableLoad& load) {
     // The table: a pointer read whole from a constant buffer, plus a fixed offset
-    IR::Inst* const load{extract->Arg(0).InstRecursive()};
-    const std::optional<LowAddrInfo> table{TrackLowAddress(load)};
-    if (!table || table->value.IsImmediate()) {
-        return std::nullopt;
-    }
+    const LowAddrInfo* const table{&load.table};
     const IR::Inst* word{table->value.InstRecursive()};
     if (word->GetOpcode() == IR::Opcode::CompositeExtractU32x2 && word->Arg(1).IsImmediate() &&
         word->Arg(1).U32() == 0 && !word->Arg(0).IsImmediate()) {
@@ -570,7 +614,7 @@ std::optional<StorageBufferAddr> TrackTableEntry(const LowAddrInfo& addr) {
         !word->Arg(0).IsImmediate() || !word->Arg(1).IsImmediate()) {
         return std::nullopt;
     }
-    const s64 indirect{s64{table->imm_offset} + s64{extract->Arg(1).U32()} * 4};
+    const s64 indirect{load.indirect};
     const u32 offset{word->Arg(1).U32()};
     if (indirect < 0 || !Common::IsAligned(static_cast<u64>(indirect), 8) ||
         !Common::IsAligned(offset, 8)) {
@@ -583,8 +627,202 @@ std::optional<StorageBufferAddr> TrackTableEntry(const LowAddrInfo& addr) {
     };
 }
 
+/// The first slot and stride of a pointer array read at a dynamic constant buffer offset:
+/// (index << shift) + base or index * stride + base.
+/// From Lichii f26ad432a (DynamicPointerSlots, global_memory_to_storage_buffer_pass.cpp).
+std::optional<std::pair<u32, u32>> DynamicPointerSlots(const IR::Value& offset) {
+    const auto stride_of = [](const IR::Value& value) -> std::optional<u32> {
+        if (value.IsImmediate()) {
+            return std::nullopt;
+        }
+        const IR::Inst* const inst{value.InstRecursive()};
+        if (inst->GetOpcode() == IR::Opcode::ShiftLeftLogical32 && inst->Arg(1).IsImmediate() &&
+            inst->Arg(1).U32() < 16) {
+            return 1U << inst->Arg(1).U32();
+        }
+        if (inst->GetOpcode() == IR::Opcode::IMul32 && inst->Arg(1).IsImmediate()) {
+            return inst->Arg(1).U32();
+        }
+        return std::nullopt;
+    };
+    u32 base{};
+    std::optional<u32> stride{stride_of(offset)};
+    if (!stride && !offset.IsImmediate() &&
+        offset.InstRecursive()->GetOpcode() == IR::Opcode::IAdd32) {
+        const IR::Inst* const add{offset.InstRecursive()};
+        for (size_t arg = 0; arg < 2 && !stride; ++arg) {
+            if (add->Arg(arg ^ 1).IsImmediate()) {
+                base = add->Arg(arg ^ 1).U32();
+                stride = stride_of(add->Arg(arg));
+            }
+        }
+    }
+    if (!stride || *stride < 8 || !Common::IsAligned(*stride, 8)) {
+        return std::nullopt;
+    }
+    return std::pair{base, *stride};
+}
+
+/// Slots of a pointer array read at a dynamic offset, following phis and selects of the offset.
+/// A stride of zero is a single slot. From Lichii f26ad432a (CollectPointerSlots).
+void CollectPointerSlots(const IR::Value& offset, small_vector<std::pair<u32, u32>, 4>& slots,
+                         std::unordered_set<const IR::Inst*>& visited) {
+    if (offset.IsImmediate()) {
+        if (std::ranges::find(slots, std::pair{offset.U32(), 0U}) == slots.end()) {
+            slots.emplace_back(offset.U32(), 0U);
+        }
+        return;
+    }
+    const IR::Inst* const inst{offset.InstRecursive()};
+    if (!visited.insert(inst).second) {
+        return;
+    }
+    if (const auto pattern{DynamicPointerSlots(offset)}) {
+        if (std::ranges::find(slots, *pattern) == slots.end()) {
+            slots.push_back(*pattern);
+        }
+        return;
+    }
+    switch (inst->GetOpcode()) {
+    case IR::Opcode::Phi:
+        for (size_t arg = 0; arg < inst->NumArgs(); ++arg) {
+            CollectPointerSlots(inst->Arg(arg), slots, visited);
+        }
+        break;
+    case IR::Opcode::SelectU32:
+        CollectPointerSlots(inst->Arg(1), slots, visited);
+        CollectPointerSlots(inst->Arg(2), slots, visited);
+        break;
+    default:
+        break;
+    }
+}
+
+/// The 64-bit constant buffer word at (index, offset)
+u64 ReadCbufU64(Environment& env, u32 index, u32 offset) {
+    return u64{env.ReadCbufValue(index, offset)} | (u64{env.ReadCbufValue(index, offset + 4)} << 32);
+}
+
+/// Whether a 64-bit word looks like a GPU address: below 2^40, above 4 GiB and 4-byte aligned
+/// (floats and small integers are not)
+bool IsPointerValue(u64 value) {
+    return (value >> 40) == 0 && (value >> 32) != 0 && Common::IsAligned(value, 4);
+}
+
+/// A global address whose low word is a pointer read from a constant buffer array at a run-time
+/// offset (one entry per object type; Ocarina of Time's GPU culling adds its per-type task counts
+/// through c4[(type << 4) + 0xe0]): the array slots that can hold pointers, following additions,
+/// phis and selects of the address. Empty when the address is not of that form.
+small_vector<StorageBufferAddr, 16> DynamicArrayPointers(const IR::U32& low_addr,
+                                                          Environment& env) {
+    small_vector<StorageBufferAddr, 16> result;
+    if (low_addr.IsImmediate()) {
+        return result;
+    }
+    small_vector<const IR::Inst*, 16> pending{low_addr.InstRecursive()};
+    std::unordered_set<const IR::Inst*> visited{pending.front()};
+    const auto enqueue = [&](const IR::Value& value) {
+        if (!value.IsImmediate() && pending.size() < 64 &&
+            visited.insert(value.InstRecursive()).second) {
+            pending.push_back(value.InstRecursive());
+        }
+    };
+    for (size_t step = 0; step < pending.size(); ++step) {
+        const IR::Inst* const inst{pending[step]};
+        switch (inst->GetOpcode()) {
+        case IR::Opcode::GetCbufU32:
+        case IR::Opcode::GetCbufU32x2: {
+            if (!inst->Arg(0).IsImmediate() || inst->Arg(1).IsImmediate()) {
+                break;
+            }
+            static constexpr u32 max_slots{16};
+            const u32 index{inst->Arg(0).U32()};
+            small_vector<std::pair<u32, u32>, 4> slots;
+            std::unordered_set<const IR::Inst*> slot_visited;
+            CollectPointerSlots(inst->Arg(1), slots, slot_visited);
+            for (const auto& [first, stride] : slots) {
+                // The words are those of the program's first use. An array with a pointer then
+                // is a pointer array: its null slots (object types not in the scene yet) can hold
+                // pointers later, and the binding skips the slots that are null at the time. The
+                // other arrays are offsets and the like the address adds to the pointer.
+                small_vector<StorageBufferAddr, 16> array;
+                bool has_pointer{};
+                for (u32 slot = 0; slot < (stride ? max_slots : 1U); ++slot) {
+                    const StorageBufferAddr pointer{.index = index, .offset = first + slot * stride};
+                    if (!Common::IsAligned(pointer.offset, 8)) {
+                        continue;
+                    }
+                    const u64 value{ReadCbufU64(env, pointer.index, pointer.offset)};
+                    if (value != 0 && !IsPointerValue(value)) {
+                        continue;
+                    }
+                    has_pointer |= value != 0;
+                    array.push_back(pointer);
+                }
+                if (!has_pointer) {
+                    continue;
+                }
+                for (const StorageBufferAddr& pointer : array) {
+                    if (std::ranges::find(result, pointer) == result.end()) {
+                        result.push_back(pointer);
+                    }
+                }
+            }
+            break;
+        }
+        case IR::Opcode::IAdd32:
+        case IR::Opcode::Phi:
+            for (size_t arg = 0; arg < inst->NumArgs(); ++arg) {
+                enqueue(inst->Arg(arg));
+            }
+            break;
+        case IR::Opcode::SelectU32:
+            enqueue(inst->Arg(1));
+            enqueue(inst->Arg(2));
+            break;
+        case IR::Opcode::CompositeExtractU32x2:
+            if (inst->Arg(1).IsImmediate() && inst->Arg(1).U32() == 0) {
+                enqueue(inst->Arg(0));
+            }
+            break;
+        default:
+            break;
+        }
+    }
+    return result;
+}
+
+/// A pointer read from a table whose own pointer comes from an array indexed at run time (Ocarina
+/// of Time's culling reads each object type's instance transforms this way): the entry in the
+/// table of every array slot. The binding reads the entry through the slot at bind time.
+small_vector<StorageBufferAddr, 16> DynamicTableEntries(const TableLoad& load,
+                                                         Environment& env) {
+    if (load.indirect < 0 || !Common::IsAligned(static_cast<u64>(load.indirect), 8)) {
+        return {};
+    }
+    small_vector<StorageBufferAddr, 16> entries{DynamicArrayPointers(load.table.value, env)};
+    for (StorageBufferAddr& entry : entries) {
+        entry.indirect = static_cast<u32>(load.indirect);
+    }
+    return entries;
+}
+
+/// Records buffers only reached through the global memory table
+void AddGlobalPointers(std::span<const StorageBufferAddr> pointers, const IR::Inst& inst,
+                       StorageInfo& info) {
+    for (const StorageBufferAddr& pointer : pointers) {
+        if (std::ranges::find(info.global_pointers, pointer) == info.global_pointers.end()) {
+            info.global_pointers.push_back(pointer);
+        }
+        if (IsGlobalMemoryWrite(inst)) {
+            info.global_writes.insert(pointer);
+        }
+    }
+}
+
 /// Collects the storage buffer used by a global memory instruction and the instruction itself
-void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info) {
+void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info, Environment& env,
+                           Stage stage) {
     // NVN puts storage buffers in a specific range, we have to bias towards these addresses to
     // avoid getting false positives
     static constexpr Bias nvn_bias{
@@ -619,15 +857,37 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info) 
         // about where it points (Donkey Kong Bananza stores through pointers it loads from a list
         // at c0[0x110], which tracking would take for offsets into the list). Leave it to the
         // global memory fallbacks, with the table entry bound when the table is at a fixed place.
-        if (const std::optional<StorageBufferAddr> entry{TrackTableEntry(*low_addr_info)}) {
-            info.set.insert(*entry);
-            if (IsGlobalMemoryWrite(inst)) {
-                info.writes.insert(*entry);
+        // Compute programs register the entries without a binding; graphics programs bind them.
+        for (const TableLoad& load : FindTableLoads(*low_addr_info)) {
+            const std::optional<StorageBufferAddr> entry{TrackTableEntry(load)};
+            if (stage == Stage::Compute) {
+                if (entry) {
+                    AddGlobalPointers(std::span{&*entry, 1}, inst, info);
+                } else {
+                    AddGlobalPointers(DynamicTableEntries(load, env), inst, info);
+                }
+            } else if (entry && (info.set.contains(*entry) || info.set.size() < Info::MAX_SSBOS)) {
+                info.set.insert(*entry);
+                if (IsGlobalMemoryWrite(inst)) {
+                    info.writes.insert(*entry);
+                }
             }
         }
         LOG_INFO(Shader,
                  "Global memory address is a pointer read from memory, using global fallbacks");
         return;
+    }
+    if (!storage_buffer && stage == Stage::Compute) {
+        // A pointer from an array indexed at run time: the access stays global and finds its
+        // buffer through the global memory table, where the slots' buffers are registered.
+        // Tracking would pick some other word the index is computed from.
+        const small_vector<StorageBufferAddr, 16> slots{DynamicArrayPointers(low_addr, env)};
+        if (!slots.empty()) {
+            AddGlobalPointers(slots, inst, info);
+            LOG_INFO(Shader, "Global memory address is a pointer from an array in cbuf, {} slots",
+                     slots.size());
+            return;
+        }
     }
     if (!storage_buffer) {
         storage_buffer = cached_track(&nvn_bias, info.biased_tracks);
@@ -767,15 +1027,32 @@ void Replace(IR::Block& block, IR::Inst& inst, const IR::U32& storage_index,
 }
 } // Anonymous namespace
 
-void GlobalMemoryToStorageBufferPass(IR::Program& program, const HostTranslateInfo& host_info) {
+void GlobalMemoryToStorageBufferPass(Environment& env, IR::Program& program,
+                                     const HostTranslateInfo& host_info) {
     StorageInfo info;
     for (IR::Block* const block : program.post_order_blocks) {
         for (IR::Inst& inst : block->Instructions()) {
             if (!IsGlobalMemory(inst)) {
                 continue;
             }
-            CollectStorageBuffers(*block, inst, info);
+            CollectStorageBuffers(*block, inst, info, env, program.stage);
         }
+    }
+    // Written ones first, should there be more than fit
+    std::ranges::stable_partition(info.global_pointers, [&](const StorageBufferAddr& pointer) {
+        return info.global_writes.contains(pointer);
+    });
+    for (const StorageBufferAddr& pointer : info.global_pointers) {
+        auto& descriptors{program.info.global_pointer_descriptors};
+        if (info.set.contains(pointer) || descriptors.size() == descriptors.capacity()) {
+            continue;
+        }
+        descriptors.push_back({
+            .cbuf_index = pointer.index,
+            .cbuf_offset = pointer.offset,
+            .indirect_offset = pointer.indirect,
+            .is_written = info.global_writes.contains(pointer),
+        });
     }
     for (const StorageBufferAddr& storage_buffer : info.set) {
         program.info.storage_buffers_descriptors.push_back({

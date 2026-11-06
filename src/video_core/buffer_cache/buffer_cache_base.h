@@ -62,6 +62,7 @@ constexpr u32 NUM_TRANSFORM_FEEDBACK_BUFFERS = 4;
 constexpr u32 NUM_GRAPHICS_UNIFORM_BUFFERS = 18;
 constexpr u32 NUM_COMPUTE_UNIFORM_BUFFERS = 8;
 constexpr u32 NUM_STORAGE_BUFFERS = 32;
+constexpr u32 NUM_GLOBAL_POINTERS = 64;
 constexpr u32 NUM_TEXTURE_BUFFERS = 32;
 constexpr u32 NUM_STAGES = 5;
 
@@ -139,6 +140,7 @@ public:
 
     std::array<Binding, NUM_COMPUTE_UNIFORM_BUFFERS> compute_uniform_buffers;
     std::array<Binding, NUM_STORAGE_BUFFERS> compute_storage_buffers;
+    std::array<Binding, NUM_GLOBAL_POINTERS> compute_global_pointers;
     std::array<TextureBufferBinding, NUM_TEXTURE_BUFFERS> compute_texture_buffers;
 
     std::array<u32, NUM_STAGES> enabled_uniform_buffer_masks{};
@@ -151,6 +153,8 @@ public:
     std::array<u32, NUM_STAGES> written_storage_buffers{};
     u32 enabled_compute_storage_buffers = 0;
     u32 written_compute_storage_buffers = 0;
+    u64 enabled_compute_global_pointers = 0;
+    u64 written_compute_global_pointers = 0;
 
     u32 total_graphics_storage_buffers = 0;
     u32 total_compute_storage_buffers = 0;
@@ -288,6 +292,11 @@ public:
 
     void BindComputeStorageBuffer(size_t ssbo_index, u32 cbuf_index, u32 cbuf_offset,
                                   bool is_written, u32 indirect_offset = ~0U);
+
+    /// Registers in the global memory table a buffer the program reaches only through it, without
+    /// binding it to the program
+    void BindComputeGlobalPointer(size_t index, u32 cbuf_index, u32 cbuf_offset, bool is_written,
+                                  u32 indirect_offset);
 
     void UnbindComputeTextureBuffers();
 
@@ -438,6 +447,8 @@ private:
     void BindHostComputeUniformBuffers();
 
     void BindHostComputeStorageBuffers();
+
+    void BindHostComputeGlobalPointers();
 
     void BindHostComputeTextureBuffers();
 

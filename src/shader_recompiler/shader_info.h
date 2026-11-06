@@ -183,6 +183,17 @@ struct StorageBufferDescriptor {
     auto operator<=>(const StorageBufferDescriptor&) const = default;
 };
 
+/// A buffer whose pointer is a constant buffer word (or, with indirect_offset, an entry of the
+/// table such a word points to) that the program only reaches through the global memory table
+struct GlobalPointerDescriptor {
+    u32 cbuf_index;
+    u32 cbuf_offset;
+    u32 indirect_offset;
+    bool is_written;
+
+    auto operator<=>(const GlobalPointerDescriptor&) const = default;
+};
+
 struct TextureBufferDescriptor {
     bool has_secondary;
     u32 cbuf_index;
@@ -266,6 +277,7 @@ struct Info {
     static constexpr size_t MAX_INDIRECT_CBUFS{14};
     static constexpr size_t MAX_CBUFS{18};
     static constexpr size_t MAX_SSBOS{32};
+    static constexpr size_t MAX_GLOBAL_POINTERS{64};
 
     bool is_task{}; ///< Switch 2 task program (Stage::Task)
     bool is_mesh{}; ///< Switch 2 mesh program (Stage::Mesh)
@@ -361,6 +373,10 @@ struct Info {
     boost::container::static_vector<ConstantBufferDescriptor, MAX_CBUFS>
         constant_buffer_descriptors;
     boost::container::static_vector<StorageBufferDescriptor, MAX_SSBOS> storage_buffers_descriptors;
+    /// Buffers the program only reaches through the global memory table: registered there at
+    /// bind time, without a binding of their own
+    boost::container::static_vector<GlobalPointerDescriptor, MAX_GLOBAL_POINTERS>
+        global_pointer_descriptors;
     TextureBufferDescriptors texture_buffer_descriptors;
     ImageBufferDescriptors image_buffer_descriptors;
     TextureDescriptors texture_descriptors;

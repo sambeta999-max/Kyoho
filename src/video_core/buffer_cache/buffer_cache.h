@@ -419,6 +419,7 @@ template <class P>
 void BufferCache<P>::BindHostComputeBuffers() {
     BindHostComputeUniformBuffers();
     BindHostComputeStorageBuffers();
+    BindHostComputeGlobalPointers();
     BindHostComputeTextureBuffers();
     if (any_buffer_uploaded) {
         runtime.PostCopyBarrier();
@@ -524,6 +525,8 @@ void BufferCache<P>::UnbindComputeStorageBuffers() {
     }
     channel_state->enabled_compute_storage_buffers = 0;
     channel_state->written_compute_storage_buffers = 0;
+    channel_state->enabled_compute_global_pointers = 0;
+    channel_state->written_compute_global_pointers = 0;
     channel_state->image_compute_texture_buffers = 0;
 }
 
@@ -570,6 +573,31 @@ void BufferCache<P>::BindComputeStorageBuffer(size_t ssbo_index, u32 cbuf_index,
         ssbo_addr == 0 ? NULL_BINDING
                        : StorageBufferBinding(ssbo_addr, cbuf_index, is_written,
                                               indirect_offset != ~0U);
+}
+
+template <class P>
+void BufferCache<P>::BindComputeGlobalPointer(size_t index, u32 cbuf_index, u32 cbuf_offset,
+                                              bool is_written, u32 indirect_offset) {
+    if (index >= channel_state->compute_global_pointers.size()) [[unlikely]] {
+        return;
+    }
+    const auto& launch_desc = kepler_compute->launch_description;
+    if (((launch_desc.const_buffer_enable_mask >> cbuf_index) & 1) == 0) {
+        return;
+    }
+    const GPUVAddr ssbo_addr = StoragePointerAddress(
+        launch_desc.const_buffer_config[cbuf_index].Address(), cbuf_offset, indirect_offset);
+    if (ssbo_addr == 0) {
+        return;
+    }
+    // A bare pointer: no size word follows it
+    const Binding binding = StorageBufferBinding(ssbo_addr, cbuf_index, is_written, true);
+    if (binding.size == 0) {
+        return;
+    }
+    channel_state->compute_global_pointers[index] = binding;
+    channel_state->enabled_compute_global_pointers |= u64{1} << index;
+    channel_state->written_compute_global_pointers |= u64{is_written ? 1U : 0U} << index;
 }
 
 template <class P>
@@ -1312,6 +1340,27 @@ void BufferCache<P>::BindHostComputeStorageBuffers() {
 }
 
 template <class P>
+void BufferCache<P>::BindHostComputeGlobalPointers() {
+    for (u64 enabled = channel_state->enabled_compute_global_pointers; enabled != 0;
+         enabled &= enabled - 1) {
+        const u32 index = static_cast<u32>(std::countr_zero(enabled));
+        const Binding& binding = channel_state->compute_global_pointers[index];
+        Buffer& buffer = slot_buffers[binding.buffer_id];
+        TouchBuffer(buffer, binding.buffer_id);
+        const u32 size = binding.size;
+        SynchronizeBuffer(buffer, binding.device_addr, size);
+        const u32 offset = buffer.Offset(binding.device_addr);
+        buffer.MarkUsage(offset, size);
+        if constexpr (requires { runtime.RegisterGlobalMemory(binding.gpu_addr, size, buffer, offset); }) {
+            runtime.RegisterGlobalMemory(binding.gpu_addr, size, buffer, offset);
+        }
+        if (((channel_state->written_compute_global_pointers >> index) & 1) != 0) {
+            MarkWrittenBuffer(binding.buffer_id, binding.device_addr, size, true);
+        }
+    }
+}
+
+template <class P>
 void BufferCache<P>::BindHostComputeTextureBuffers() {
     ForEachEnabledBit(channel_state->enabled_compute_texture_buffers, [&](u32 index) {
         const TextureBufferBinding& binding = channel_state->compute_texture_buffers[index];
@@ -1578,6 +1627,12 @@ void BufferCache<P>::UpdateComputeStorageBuffers() {
             ((channel_state->written_compute_storage_buffers >> index) & 1) != 0;
         ResolveMultiRangeStorage(binding, is_written, compute_segments);
     });
+    for (u64 enabled = channel_state->enabled_compute_global_pointers; enabled != 0;
+         enabled &= enabled - 1) {
+        Binding& binding =
+            channel_state->compute_global_pointers[static_cast<u32>(std::countr_zero(enabled))];
+        binding.buffer_id = FindBuffer(binding.device_addr, binding.size, false);
+    }
 }
 
 template <class P>
@@ -2389,6 +2444,7 @@ void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
     replace(channel_state->transform_feedback_buffers);
     replace(channel_state->compute_uniform_buffers);
     replace(channel_state->compute_storage_buffers);
+    replace(channel_state->compute_global_pointers);
 
     // Mark the whole buffer as CPU written to stop tracking CPU writes
     if (!do_not_mark) {

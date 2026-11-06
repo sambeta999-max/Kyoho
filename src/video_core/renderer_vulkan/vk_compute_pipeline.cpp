@@ -164,6 +164,11 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
                                               desc.is_written, desc.indirect_offset);
         ++ssbo_index;
     }
+    for (size_t index = 0; index < info.global_pointer_descriptors.size(); ++index) {
+        const auto& desc{info.global_pointer_descriptors[index]};
+        buffer_cache.BindComputeGlobalPointer(index, desc.cbuf_index, desc.cbuf_offset,
+                                              desc.is_written, desc.indirect_offset);
+    }
 
     texture_cache.SynchronizeDescriptors(true);
 
@@ -251,6 +256,18 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
                 "  ssbo c{}[{:#x}] = {:#x} size {:#x}{}", desc.cbuf_index, desc.cbuf_offset,
                 gpu_memory.Read<u64>(ssbo_addr), gpu_memory.Read<u32>(ssbo_addr + 8),
                 desc.is_written ? " written" : ""));
+        }
+        for (const auto& desc : info.global_pointer_descriptors) {
+            const GPUVAddr slot{cbufs[desc.cbuf_index].Address() + desc.cbuf_offset};
+            GPUVAddr pointer{gpu_memory.Read<u64>(slot)};
+            if (desc.indirect_offset != ~0U && pointer != 0) {
+                pointer = gpu_memory.Read<u64>(pointer + desc.indirect_offset);
+            }
+            capture.bindings.push_back(fmt::format(
+                "  global c{}[{:#x}]{} = {:#x}{}", desc.cbuf_index, desc.cbuf_offset,
+                desc.indirect_offset != ~0U ? fmt::format(" -> [{:#x}]", desc.indirect_offset)
+                                            : std::string{},
+                pointer, desc.is_written ? " written" : ""));
         }
         capture.binding_views.clear();
         for (size_t index = 0; index < views.size(); ++index) {
