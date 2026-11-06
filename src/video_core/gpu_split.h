@@ -140,6 +140,8 @@ public:
     /// Release. Nothing may be pushed meanwhile.
     void Hold(u64 target);
     void Release();
+    /// Waits until the back executed everything before `target`, without stopping it
+    void WaitUntil(u64 target) noexcept;
 
     /// Work that can write command lists the GPU fills in (compute dispatches, DMA copies, inline
     /// uploads) was just pushed

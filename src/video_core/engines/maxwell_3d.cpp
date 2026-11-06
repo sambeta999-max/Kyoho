@@ -585,9 +585,11 @@ bool Maxwell3D::FrontReadEarly(GPUVAddr address, std::span<u32> data) {
     }
     constexpr GPUVAddr page_mask = VideoCommon::GpuSplit::PageSize - 1;
     u64 target = 0;
+    std::array<std::pair<DAddr, u64>, 4> ranges;
+    size_t num_ranges = 0;
     for (GPUVAddr page = address & ~page_mask; page < address + size; page += page_mask + 1) {
         const auto device = memory_manager.GpuToCpuAddress(page);
-        if (!device) {
+        if (!device || num_ranges == ranges.size()) {
             return false;
         }
         const DAddr device_page = *device & ~DAddr{page_mask};
@@ -600,10 +602,24 @@ bool Maxwell3D::FrontReadEarly(GPUVAddr address, std::span<u32> data) {
         const GPUVAddr last = (std::min)(page + page_mask + 1, address + size);
         target = (std::max)(target,
                             split.ReadTarget(*device + (begin - page), *device + (last - page)));
+        ranges[num_ranges++] = {*device + (begin - page), last - begin};
     }
-    split.Hold(target);
-    memory_manager.ReadBlock(address, data.data(), size);
-    split.Release();
+    // What the back runs after the target doesn't write these words (ReadTarget) but may still
+    // flush them: a query reported before keeps its final value in the query cache until a
+    // flush. Without one, guest memory holds the words and the back goes on meanwhile.
+    split.WaitUntil(target);
+    const bool has_queries = std::ranges::any_of(
+        ranges.begin(), ranges.begin() + num_ranges,
+        [this](const std::pair<DAddr, u64>& range) {
+            return rasterizer->HasCachedQueries(range.first, range.second);
+        });
+    if (has_queries) {
+        split.Hold(target);
+        memory_manager.ReadBlock(address, data.data(), size);
+        split.Release();
+    } else {
+        memory_manager.ReadBlockUnsafe(address, data.data(), size);
+    }
     // EDEN_GPU_SPLIT_VERIFY_READS: drain, read again and log the words that differ
     static const bool verify = std::getenv("EDEN_GPU_SPLIT_VERIFY_READS") != nullptr;
     if (verify) [[unlikely]] {

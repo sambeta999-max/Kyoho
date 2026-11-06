@@ -110,6 +110,13 @@ public:
     /// Split GPU thread: its front flushed this command list page with the back idle
     virtual void NoteGpuWrittenCommandListSynced([[maybe_unused]] DAddr page) {}
 
+    /// Split GPU thread, from its front while the back runs: whether the query cache holds a
+    /// query that may still change guest memory in [addr, +size)
+    [[nodiscard]] virtual bool HasCachedQueries([[maybe_unused]] DAddr addr,
+                                                [[maybe_unused]] u64 size) {
+        return true;
+    }
+
     /// Check if the the specified memory area requires flushing to CPU Memory.
     virtual bool MustFlushRegion(DAddr addr, u64 size,
                                  VideoCommon::CacheType which = VideoCommon::CacheType::All) = 0;

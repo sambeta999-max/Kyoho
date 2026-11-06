@@ -342,6 +342,13 @@ void GpuSplit::Hold(u64 target) {
     }
 }
 
+void GpuSplit::WaitUntil(u64 target) noexcept {
+    int spins = 0;
+    while (entry_tail.load(std::memory_order_acquire) < target) {
+        Relax(spins);
+    }
+}
+
 void GpuSplit::Release() {
     hold_at.store(~u64{0}, std::memory_order_seq_cst);
 }

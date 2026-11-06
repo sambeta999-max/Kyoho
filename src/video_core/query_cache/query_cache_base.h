@@ -81,6 +81,19 @@ public:
         return mask;
     }
 
+    /// Whether a query is cached that writes into [addr, +size) (its payload and timestamp, up
+    /// to 16 bytes from its location); safe while another thread uses the cache
+    [[nodiscard]] bool HasCachedQueries(VAddr addr, size_t size) {
+        // IterateCache takes a location's first 4 bytes: start 12 bytes early
+        const VAddr begin = addr >= 12 ? addr - 12 : 0;
+        bool found = false;
+        IterateCache<false>(begin, size + (addr - begin), [&found](QueryLocation) {
+            found = true;
+            return true;
+        });
+        return found;
+    }
+
     /// Return true when a CPU region is modified from the GPU
     [[nodiscard]] bool IsRegionGpuModified(VAddr addr, size_t size) {
         bool result = false;
