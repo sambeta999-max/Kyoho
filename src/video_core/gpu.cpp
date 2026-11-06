@@ -13,6 +13,7 @@
 #include <utility>
 
 #include "common/assert.h"
+#include "common/cpu_features.h"
 #include "common/settings.h"
 #include "common/settings_enums.h"
 #include "core/core.h"
@@ -173,6 +174,13 @@ struct GPU::Impl {
     }
 
     [[nodiscard]] u64 GetTicks() const {
+        // Switch 2 report timestamps count nanoseconds on the clock GetGpuTime (nvhost_ctrl_gpu)
+        // reads, and the SDK calibrates CPU against GPU time from both; 614.4 MHz ticks, divided
+        // further by the fast GPU time setting, put every GPU timestamp far behind the CPU's.
+        // After Lichii 2940d9fab (src/video_core/gpu_timestamp.h).
+        if (Common::WallClock::GuestCNTFRQ() == Common::WallClock::CNTFRQ_NX2) {
+            return static_cast<u64>(system.CoreTiming().GetGlobalTimeNs().count());
+        }
         const u64 gpu_tick = system.CoreTiming().GetGPUTicks();
         return gpu_tick / GpuClockMultiplier(Settings::values.gpu_clock.GetValue());
     }

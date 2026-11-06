@@ -1193,7 +1193,11 @@ private:
     // Commands 261 to 272 take a display name and the index of a request group event (command
     // 31), and reply with a result only. They come in pairs: 261/262 (VsyncEvent), 263/264
     // (RefreshRateEvent), 265/266 (HdrStatusEvent), 267/268 (HdrPaperWhiteEvent), 269/270
-    // (BufferMaxResolutionEvent), and 271/272 (ModeCapabilityEvent).
+    // (BufferMaxResolutionEvent), and 271/272 (ModeCapabilityEvent). nn::vi2::sdk::Initialize
+    // files 263/264 beside the refresh rate queries (103, 354), and 104-107 beside 265-272, so
+    // only 261 is a vsync tick; the others report a changed display state. Signalling 263 every
+    // vsync made title 0400E88025B1A000 re-query the refresh rate 60 times a second and present
+    // only every other vsync.
     void BindDisplayEvent(HLERequestContext& ctx) {
         const auto* packet = ctx.CommandBuffer();
         const u32 command = ctx.GetCommand();
@@ -1206,7 +1210,7 @@ private:
                          ? ResultSuccess
                          : Kernel::ResultNotFound;
         }
-        if (result.IsSuccess() && kind <= 1) {
+        if (result.IsSuccess() && kind == 0) {
             m_vsync_events |= 1U << index;
             if (!m_vsync_poll) {
                 m_vsync_poll = Core::Timing::CreateEvent(
@@ -1222,7 +1226,7 @@ private:
                 system.CoreTiming().ScheduleLoopingEvent(period, period, m_vsync_poll);
             }
         }
-        if (result.IsSuccess() && kind > 1) {
+        if (result.IsSuccess() && kind > 0) {
             // State events start signaled, so a client reads the current state once before
             // waiting for changes (nn::vi2 caches HDR status until its event fires).
             m_request_group_events[index]->Signal(kernel);
@@ -1240,7 +1244,7 @@ private:
         Result result = Kernel::ResultInvalidCombination;
         if (packet[0] == 16 + command && packet[1] == 3) {
             result = ResultSuccess;
-            if (kind <= 1 && index < 32) {
+            if (kind == 0 && index < 32) {
                 m_vsync_events &= ~(1U << index);
             }
         }
