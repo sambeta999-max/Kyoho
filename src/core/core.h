@@ -225,6 +225,9 @@ public:
 
     void GatherGPUDirtyMemory(std::function<void(PAddr, size_t)>& callback);
 
+    /// Calls back for each guest CPU write to GPU memory that no gather has applied yet
+    void ForEachPendingGPUDirtyMemory(const std::function<void(PAddr, size_t)>& callback);
+
     [[nodiscard]] size_t GetCurrentHostThreadID() const;
 
     /// Gets and resets core performance statistics

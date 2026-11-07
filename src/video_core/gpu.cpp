@@ -250,6 +250,10 @@ struct GPU::Impl {
                      reads.load(std::memory_order_relaxed));
         }
         const u64 fence = RequestSyncOperation([this, &raster_area]() {
+            // CPU writes waiting for a gather go first, or the download puts the GPU's older bytes
+            // over them. From Eglantine 06e211e0d0 (src/video_core/gpu.cpp; alarok/Eglantine
+            // 77fc365f2).
+            InvalidateGPUCache();
             renderer->ReadRasterizer()->FlushRegion(raster_area.start_address, raster_area.end_address - raster_area.start_address);
         });
         gpu_thread.TickGPU(is_async);
@@ -428,6 +432,10 @@ void GPU::FlushCommands() {
 
 void GPU::InvalidateGPUCache() {
     impl->InvalidateGPUCache();
+}
+
+void GPU::ForEachPendingCpuWrite(const std::function<void(DAddr, size_t)>& callback) {
+    impl->system.ForEachPendingGPUDirtyMemory(callback);
 }
 
 void GPU::OnCommandListEnd() {

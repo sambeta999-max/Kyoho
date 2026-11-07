@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <functional>
 #include <memory>
 
 #include "common/bit_field.h"
@@ -147,6 +148,9 @@ public:
     void FlushCommands();
     /// Synchronizes CPU writes with Host GPU memory.
     void InvalidateGPUCache();
+
+    /// Calls back for each guest CPU write that InvalidateGPUCache has not applied yet
+    void ForEachPendingCpuWrite(const std::function<void(DAddr, size_t)>& callback);
     /// Signal the ending of command list.
     void OnCommandListEnd();
 

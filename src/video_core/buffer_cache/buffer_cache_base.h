@@ -231,6 +231,12 @@ class BufferCache : public VideoCommon::ChannelSetupCaches<BufferCacheChannelInf
 public:
     explicit BufferCache(Tegra::MaxwellDeviceMemoryManager& device_memory_, Runtime& runtime_);
 
+    /// Where ExcludePendingCpuWrites finds the CPU writes no gather applied yet
+    void SetPendingCpuWrites(
+        std::function<void(const std::function<void(DAddr, size_t)>&)> pending_cpu_writes_) {
+        pending_cpu_writes = std::move(pending_cpu_writes_);
+    }
+
     ~BufferCache();
 
     void TickFrame();
@@ -564,10 +570,16 @@ private:
 
     void ClearDownload(DAddr base_addr, u64 size);
 
+    /// Drops the bytes of guest CPU writes still waiting for a gather from the downloads and the
+    /// GPU-written ranges, before a download writes guest memory
+    void ExcludePendingCpuWrites();
+
     void InlineMemoryImplementation(DAddr dest_address, size_t copy_size,
                                     std::span<const u8> inlined_buffer);
 
     Tegra::MaxwellDeviceMemoryManager& device_memory;
+
+    std::function<void(const std::function<void(DAddr, size_t)>&)> pending_cpu_writes;
 
     Common::SlotVector<Buffer> slot_buffers;
 #ifdef YUZU_LEGACY

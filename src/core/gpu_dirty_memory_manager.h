@@ -47,6 +47,7 @@ public:
                                                 std::memory_order_relaxed));
     }
 
+    /// Calls back for each collected range and forgets them. One thread at a time.
     void Gather(std::function<void(PAddr, size_t)>& callback) {
         {
             std::scoped_lock lk(guard);
@@ -57,21 +58,27 @@ public:
             }
         }
         for (auto& transform : front_buffer) {
-            size_t offset = 0;
-            u64 mask = transform.mask;
-            while (mask != 0) {
-                const size_t empty_bits = std::countr_zero(mask);
-                offset += empty_bits << align_bits;
-                mask = mask >> empty_bits;
-
-                const size_t continuous_bits = std::countr_one(mask);
-                callback((static_cast<PAddr>(transform.address) << page_bits) + offset,
-                         continuous_bits << align_bits);
-                mask = continuous_bits < align_size ? (mask >> continuous_bits) : 0;
-                offset += continuous_bits << align_bits;
-            }
+            ForEachRange(transform, callback);
         }
+        // ForEachPending still sees the ranges being gathered until here
+        std::scoped_lock lk(guard);
         front_buffer.clear();
+    }
+
+    /// Calls back for each range collected and not gathered yet (or being gathered), keeping
+    /// them; safe while another thread gathers
+    void ForEachPending(const std::function<void(PAddr, size_t)>& callback) {
+        std::scoped_lock lk(guard);
+        for (const auto& transform : front_buffer) {
+            ForEachRange(transform, callback);
+        }
+        for (const auto& transform : back_buffer) {
+            ForEachRange(transform, callback);
+        }
+        if (const TransformAddress t = current.load(std::memory_order_acquire);
+            IsValid(t.address)) {
+            ForEachRange(t, callback);
+        }
     }
 
 private:
@@ -91,6 +98,23 @@ private:
 
     bool IsValid(PAddr address) {
         return address < (1ULL << 39);
+    }
+
+    template <typename Callback>
+    static void ForEachRange(const TransformAddress& transform, Callback&& callback) {
+        size_t offset = 0;
+        u64 mask = transform.mask;
+        while (mask != 0) {
+            const size_t empty_bits = std::countr_zero(mask);
+            offset += empty_bits << align_bits;
+            mask = mask >> empty_bits;
+
+            const size_t continuous_bits = std::countr_one(mask);
+            callback((static_cast<PAddr>(transform.address) << page_bits) + offset,
+                     continuous_bits << align_bits);
+            mask = continuous_bits < align_size ? (mask >> continuous_bits) : 0;
+            offset += continuous_bits << align_bits;
+        }
     }
 
     template <typename T>

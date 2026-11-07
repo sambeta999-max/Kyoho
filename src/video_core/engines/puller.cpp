@@ -225,15 +225,15 @@ bool Puller::IsAcquired(DmaPusher& dma_pusher, const HostSemaphore& semaphore) c
 }
 
 void Puller::AcquireOrSuspend(DmaPusher& dma_pusher, const HostSemaphore& semaphore) {
-    if (IsAcquired(dma_pusher, semaphore)) {
-        return;
+    if (!IsAcquired(dma_pusher, semaphore)) {
+        // Work already submitted by this GPU may be what releases it
+        dma_pusher.rasterizer->ReleaseFences();
+        if (!IsAcquired(dma_pusher, semaphore)) {
+            pending_acquire = semaphore;
+            return;
+        }
     }
-    // Work already submitted by this GPU may be what releases it
-    dma_pusher.rasterizer->ReleaseFences();
-    if (IsAcquired(dma_pusher, semaphore)) {
-        return;
-    }
-    pending_acquire = semaphore;
+    dma_pusher.AcquireBarrier();
 }
 
 bool Puller::CanResumeNativeAcquire(DmaPusher& dma_pusher) const {
@@ -255,6 +255,7 @@ bool Puller::ResumeNativeAcquire(DmaPusher& dma_pusher) {
         return false;
     }
     pending_acquire.reset();
+    dma_pusher.AcquireBarrier();
     return true;
 }
 

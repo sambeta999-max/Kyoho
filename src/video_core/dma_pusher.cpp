@@ -36,7 +36,21 @@ DmaPusher::DmaPusher(Core::System& system_, MemoryManager& memory_manager_, Cont
 
 DmaPusher::~DmaPusher() = default;
 
+void DmaPusher::AcquireBarrier() {
+    // A guest CPU write to memory the GPU also wrote waits in the dirty memory managers
+    // (HandleRasterizerWrite in core/memory.cpp) until the next gather, which only fences did: a
+    // GPU thread ahead of its next fence could run work the CPU had prepared (before submitting
+    // it, or before releasing a semaphore the work acquires) on the host's older copy. On the
+    // hardware, both make the CPU's earlier writes visible to the work after them.
+    if (auto* const split = VideoCommon::GpuSplit::Active(); split && !split->OnBackThread()) {
+        split->PushTask([this] { rasterizer->InvalidateGPUCache(); });
+    } else {
+        rasterizer->InvalidateGPUCache();
+    }
+}
+
 void DmaPusher::DispatchCalls() {
+    AcquireBarrier();
     dma_state.is_last_call = true;
     while (system.IsPoweredOn()) {
         if (!Step()) {
@@ -70,6 +84,7 @@ bool DmaPusher::Step() {
                 return false;
             }
             puller.ClearPendingAcquire();
+            AcquireBarrier();
         }
     } else if (!puller.ResumeNativeAcquire(*this)) {
         return false;
@@ -510,6 +525,7 @@ void DmaPusher::SplitPullerMethod(VideoCommon::GpuSplit& split,
                 semaphore->operation == Engines::HostSemaphore::Operation::AcquireStrictGeq ||
                 semaphore->operation == Engines::HostSemaphore::Operation::AcquireCircGeq;
             if (greater_equal && puller.IsAcquiredNow(*this, *semaphore)) {
+                AcquireBarrier();
                 return;
             }
             // Most acquires hold once the back has executed the release they wait for (its
@@ -524,6 +540,7 @@ void DmaPusher::SplitPullerMethod(VideoCommon::GpuSplit& split,
             split_acquire_fenced = 0;
             if (split.DrainUnless([&] { return puller.IsPendingAcquireMet(*this); })) {
                 puller.ClearPendingAcquire();
+                AcquireBarrier();
             }
             return;
         }

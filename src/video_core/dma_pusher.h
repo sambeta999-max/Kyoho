@@ -143,6 +143,9 @@ public:
     /// Checking can release fences through the rasterizer, so a split GPU thread waits for its
     /// back first
     [[nodiscard]] bool CanResumeNativeAcquire();
+    /// Makes guest CPU writes made so far visible to the work that follows (after a semaphore
+    /// acquire holds, and before each submission)
+    void AcquireBarrier();
 
     void BindSubchannel(Engines::EngineInterface* engine, u32 subchannel_id, Engines::EngineTypes engine_type) {
         subchannels[subchannel_id] = engine;

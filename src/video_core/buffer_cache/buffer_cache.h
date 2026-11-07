@@ -217,6 +217,23 @@ void BufferCache<P>::DownloadMemory(DAddr device_addr, u64 size) {
 }
 
 template <class P>
+void BufferCache<P>::ExcludePendingCpuWrites() {
+    // A guest CPU write to memory the GPU wrote waits in the dirty memory managers until a gather
+    // (HandleRasterizerWrite in core/memory.cpp), and only then removes its bytes from the
+    // downloads (WriteMemory). A download before that put the GPU's older bytes over the write,
+    // and the gather uploaded those back: the write was lost.
+    if (!pending_cpu_writes) {
+        return;
+    }
+    pending_cpu_writes([this](DAddr device_addr, size_t size) {
+        if (IsRegionGpuModified(device_addr, size)) {
+            ClearDownload(device_addr, size);
+            gpu_modified_ranges.Subtract(device_addr, size);
+        }
+    });
+}
+
+template <class P>
 void BufferCache<P>::ClearDownload(DAddr device_addr, u64 size) {
     for (auto& ranges : pending_download_ranges) {
         ranges.Subtract(device_addr, size);
@@ -782,6 +799,7 @@ void BufferCache<P>::PopAsyncBuffers() {
         async_buffers.pop_front();
         return;
     }
+    ExcludePendingCpuWrites();
     auto& downloads = pending_downloads.front();
     auto& ranges = pending_download_ranges.front();
     auto& async_buffer = async_buffers.front();
@@ -2381,6 +2399,9 @@ void BufferCache<P>::DownloadBufferMemory(Buffer& buffer) {
 
 template <class P>
 void BufferCache<P>::DownloadBufferMemory(Buffer& buffer, DAddr device_addr, u64 size) {
+    if (IsRegionGpuModified(device_addr, size)) {
+        ExcludePendingCpuWrites();
+    }
     boost::container::small_vector<BufferCopy, 1> copies;
     u64 total_size_bytes = 0;
     u64 largest_copy = 0;
