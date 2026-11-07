@@ -368,6 +368,9 @@ public:
     /// Return true when a CPU region is modified from the GPU
     [[nodiscard]] bool IsRegionGpuModified(DAddr addr, size_t size);
 
+    /// Whether GPU-written bytes are anywhere on the device pages of the region
+    [[nodiscard]] bool PageHasGpuData(DAddr addr, size_t size);
+
     /// Return true when a region is registered on the cache
     [[nodiscard]] bool IsRegionRegistered(DAddr addr, size_t size);
 

@@ -138,13 +138,8 @@ void BufferCache<P>::WriteMemory(DAddr device_addr, u64 size, bool keep_page_gpu
     // bytes the CPU wrote go to the host buffer now. Downloading the page first did the same, but
     // waited for the host GPU at each of them: Ocarina of Time's forest writes next to GPU data
     // at every fence, about a sixth of the GPU thread.
-    const DAddr page_begin = Common::AlignDown(device_addr, DEVICE_PAGESIZE);
-    const DAddr page_end = Common::AlignUp(device_addr + size, DEVICE_PAGESIZE);
     if (keep_page_gpu_data) {
-        bool page_has_gpu_data = false;
-        gpu_modified_ranges.ForEachInRange(page_begin, page_end - page_begin,
-                                           [&](DAddr, DAddr) { page_has_gpu_data = true; });
-        if (page_has_gpu_data && IsRegionRegistered(device_addr, size)) {
+        if (PageHasGpuData(device_addr, size) && IsRegionRegistered(device_addr, size)) {
             tmp_buffer.resize_destructive(size);
             device_memory.ReadBlockUnsafe(device_addr, tmp_buffer.data(), size);
             InlineMemoryImplementation(device_addr, size, tmp_buffer);
@@ -181,7 +176,11 @@ bool BufferCache<P>::OnCPUWrite(DAddr device_addr, u64 size) {
     if (!is_dirty) {
         return false;
     }
-    if (memory_tracker.IsRegionGpuModified(device_addr, size)) {
+    // This runs before the CPU's bytes reach memory. On a page with GPU-written bytes, WriteMemory
+    // uploads the written range from guest memory instead of marking it CPU-modified: here that
+    // was the bytes before the write, and the write never reached the host buffer. The gather
+    // calls WriteMemory again once the bytes are there.
+    if (memory_tracker.IsRegionGpuModified(device_addr, size) || PageHasGpuData(device_addr, size)) {
         return true;
     }
     WriteMemory(device_addr, size);
@@ -815,6 +814,16 @@ void BufferCache<P>::PopAsyncBuffers() {
     async_buffers.pop_front();
     pending_downloads.pop_front();
     pending_download_ranges.pop_front();
+}
+
+template <class P>
+bool BufferCache<P>::PageHasGpuData(DAddr addr, size_t size) {
+    const DAddr page_begin = Common::AlignDown(addr, DEVICE_PAGESIZE);
+    const DAddr page_end = Common::AlignUp(addr + size, DEVICE_PAGESIZE);
+    bool has_gpu_data = false;
+    gpu_modified_ranges.ForEachInRange(page_begin, page_end - page_begin,
+                                       [&](DAddr, DAddr) { has_gpu_data = true; });
+    return has_gpu_data;
 }
 
 template <class P>
