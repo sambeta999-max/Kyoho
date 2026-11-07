@@ -211,15 +211,27 @@ void WriteBmp(const std::string& path, const std::vector<u8>& pixels, u32 width,
 // up/down/left/right (held 1.5 s).
 // Screenshots go to EDEN_SCRIPT_OUT (a path prefix) as <prefix>_<sec>s.bmp; z takes a burst of
 // consecutive frames (EDEN_SCRIPT_BURST). With EDEN_SCRIPT_FPS=<n>, times count presented game
-// frames (time * n) instead of seconds, so builds of different speed press at the same point.
+// frames (time * n) instead of seconds, so builds of different speed press at the same point,
+// and buttons are held for frames too (EDEN_SCRIPT_HOLD_FPS a second, default 30): games that step
+// once a frame then move as far at any speed.
+// Loading runs in real time, so the frame a game is playable from varies. a<frame> waits from that
+// frame for the end of the load: a presentation gap over 0.5 s followed by 90 frames without one.
+// Times from ANCHOR_BASE on (with EDEN_SCRIPT_FPS) then count frames after the last gap.
 void RunScript(std::stop_token stop, SdlState* state, std::string script, std::string out) {
+    constexpr double ANCHOR_BASE = 100000.0;
     const auto start = std::chrono::steady_clock::now();
     const char* script_fps = std::getenv("EDEN_SCRIPT_FPS");
     const double frames_per_unit = script_fps ? std::atof(script_fps) : 0.0;
+    const auto frames = [&] {
+        return static_cast<double>(state->system.GetPerfStats().GetTotalGameFrames());
+    };
+    double anchor = 0.0;
     const auto reached = [&](double at) {
         if (frames_per_unit > 0.0) {
-            return static_cast<double>(state->system.GetPerfStats().GetTotalGameFrames()) >=
-                   at * frames_per_unit;
+            if (at >= ANCHOR_BASE) {
+                return frames() >= anchor + (at - ANCHOR_BASE) * frames_per_unit;
+            }
+            return frames() >= at * frames_per_unit;
         }
         return std::chrono::steady_clock::now() - start >= std::chrono::duration<double>(at);
     };
@@ -241,6 +253,27 @@ void RunScript(std::stop_token stop, SdlState* state, std::string script, std::s
         }
         LOG_INFO(Frontend, "script: {} (frame {})", action,
                  state->system.GetPerfStats().GetTotalGameFrames());
+        if (kind == 'a') {
+            double last = frames();
+            auto last_time = std::chrono::steady_clock::now();
+            double gap_frame = -1.0;
+            while (!stop.stop_requested() && (gap_frame < 0.0 || last - gap_frame < 90.0)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                const double now_frames = frames();
+                const auto now = std::chrono::steady_clock::now();
+                if (now_frames == last) {
+                    continue;
+                }
+                if (now - last_time > std::chrono::milliseconds(500)) {
+                    gap_frame = now_frames;
+                }
+                last = now_frames;
+                last_time = now;
+            }
+            anchor = gap_frame;
+            LOG_INFO(Frontend, "script: anchored at frame {}", anchor);
+            continue;
+        }
         if (kind == 'g') {
             // RenderDoc capture of the next presented frame (run under renderdoccmd with
             // renderdoc_hotkey enabled)
@@ -250,9 +283,9 @@ void RunScript(std::stop_token stop, SdlState* state, std::string script, std::s
         if (kind == 'c') {
             // Draw capture from the next frame on (video_core/draw_capture.h); EDEN_DRAW_FRAMES
             // sets how many frames
-            const char* frames = std::getenv("EDEN_DRAW_FRAMES");
+            const char* draw_frames = std::getenv("EDEN_DRAW_FRAMES");
             VideoCommon::DrawCapture::Get().Request(
-                frames ? static_cast<u32>((std::max)(1, std::atoi(frames))) : 1U);
+                draw_frames ? static_cast<u32>((std::max)(1, std::atoi(draw_frames))) : 1U);
             continue;
         }
         if (kind == 'z') {
@@ -323,7 +356,18 @@ void RunScript(std::stop_token stop, SdlState* state, std::string script, std::s
         if (scancode2) {
             keyboard->PressKey(scancode2);
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(hold_ms));
+        if (frames_per_unit > 0.0) {
+            static const double hold_fps = [] {
+                const char* value = std::getenv("EDEN_SCRIPT_HOLD_FPS");
+                return value ? std::atof(value) : 30.0;
+            }();
+            const double until = frames() + hold_ms * hold_fps / 1000;
+            while (!stop.stop_requested() && frames() < until) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+        } else {
+            std::this_thread::sleep_for(std::chrono::milliseconds(hold_ms));
+        }
         keyboard->ReleaseKey(scancode);
         if (scancode2) {
             keyboard->ReleaseKey(scancode2);
