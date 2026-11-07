@@ -416,8 +416,28 @@ private:
     /// Remove image views references from the cache
     void RemoveImageViewReferences(std::span<const ImageViewId> removed_views);
 
+    /// Per image view, the (channel, descriptor) entries of the channels' image_views maps that
+    /// point to it, so deleting an image erases just those instead of scanning every map.
+    /// Ported from Lichii 3871de9da9 (texture_cache_base.h, texture_cache.h).
+    std::unordered_map<ImageViewId, boost::container::small_vector<std::pair<size_t, TICEntry>, 2>>
+        image_view_descriptors;
+
     /// Remove framebuffers using the given image views from the cache
     void RemoveFramebuffers(std::span<const ImageViewId> removed_views);
+
+    /// While set, DeleteImage leaves its views' framebuffers to FlushBatchedViewRemoval, which
+    /// walks the framebuffers once for every image deleted in the meantime
+    bool batch_view_removal = false;
+    std::vector<ImageViewId> batched_removed_views;
+    void FlushBatchedViewRemoval();
+
+    /// Images deleted together, by slot index. Retired render targets overlap each other
+    /// pairwise (911 of them with 720,000 overlap entries in Ocarina of Time), and deleting
+    /// each one erased itself from the sets of all the others, which go away anyway.
+    std::vector<bool> batch_deleted;
+    [[nodiscard]] bool IsBatchDeleted(ImageId id) const noexcept {
+        return id.index < batch_deleted.size() && batch_deleted[id.index];
+    }
 
     /// Mark an image as modified from the GPU
     void MarkModification(ImageBase& image) noexcept;

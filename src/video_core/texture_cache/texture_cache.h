@@ -177,7 +177,7 @@ void TextureCache<P>::TickFrame() {
     if (total_used_memory > minimum_memory) {
         RunGarbageCollector();
     }
-    sentenced_images.Tick();
+    sentenced_images.TickSpread(16);
     sentenced_framebuffers.Tick();
     sentenced_image_view.Tick();
     TickAsyncDecode();
@@ -673,8 +673,13 @@ ImageViewId TextureCache<P>::VisitImageView(u32 index, bool compute) {
         if (IsValidEntry(*gpu_memory, descriptor)) {
             // Is new (registered view) on the texture cache side?
             const auto [pair, is_new_tc] = channel_state->image_views.try_emplace(descriptor);
-            if (is_new_tc)
+            if (is_new_tc) {
                 pair->second = CreateImageView(descriptor);
+                if (pair->second != NULL_IMAGE_VIEW_ID) {
+                    image_view_descriptors[pair->second].emplace_back(current_channel_id,
+                                                                      descriptor);
+                }
+            }
             if (pair->second != NULL_IMAGE_VIEW_ID) {
                 PrepareImageView(pair->second, false, false);
             }
@@ -1991,6 +1996,15 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
         const auto dead_begin = std::remove_if(join_bad_overlap_ids.begin(),
                                                join_bad_overlap_ids.end(), is_dead);
         join_bad_overlap_ids.erase(dead_begin, join_bad_overlap_ids.end());
+        // Thousands at a time by the forest deck: each walking every framebuffer made a frame
+        // of a few hundred ms there
+        batch_view_removal = true;
+        for (const ImageId dead_id : join_dead_ids) {
+            if (batch_deleted.size() <= dead_id.index) {
+                batch_deleted.resize(dead_id.index + 1);
+            }
+            batch_deleted[dead_id.index] = true;
+        }
         for (const ImageId dead_id : join_dead_ids) {
             Image& dead = slot_images[dead_id];
             if (True(dead.flags & ImageFlagBits::Tracked)) {
@@ -1998,6 +2012,10 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
             }
             UnregisterImage(dead_id);
             DeleteImage(dead_id);
+        }
+        FlushBatchedViewRemoval();
+        for (const ImageId dead_id : join_dead_ids) {
+            batch_deleted[dead_id.index] = false;
         }
         join_dead_ids.clear();
     }
@@ -2788,9 +2806,17 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
         }
     }
     RemoveImageViewReferences(image_view_ids);
-    RemoveFramebuffers(image_view_ids);
+    if (batch_view_removal) {
+        batched_removed_views.insert(batched_removed_views.end(), image_view_ids.begin(),
+                                     image_view_ids.end());
+    } else {
+        RemoveFramebuffers(image_view_ids);
+    }
 
     for (const AliasedImage& alias : image.aliased_images) {
+        if (IsBatchDeleted(alias.id)) {
+            continue;
+        }
         ImageBase& other_image = slot_images[alias.id];
         [[maybe_unused]] const size_t num_removed_aliases =
             std::erase_if(other_image.aliased_images, [image_id](const AliasedImage& other_alias) {
@@ -2801,6 +2827,9 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
                    num_removed_aliases);
     }
     for (const ImageId overlap_id : image.overlapping_images) {
+        if (IsBatchDeleted(overlap_id)) {
+            continue;
+        }
         ImageBase& other_image = slot_images[overlap_id];
         [[maybe_unused]] const size_t num_removed_overlaps =
             other_image.overlapping_images.erase(image_id);
@@ -2844,18 +2873,53 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
 
 template <class P>
 void TextureCache<P>::RemoveImageViewReferences(std::span<const ImageViewId> removed_views) {
-    for (size_t c : active_channel_ids) {
-        auto& channel_info = channel_storage[c];
-        auto it = channel_info.image_views.begin();
-        while (it != channel_info.image_views.end()) {
-            const auto found = std::ranges::find(removed_views, it->second);
-            if (found != removed_views.end()) {
-                it = channel_info.image_views.erase(it);
-            } else {
-                ++it;
+    for (const ImageViewId removed : removed_views) {
+        const auto refs = image_view_descriptors.find(removed);
+        if (refs == image_view_descriptors.end()) {
+            continue;
+        }
+        for (const auto& [channel, descriptor] : refs->second) {
+            // The channel may be gone, or its entry point to another view since.
+            if (std::ranges::find(active_channel_ids, channel) == active_channel_ids.end()) {
+                continue;
+            }
+            auto& image_views = channel_storage[channel].image_views;
+            if (const auto it = image_views.find(descriptor);
+                it != image_views.end() && it->second == removed) {
+                image_views.erase(it);
             }
         }
+        image_view_descriptors.erase(refs);
     }
+}
+
+template <class P>
+void TextureCache<P>::FlushBatchedViewRemoval() {
+    batch_view_removal = false;
+    if (batched_removed_views.empty()) {
+        return;
+    }
+    std::ranges::sort(batched_removed_views);
+    runtime.FlushDeferredClear();
+    const auto removed = [this](ImageViewId id) {
+        return std::ranges::binary_search(batched_removed_views, id);
+    };
+    for (auto it = framebuffers.begin(); it != framebuffers.end();) {
+        const RenderTargets& key = it->first;
+        if (!std::ranges::any_of(key.color_buffer_ids, removed) && !removed(key.depth_buffer_id)) {
+            ++it;
+            continue;
+        }
+        const FramebufferId framebuffer_id = it->second;
+        ASSERT(framebuffer_id);
+        if (framebuffer_id == last_framebuffer_id) {
+            last_framebuffer_id = {};
+            last_framebuffer_serial = 0;
+        }
+        sentenced_framebuffers.Push(std::move(slot_framebuffers[framebuffer_id]));
+        it = framebuffers.erase(it);
+    }
+    batched_removed_views.clear();
 }
 
 template <class P>
