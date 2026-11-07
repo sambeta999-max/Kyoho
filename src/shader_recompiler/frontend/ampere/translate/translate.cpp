@@ -103,6 +103,8 @@ void Dispatch(TranslatorVisitor& v, Opcode opcode, Instruction insn) {
         return v.I2F(insn);
     case Opcode::I2FP:
         return v.I2FP(insn);
+    case Opcode::F2IP:
+        return v.F2IP(insn);
     case Opcode::LDG:
         return v.LDG(insn);
     case Opcode::STG:

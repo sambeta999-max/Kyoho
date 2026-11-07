@@ -76,6 +76,7 @@ struct TranslatorVisitor {
     void BPT(Instruction insn);
     void I2F(Instruction insn);
     void I2FP(Instruction insn);
+    void F2IP(Instruction insn);
 
     // Memory
     void LDG(Instruction insn);

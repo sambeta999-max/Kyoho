@@ -253,4 +253,39 @@ void TranslatorVisitor::I2FP(Instruction insn) {
     F(Reg(insn.Dest()), IR::F32{ir.ConvertIToF(32, 32, insn.Bit(74), SrcB(insn), control)});
 }
 
+// F2IP converts Ra and Rb to bytes and packs them under a half of Rc:
+// Rd = Rc.half << 16 | byte(Ra) << 8 | byte(Rb), the half being the upper one with .H1 (bit 72).
+// Each value is rounded (bits 78..80: 0 nearest even, 3 truncate), saturated to U8 or, with bit 76,
+// to S8, and clamped below at zero with .RELU (bit 75). NaN gives zero with .NTZ (bit 74),
+// otherwise 0x80. All measured on GA102; modes 1 and 2 and bit 77 do not assemble there.
+void TranslatorVisitor::F2IP(Instruction insn) {
+    const u64 rounding{insn.Bits(78, 2)};
+    if (insn.Bit(77) || rounding == 1 || rounding == 2) {
+        throw NotImplementedException("F2IP format");
+    }
+    const bool is_signed{insn.Bit(76)};
+    const bool relu{insn.Bit(75)};
+    const bool nan_to_zero{insn.Bit(74)};
+    const IR::FpControl control{.no_contraction = true};
+    const auto to_byte{[&](const IR::F32& value) {
+        const IR::F32 rounded{rounding == 0 ? ir.FPRoundEven(value, control)
+                                            : ir.FPTrunc(value, control)};
+        const f32 min_value{relu || !is_signed ? 0.0f : -128.0f};
+        const f32 max_value{is_signed ? 127.0f : 255.0f};
+        const IR::F32 clamped{
+            ir.FPClamp(rounded, ir.Imm32(min_value), ir.Imm32(max_value))};
+        const IR::U32 byte{
+            ir.BitwiseAnd(ir.ConvertFToI(32, true, clamped), ir.Imm32(0xffu))};
+        return IR::U32{ir.Select(ir.FPIsNan(value), ir.Imm32(nan_to_zero ? 0u : 0x80u), byte)};
+    }};
+    const IR::U32 byte_a{to_byte(IR::F32{ir.BitCast<IR::F32>(SrcA(insn))})};
+    const IR::U32 byte_b{to_byte(IR::F32{ir.BitCast<IR::F32>(SrcB(insn))})};
+    const IR::U32 c{SrcC(insn)};
+    const IR::U32 half{insn.Bit(72) ? IR::U32{ir.ShiftRightLogical(c, ir.Imm32(16))}
+                                    : ir.BitwiseAnd(c, ir.Imm32(0xffffu))};
+    IR::U32 result{IR::U32{ir.ShiftLeftLogical(half, ir.Imm32(16))}};
+    result = ir.BitwiseOr(result, IR::U32{ir.ShiftLeftLogical(byte_a, ir.Imm32(8))});
+    X(Reg(insn.Dest()), ir.BitwiseOr(result, byte_b));
+}
+
 } // namespace Shader::Ampere
