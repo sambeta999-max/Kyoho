@@ -72,6 +72,16 @@ public:
     /// Several data words of one method; the data is copied
     void PushMultiMethod(Tegra::DmaPusher& pusher, u32 subchannel, u32 method, const u32* data,
                          u32 amount, u32 methods_pending, GPUVAddr segment);
+    /// A method from a command list the engine only stores (not in its execution mask), once
+    /// the front classified it: consecutive ones of one subchannel reach the back as one entry.
+    /// Outdoors in Ocarina of Time a frame pushed ~200k entries of one method each, and the
+    /// entry cost both threads more than most methods.
+    void PushStateMethod(Tegra::DmaPusher& pusher, u32 subchannel, u32 method, u32 argument);
+    /// A method a macro writes: consecutive ones of one engine reach the back as one entry,
+    /// which calls them in order as PushEngineMethod's entries would. Outdoors in Ocarina of
+    /// Time macros write ~120k methods a frame (constant buffer data most of them).
+    void PushEngineStateMethod(Tegra::Engines::EngineInterface& engine, u32 method,
+                               u32 argument);
     /// A method written by a macro, which goes straight to the engine
     void PushEngineMethod(Tegra::Engines::EngineInterface& engine, u32 method, u32 argument);
     /// A function of one pointer, cheaper than a task
@@ -84,6 +94,7 @@ public:
     /// checks while the back works; true when `done` held first
     template <typename Done>
     bool DrainUnless(Done&& done) {
+        FlushStates();
         const u64 head = entry_head.load(std::memory_order_relaxed);
         for (u32 spins = 0; entry_tail.load(std::memory_order_acquire) != head; ++spins) {
             if (done()) {
@@ -100,7 +111,8 @@ public:
 
     /// Entries pushed so far, and executed so far: the back has executed everything before a
     /// position once Executed() reaches it
-    [[nodiscard]] u64 Pushed() const noexcept {
+    [[nodiscard]] u64 Pushed() {
+        FlushStates();
         return entry_head.load(std::memory_order_relaxed);
     }
     [[nodiscard]] u64 Executed() const noexcept {
@@ -232,7 +244,7 @@ public:
 private:
     static void Pause() noexcept;
 
-    enum class Kind : u8 { Method, MultiMethod, EngineMethod, Call, Task };
+    enum class Kind : u8 { Method, MultiMethod, EngineMethod, Call, Task, States, EngineStates };
     struct Entry {
         Kind kind;
         u8 subchannel;
@@ -250,6 +262,23 @@ private:
     static constexpr size_t TaskCapacity = 1 << 12;
 
     void Push(const Entry& entry);
+    /// Pushes the stores PushStateMethod collected, with their own classification (the
+    /// pending one is for the entry the front prepares)
+    void FlushStates() {
+        if (!state_words.empty()) {
+            PushStates();
+        }
+    }
+    void PushStates();
+    void AppendState(Kind kind, void* target, u32 subchannel, u32 method, u32 argument);
+    static constexpr size_t MaxStateWords = 2048;
+    std::vector<u32> state_words; ///< (method, argument) pairs
+    Kind state_kind{};
+    void* state_target{};
+    /// PushCall folded into the macro's methods: called on the target after them
+    void (*state_call)(void*){};
+    u32 state_subchannel{};
+    Effect state_effect{};
     void SetGpuWritten(DAddr address, u64 size) noexcept;
     /// Back: submits the recorded host GPU work when the front asked for it
     void BackFlush();
@@ -275,8 +304,15 @@ private:
     std::vector<u32> data;
     std::vector<std::function<void()>> tasks;
 
+    // The front pushes ~350k entries a frame outdoors in Ocarina of Time. Each line below is
+    // written by one thread only, and the front reads the back's positions only when its copy
+    // says a ring is full: reading entry_tail and back_sleeping at every push, from the line the
+    // back writes after every entry, moved that line between the two cores for each entry.
     alignas(64) std::atomic<u64> entry_head{}; ///< Written by the front
-    u64 data_head{};
+    alignas(64) u64 data_head{};
+    u64 seen_entry_tail{}; ///< Front: entry_tail, data_tail and task_tail as last read
+    u64 seen_data_tail{};
+    u64 seen_task_tail{};
     u64 task_head{};
     u64 last_writer{}; ///< Entries pushed when the last writer was (NoteWriter)
     struct NotedWrite {
@@ -300,10 +336,10 @@ private:
     alignas(64) std::atomic<u64> entry_tail{}; ///< Written by the back
     std::atomic<u64> data_tail{};
     std::atomic<u64> task_tail{};
-    std::atomic<bool> back_sleeping{};
+    alignas(64) std::atomic<bool> back_sleeping{}; ///< Read by the front at every push
     std::atomic<bool> stopping{};
 
-    std::jthread thread;
+    alignas(64) std::jthread thread;
     std::thread::id back_id{};
 };
 

@@ -576,6 +576,13 @@ void DmaPusher::SplitCallMethod(VideoCommon::GpuSplit& split, u32 argument) {
         }
         engine->FrontWrite(method, argument);
     }
+    if (const auto* const engine = subchannels[subchannel];
+        engine != nullptr && method < engine->execution_mask.size() &&
+        !engine->execution_mask[method]) {
+        // Stores write nothing a command list reader waits for (IsSplitWriter)
+        split.PushStateMethod(*this, subchannel, method, argument);
+        return;
+    }
     split.PushMethod(*this, subchannel, method, argument, dma_state.is_last_call, segment);
     if (IsSplitWriter(subchannel, method)) {
         split.NoteWriter();
@@ -624,6 +631,17 @@ void DmaPusher::BackFlushPendingMacros(u32 subchannel, u32 method) {
         }
         engine->FlushPendingMacro(system);
         back_pending_macro_mask &= ~(1U << index);
+    }
+}
+
+void DmaPusher::BackStoreMethods(u32 subchannel, const u32* words, u32 count) {
+    // What BackCallMethod does for each
+    if (back_pending_macro_mask != 0) {
+        BackFlushPendingMacros(subchannel, words[0]);
+    }
+    auto& sink = subchannels[subchannel]->method_sink;
+    for (u32 i = 0; i < count; ++i) {
+        sink.emplace_back(words[2 * i], words[2 * i + 1]);
     }
 }
 

@@ -164,11 +164,84 @@ void GpuSplit::Stop() {
     thread.join();
 }
 
+void GpuSplit::PushStateMethod(Tegra::DmaPusher& pusher, u32 subchannel, u32 method,
+                               u32 argument) {
+    if (pending_begin < pending_end || pending_sync) [[unlikely]] {
+        // Noted writes and waits for idle keep an entry of their own
+        PushMethod(pusher, subchannel, method, argument, true, 0);
+        return;
+    }
+    AppendState(Kind::States, &pusher, subchannel, method, argument);
+}
+
+void GpuSplit::PushEngineStateMethod(Tegra::Engines::EngineInterface& engine, u32 method,
+                                     u32 argument) {
+    if (pending_begin < pending_end || pending_sync) [[unlikely]] {
+        PushEngineMethod(engine, method, argument);
+        return;
+    }
+    AppendState(Kind::EngineStates, &engine, 0, method, argument);
+}
+
+void GpuSplit::AppendState(Kind kind, void* target, u32 subchannel, u32 method, u32 argument) {
+    if (!state_words.empty() && (state_kind != kind || state_target != target ||
+                                 state_subchannel != subchannel ||
+                                 state_words.size() >= MaxStateWords)) {
+        PushStates();
+    }
+    const Effect effect = pending_classified ? pending_effect : Effect::Unknown;
+    state_effect = state_words.empty() ? effect : (std::max)(state_effect, effect);
+    pending_classified = false;
+    state_kind = kind;
+    state_target = target;
+    state_subchannel = subchannel;
+    state_words.push_back(method);
+    state_words.push_back(argument);
+}
+
+void GpuSplit::PushStates() {
+    const Effect effect = pending_effect;
+    const bool classified = pending_classified;
+    const DAddr begin = pending_begin;
+    const DAddr end = pending_end;
+    const bool sync = pending_sync;
+    pending_effect = state_effect;
+    pending_classified = true;
+    pending_begin = ~DAddr{0};
+    pending_end = 0;
+    pending_sync = false;
+    const u32 words = static_cast<u32>(state_words.size());
+    u64 offset{};
+    const u64 data_end = ReserveData(words, offset);
+    std::memcpy(data.data() + offset, state_words.data(), words * sizeof(u32));
+    state_words.clear();
+    const auto call = state_call;
+    state_call = nullptr;
+    Push(Entry{
+        .kind = state_kind,
+        .subchannel = static_cast<u8>(state_subchannel),
+        .argument = static_cast<u32>(offset),
+        .amount = words / 2,
+        .target = state_target,
+        .segment = reinterpret_cast<GPUVAddr>(call),
+        .data_end = data_end,
+    });
+    pending_effect = effect;
+    pending_classified = classified;
+    pending_begin = begin;
+    pending_end = end;
+    pending_sync = sync;
+}
+
 void GpuSplit::Push(const Entry& entry) {
+    FlushStates();
     const u64 head = entry_head.load(std::memory_order_relaxed);
     int spins = 0;
-    while (head - entry_tail.load(std::memory_order_acquire) >= EntryCapacity) {
-        Relax(spins);
+    if (head - seen_entry_tail >= EntryCapacity) {
+        while (head - (seen_entry_tail = entry_tail.load(std::memory_order_acquire)) >=
+               EntryCapacity) {
+            Relax(spins);
+        }
     }
     entries[head % EntryCapacity] = entry;
     ConsumeClassification(head + 1);
@@ -186,8 +259,11 @@ u64 GpuSplit::ReserveData(u32 amount, u64& offset) {
         head += DataCapacity - position;
     }
     int spins = 0;
-    while (head + amount - data_tail.load(std::memory_order_acquire) > DataCapacity) {
-        Relax(spins);
+    while (head + amount - seen_data_tail > DataCapacity) {
+        seen_data_tail = data_tail.load(std::memory_order_acquire);
+        if (head + amount - seen_data_tail > DataCapacity) {
+            Relax(spins);
+        }
     }
     offset = head % DataCapacity;
     data_head = head + amount;
@@ -211,6 +287,8 @@ void GpuSplit::PushMethod(Tegra::DmaPusher& pusher, u32 subchannel, u32 method, 
 void GpuSplit::PushMultiMethod(Tegra::DmaPusher& pusher, u32 subchannel, u32 method,
                                const u32* words, u32 amount, u32 methods_pending,
                                GPUVAddr segment) {
+    // The stores before go first in the data ring too
+    FlushStates();
     u64 offset{};
     const u64 data_end = ReserveData(amount, offset);
     std::memcpy(data.data() + offset, words, amount * sizeof(u32));
@@ -243,6 +321,16 @@ void GpuSplit::PushEngineMethod(Tegra::Engines::EngineInterface& engine, u32 met
 }
 
 void GpuSplit::PushCall(void (*function)(void*), void* argument) {
+    if (!state_words.empty() && state_kind == Kind::EngineStates && state_target == argument &&
+        pending_begin >= pending_end && !pending_sync) {
+        // The draw a macro ends with goes in the entry of the methods it wrote
+        const Effect effect = pending_classified ? pending_effect : Effect::Unknown;
+        state_effect = (std::max)(state_effect, effect);
+        pending_classified = false;
+        state_call = function;
+        PushStates();
+        return;
+    }
     Push(Entry{
         .kind = Kind::Call,
         .target = argument,
@@ -252,9 +340,13 @@ void GpuSplit::PushCall(void (*function)(void*), void* argument) {
 }
 
 void GpuSplit::PushTask(std::function<void()>&& task) {
+    FlushStates();
     int spins = 0;
-    while (task_head - task_tail.load(std::memory_order_acquire) >= TaskCapacity) {
-        Relax(spins);
+    while (task_head - seen_task_tail >= TaskCapacity) {
+        seen_task_tail = task_tail.load(std::memory_order_acquire);
+        if (task_head - seen_task_tail >= TaskCapacity) {
+            Relax(spins);
+        }
     }
     tasks[task_head % TaskCapacity] = std::move(task);
     ++task_head;
@@ -314,6 +406,7 @@ void GpuSplit::ClassifyGpuWrite(const Tegra::MemoryManager& memory, GPUVAddr add
 }
 
 u64 GpuSplit::ReadTarget(DAddr begin, DAddr end) {
+    FlushStates();
     const u64 executed = entry_tail.load(std::memory_order_acquire);
     while (!noted_writes.empty() && noted_writes.front().position <= executed) {
         noted_writes.pop_front();
@@ -330,6 +423,7 @@ u64 GpuSplit::ReadTarget(DAddr begin, DAddr end) {
 }
 
 void GpuSplit::Hold(u64 target) {
+    FlushStates();
     hold_at.store(target, std::memory_order_seq_cst);
     int spins = 0;
     for (;;) {
@@ -358,6 +452,7 @@ void GpuSplit::Release() {
 }
 
 void GpuSplit::Drain(std::source_location where) {
+    FlushStates();
     const u64 head = entry_head.load(std::memory_order_relaxed);
     // EDEN_GPU_SPLIT_STATS: how often each call site drains and how long it waits (front only)
     static const bool stats = std::getenv("EDEN_GPU_SPLIT_STATS") != nullptr;
@@ -427,6 +522,23 @@ void GpuSplit::Execute(Entry& entry) {
     case Kind::Call:
         reinterpret_cast<void (*)(void*)>(entry.segment)(entry.target);
         break;
+    case Kind::States:
+        static_cast<Tegra::DmaPusher*>(entry.target)
+            ->BackStoreMethods(entry.subchannel, data.data() + entry.argument, entry.amount);
+        break;
+    case Kind::EngineStates: {
+        // What an EngineMethod entry does for each
+        auto* const engine = static_cast<Tegra::Engines::EngineInterface*>(entry.target);
+        engine->ConsumeSink(system);
+        const u32* const words = data.data() + entry.argument;
+        for (u32 i = 0; i < entry.amount; ++i) {
+            engine->CallMethod(system, words[2 * i], words[2 * i + 1], true);
+        }
+        if (entry.segment != 0) {
+            reinterpret_cast<void (*)(void*)>(entry.segment)(entry.target);
+        }
+        break;
+    }
     case Kind::Task: {
         const u64 index = task_tail.load(std::memory_order_relaxed);
         auto& task = tasks[index % TaskCapacity];

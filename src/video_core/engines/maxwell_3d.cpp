@@ -95,7 +95,12 @@ public:
             return;
         }
         maxwell3d.FrontWrite(method, value);
-        VideoCommon::GpuSplit::Active()->PushEngineMethod(maxwell3d, method, value);
+        // Inline uploads (launch_dma, inline_data) are noted as writers by their own entry
+        if (method == 0x6C || method == 0x6D) {
+            VideoCommon::GpuSplit::Active()->PushEngineMethod(maxwell3d, method, value);
+            return;
+        }
+        VideoCommon::GpuSplit::Active()->PushEngineStateMethod(maxwell3d, method, value);
     }
 
     // Guest memory as of this point: what was sent before and may write it has to be executed

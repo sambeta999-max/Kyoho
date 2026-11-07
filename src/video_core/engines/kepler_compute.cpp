@@ -125,7 +125,11 @@ public:
             return;
         }
         compute.FrontWrite(method, value);
-        VideoCommon::GpuSplit::Active()->PushEngineMethod(compute, method, value);
+        if (method == 0x6C || method == 0x6D) {
+            VideoCommon::GpuSplit::Active()->PushEngineMethod(compute, method, value);
+            return;
+        }
+        VideoCommon::GpuSplit::Active()->PushEngineStateMethod(compute, method, value);
     }
 
     void ReadMemory(GPUVAddr address, std::span<u32> data) override {

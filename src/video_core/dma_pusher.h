@@ -160,6 +160,8 @@ public:
     void BackCallMultiMethod(u32 subchannel, u32 method, const u32* base_start, u32 amount,
                              u32 methods_pending, GPUVAddr segment);
     void BackFlushPendingMacros(u32 subchannel, u32 method);
+    /// `count` (method, argument) pairs of `words` the engine of `subchannel` only stores
+    void BackStoreMethods(u32 subchannel, const u32* words, u32 count);
 
 private:
     static constexpr u32 non_puller_methods = 0x40;
