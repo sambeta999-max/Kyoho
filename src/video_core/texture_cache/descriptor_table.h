@@ -13,6 +13,7 @@
 #include "common/alignment.h"
 #include "common/common_types.h"
 #include "common/div_ceil.h"
+#include "common/slot_vector.h"
 #include "common/assert.h"
 #include "core/memory.h"
 #include "video_core/memory_manager.h"
@@ -78,6 +79,7 @@ public:
         ClearReadMarks();
         read_descriptors.resize(Common::DivCeil(num_descriptors, 64U));
         descriptors.resize(num_descriptors);
+        bound_ids.resize(num_descriptors);
     }
 
     void ClearReadMarks() noexcept {
@@ -89,6 +91,10 @@ public:
 
     std::vector<u64> read_descriptors;
     std::vector<T> descriptors;
+    /// The cache's view or sampler of each descriptor read: valid where Read reported it
+    /// unchanged. An array instead of a map keyed by index, which every texture and sampler of
+    /// every draw looked up. After Lichii (TextureCache::VisitImageView's table.bound_ids).
+    std::vector<Common::SlotId> bound_ids;
     GPUVAddr current_gpu_addr{};
     u32 current_limit{};
     size_t marked_words_end{};
