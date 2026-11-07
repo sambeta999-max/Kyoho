@@ -128,6 +128,13 @@ template <class P>
 void BufferCache<P>::WriteMemory(DAddr device_addr, u64 size, bool keep_page_gpu_data) {
     NoteListHostWrite(device_addr, size);
     NoteCpuAccess(device_addr, size);
+    // The written range lies within its pages: when they hold no GPU-written data, neither lookup
+    // below finds any, so one answers both. From Lichii 8318201fa2 (WriteMemory in
+    // src/video_core/buffer_cache/buffer_cache.h).
+    if (keep_page_gpu_data && !PageHasGpuData(device_addr, size)) {
+        memory_tracker.MarkRegionAsCpuModified(device_addr, size);
+        return;
+    }
     if (IsRegionGpuModified(device_addr, size)) {
         ClearDownload(device_addr, size);
         gpu_modified_ranges.Subtract(device_addr, size);
@@ -838,17 +845,12 @@ template <class P>
 bool BufferCache<P>::PageHasGpuData(DAddr addr, size_t size) {
     const DAddr page_begin = Common::AlignDown(addr, DEVICE_PAGESIZE);
     const DAddr page_end = Common::AlignUp(addr + size, DEVICE_PAGESIZE);
-    bool has_gpu_data = false;
-    gpu_modified_ranges.ForEachInRange(page_begin, page_end - page_begin,
-                                       [&](DAddr, DAddr) { has_gpu_data = true; });
-    return has_gpu_data;
+    return gpu_modified_ranges.Intersects(page_begin, page_end - page_begin);
 }
 
 template <class P>
 bool BufferCache<P>::IsRegionGpuModified(DAddr addr, size_t size) {
-    bool is_dirty = false;
-    gpu_modified_ranges.ForEachInRange(addr, size, [&](DAddr, DAddr) { is_dirty = true; });
-    return is_dirty;
+    return gpu_modified_ranges.Intersects(addr, size);
 }
 
 template <class P>
@@ -1335,9 +1337,12 @@ void BufferCache<P>::BindHostComputeUniformBuffers() {
         // Small buffers the GPU has not written are streamed, as graphics ones are: synchronizing
         // them made every dispatch re-protect pages an inline upload had just unprotected (two
         // VirtualProtect calls per dispatch, ~4,000 dispatches a second in title 1).
+        // The graphics hit rate does not decide it (uniform_buffer_skip_cache_size): above 98% it
+        // turned this off, and Ocarina of Time synchronized 87% of its compute uniform buffers,
+        // the CPU writing them again between dispatches (~5,000 protection changes a second).
         const bool use_fast_buffer =
             needs_alignment_stream ||
-            (has_host_buffer && size <= channel_state->uniform_buffer_skip_cache_size &&
+            (has_host_buffer && size <= DEFAULT_SKIP_CACHE_SIZE &&
              !memory_tracker.IsRegionGpuModified(binding.device_addr, size));
         if constexpr (!IS_OPENGL) {
             if (use_fast_buffer) {
