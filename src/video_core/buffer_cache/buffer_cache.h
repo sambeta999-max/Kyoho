@@ -2529,64 +2529,98 @@ Binding BufferCache<P>::StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
         return NULL_BINDING;
     }
 
-    u32 size = [&]() {
-        const u32 memory_layout_size =
-            static_cast<u32>(gpu_memory->GetMemoryLayoutSize(gpu_addr));
-        if (table_entry) {
-            // A bare pointer to a pool: its records can lie far past the base (Ocarina of Time's
-            // grass instances, 12-18 MiB in, as Lichii 1038827cf found). Read-only ones extend to
-            // the end of the mapping up to 64 MiB; a written binding marks all of itself modified.
-            return (std::min)(memory_layout_size, static_cast<u32>(is_written ? 8_MiB : 64_MiB));
-        }
-        if (native_pointer) {
-            // A Switch 2 compute program's pointer is bare: the word after it is another parameter
-            // (Star Fox's post-process passes keep pointer structs whose next word is a count), not
-            // an NVN buffer size, and taking it as one dropped every write past it, leaving stale
-            // tiles of older frames on fast motion. After Lichii 2e12e0def
-            // (src/video_core/buffer_cache/buffer_cache.h).
-            return (std::min)(memory_layout_size, static_cast<u32>(8_MiB));
-        }
-        const u64 next_qword = gpu_memory->Read<u64>(ssbo_addr + 8);
-        const u32 packed_size = static_cast<u32>(next_qword);
-        const bool next_qword_is_size = static_cast<u32>(next_qword >> 32) == 0 &&
-                                        packed_size != 0 &&
-                                        packed_size <= memory_layout_size;
-        if (next_qword_is_size) {
-            return packed_size;
-        }
-        return (std::min)(memory_layout_size, static_cast<u32>(8_MiB));
-    }();
-    if (native_pointer && size != 0) {
-        // Stop where the mapping stops being contiguous.
-        size = static_cast<u32>(gpu_memory->MaxContinuousRange(gpu_addr, size));
-    }
-
-    // Alignment only applies to the offset of the buffer
-    const u32 alignment = runtime.GetStorageBufferAlignment();
-    const GPUVAddr aligned_gpu_addr = Common::AlignDown(gpu_addr, alignment);
-    const u32 aligned_size = static_cast<u32>(gpu_addr - aligned_gpu_addr) + size;
-
-    const std::optional<DAddr> aligned_device_addr = gpu_memory->GpuToCpuAddress(aligned_gpu_addr);
-    if (!aligned_device_addr || size == 0) {
-        LOG_DEBUG(HW_GPU, "Failed to find storage buffer for cbuf index {}", cbuf_index);
-        return NULL_BINDING;
-    }
-    const std::optional<DAddr> device_addr = gpu_memory->GpuToCpuAddress(gpu_addr);
-    ASSERT_MSG(device_addr, "Unaligned storage buffer address not found for cbuf index {}",
-               cbuf_index);
-    // The end address used for size calculation does not need to be aligned
-    const DAddr cpu_end = Common::AlignUp(*device_addr + size, Core::DEVICE_PAGESIZE);
-
-    u32 binding_size = static_cast<u32>(cpu_end - *aligned_device_addr);
-    if (is_written) {
-        binding_size = aligned_size;
-    }
-    const Binding binding{
-        .device_addr = *aligned_device_addr,
-        .gpu_addr = aligned_gpu_addr,
-        .size = binding_size,
-        .buffer_id = BufferId{},
+    // Every draw rebinds each storage buffer: a locked layout lookup, page walks and maybe a range
+    // walk each time. Answers hold until the page table changes. After Eglantine c8415d0e80
+    // (Frizti/Lichii ddf7952a14, src/video_core/buffer_cache/buffer_cache.h).
+    const bool reads_size_word = !table_entry && !native_pointer;
+    const u64 next_qword = reads_size_word ? gpu_memory->Read<u64>(ssbo_addr + 8) : 0;
+    struct CachedBinding {
+        size_t owner; ///< MemoryManager id + 1, 0 when empty
+        GPUVAddr gpu_addr;
+        u64 next_qword;
+        u64 serial;
+        u32 flags;
+        Binding binding;
     };
+    constexpr size_t Ways = 4;
+    thread_local std::array<std::array<CachedBinding, Ways>, 512> binding_cache{};
+    const u32 flags =
+        (is_written ? 1U : 0U) | (native_pointer ? 2U : 0U) | (table_entry ? 4U : 0U);
+    const size_t owner = gpu_memory->GetID() + 1;
+    const u64 serial = gpu_memory->MapSerial();
+    auto& set = binding_cache[((gpu_addr ^ next_qword ^ flags) * 0x9E3779B97F4A7C15ULL) >> 55];
+    for (size_t way = 0; way < Ways; ++way) {
+        const CachedBinding& cached = set[way];
+        if (cached.owner == owner && cached.gpu_addr == gpu_addr &&
+            cached.next_qword == next_qword && cached.flags == flags && cached.serial == serial) {
+            const Binding hit = cached.binding;
+            std::rotate(set.begin(), set.begin() + way, set.begin() + way + 1);
+            return hit;
+        }
+    }
+    const Binding binding = [&]() -> Binding {
+        u32 size = [&]() {
+            const u32 memory_layout_size =
+                static_cast<u32>(gpu_memory->GetMemoryLayoutSize(gpu_addr));
+            if (table_entry) {
+                // A bare pointer to a pool: its records can lie far past the base (Ocarina of
+                // Time's grass instances, 12-18 MiB in, as Lichii 1038827cf found). Read-only ones
+                // extend to the end of the mapping up to 64 MiB; a written binding marks all of
+                // itself modified.
+                return (std::min)(memory_layout_size, static_cast<u32>(is_written ? 8_MiB : 64_MiB));
+            }
+            if (native_pointer) {
+                // A Switch 2 compute program's pointer is bare: the word after it is another
+                // parameter (Star Fox's post-process passes keep pointer structs whose next word is
+                // a count), not an NVN buffer size, and taking it as one dropped every write past
+                // it, leaving stale tiles of older frames on fast motion. After Lichii 2e12e0def
+                // (src/video_core/buffer_cache/buffer_cache.h).
+                return (std::min)(memory_layout_size, static_cast<u32>(8_MiB));
+            }
+            const u32 packed_size = static_cast<u32>(next_qword);
+            const bool next_qword_is_size = static_cast<u32>(next_qword >> 32) == 0 &&
+                                            packed_size != 0 &&
+                                            packed_size <= memory_layout_size;
+            if (next_qword_is_size) {
+                return packed_size;
+            }
+            return (std::min)(memory_layout_size, static_cast<u32>(8_MiB));
+        }();
+        if (native_pointer && size != 0) {
+            // Stop where the mapping stops being contiguous.
+            size = static_cast<u32>(gpu_memory->MaxContinuousRange(gpu_addr, size));
+        }
+
+        // Alignment only applies to the offset of the buffer
+        const u32 alignment = runtime.GetStorageBufferAlignment();
+        const GPUVAddr aligned_gpu_addr = Common::AlignDown(gpu_addr, alignment);
+        const u32 aligned_size = static_cast<u32>(gpu_addr - aligned_gpu_addr) + size;
+
+        const std::optional<DAddr> aligned_device_addr =
+            gpu_memory->GpuToCpuAddress(aligned_gpu_addr);
+        if (!aligned_device_addr || size == 0) {
+            LOG_DEBUG(HW_GPU, "Failed to find storage buffer for cbuf index {}", cbuf_index);
+            return NULL_BINDING;
+        }
+        const std::optional<DAddr> device_addr = gpu_memory->GpuToCpuAddress(gpu_addr);
+        ASSERT_MSG(device_addr, "Unaligned storage buffer address not found for cbuf index {}",
+                   cbuf_index);
+        // The end address used for size calculation does not need to be aligned
+        const DAddr cpu_end = Common::AlignUp(*device_addr + size, Core::DEVICE_PAGESIZE);
+
+        u32 binding_size = static_cast<u32>(cpu_end - *aligned_device_addr);
+        if (is_written) {
+            binding_size = aligned_size;
+        }
+        return Binding{
+            .device_addr = *aligned_device_addr,
+            .gpu_addr = aligned_gpu_addr,
+            .size = binding_size,
+            .buffer_id = BufferId{},
+        };
+    }();
+    std::rotate(set.begin(), set.end() - 1, set.end());
+    set[0] = {owner, gpu_addr, next_qword, serial, flags, binding};
     return binding;
 }
 

@@ -159,6 +159,11 @@ public:
 
     size_t MaxContinuousRange(GPUVAddr gpu_addr, size_t size) const;
 
+    /// Bumped after each page table change: lookups cached under one value hold until then
+    [[nodiscard]] u64 MapSerial() const noexcept {
+        return map_serial.load(std::memory_order_acquire);
+    }
+
     bool IsWithinGPUAddressRange(GPUVAddr gpu_addr) const {
         return gpu_addr < address_space_size;
     }
@@ -188,6 +193,8 @@ public:
     }
 
 private:
+    size_t MaxContinuousRangeUncached(GPUVAddr gpu_addr, size_t size) const;
+
     template <typename FuncMapped, typename FuncReserved, typename FuncUnmapped>
     inline void MemoryOperation(GPUVAddr gpu_src_addr, std::size_t size, bool is_big_page, FuncMapped&& func_mapped, FuncReserved&& func_reserved, FuncUnmapped&& func_unmapped) const;
 
@@ -255,6 +262,7 @@ private:
 
     bool native_tiling{};
     mutable std::mutex guard;
+    std::atomic<u64> map_serial{}; ///< See MapSerial
     std::mutex pending_semaphores_mutex;
     std::unordered_map<GPUVAddr, std::pair<u64, u64>> pending_semaphores; ///< value, ticket
     u64 pending_semaphore_ticket{};
