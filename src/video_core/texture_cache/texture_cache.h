@@ -1966,11 +1966,15 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
     // covers whole and nobody used for two frames is dead: its memory now belongs to the new one,
     // as on the console. Left for the garbage collector, hundreds of them overlap each other and
     // every lookup, creation and deletion walks them.
-    if (join_render_target) {
+    // A ring that comes back to the same offsets (Link's house, a few frames apart) finds its old
+    // images again by exact match, so retiring them only makes it create and upload them again
+    // every frame: images at the new one's own address are kept, and nothing is retired until
+    // the overlaps pile up (indoors there are at most a few hundred, by the forest deck 6000).
+    if (join_render_target && join_bad_overlap_ids.size() >= 256) {
         const GPUVAddr new_end = gpu_addr + CalculateGuestSizeInBytes(new_info);
         const auto is_dead = [&](ImageId overlap_id) {
             ImageBase& overlap = slot_images[overlap_id];
-            if (overlap.gpu_addr < gpu_addr || overlap.gpu_addr + overlap.guest_size_bytes > new_end ||
+            if (overlap.gpu_addr <= gpu_addr || overlap.gpu_addr + overlap.guest_size_bytes > new_end ||
                 lru_cache.Tick(overlap.lru_index) + 2 > frame_tick ||
                 True(overlap.flags & (ImageFlagBits::IsDecoding | ImageFlagBits::Remapped |
                                       ImageFlagBits::Sparse))) {
