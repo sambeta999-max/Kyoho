@@ -1725,6 +1725,12 @@ void BufferCache<P>::MarkWrittenBuffer(BufferId buffer_id, DAddr device_addr, u3
 
 template <class P>
 void BufferCache<P>::AddFenceDownload(DAddr device_addr, u64 size) {
+    // Written storage buffers a program declares but the guest left unbound come with size 0:
+    // the page walk below would take end - 1 as the last address and walk the whole bitmap
+    // (~0.6 ms a frame in Ocarina of Time, adding only empty ranges)
+    if (size == 0) {
+        return;
+    }
     if (AsyncBufferDownloads()) {
         uncommitted_gpu_modified_ranges.Add(device_addr, size);
         return;
