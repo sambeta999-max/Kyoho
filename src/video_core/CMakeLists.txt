@@ -110,6 +110,7 @@ add_library(video_core STATIC
     invalidation_accumulator.h
     memory_manager.cpp
     memory_manager.h
+    page_filter.h
     present.h
     pte_kind.h
     query_cache/bank_base.h
