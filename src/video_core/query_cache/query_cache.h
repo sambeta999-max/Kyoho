@@ -586,6 +586,13 @@ bool QueryCacheBase<Traits>::SemiFlushQueryDirty(QueryCacheBase<Traits>::QueryLo
         False(query_base->flags & QueryFlagBits::IsGuestSynced)) {
         auto* ptr = impl->device_memory.template GetPointer<u8>(query_base->guest_address);
         if (True(query_base->flags & QueryFlagBits::HasTimestamp)) {
+            // A long report is the value and the time it was written: a reader flushing it
+            // before the fence that finishes the query (an MME read of the GPU split's front)
+            // took the new value with the previous timestamp, or 0 where the game had cleared
+            // the report. Ocarina of Time's macros read such reports, and with timestamps of 0
+            // the picture blew out to white (leaving Link's house, glints indoors).
+            const u64 timestamp = impl->gpu.GetTicks();
+            std::memcpy(ptr + sizeof(u64), &timestamp, sizeof(timestamp));
             std::memcpy(ptr, &query_base->value, sizeof(query_base->value));
             return false;
         }
