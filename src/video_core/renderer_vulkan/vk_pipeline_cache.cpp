@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -1217,24 +1218,38 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
 void PipelineCache::SerializeVulkanPipelineCache(const std::filesystem::path& filename,
                                                  const vk::PipelineCache& pipeline_cache,
                                                  u32 cache_version) try {
-    std::ofstream file(filename, std::ios::binary);
-    file.exceptions(std::ifstream::failbit);
-    if (!file.is_open()) {
-        LOG_ERROR(Common_Filesystem, "Failed to open Vulkan driver pipeline cache file {}",
-                  Common::FS::PathToUTF8String(filename));
+    // Written next to the file and renamed over it: a process killed while writing (the cache is
+    // saved during play) left a truncated file the driver then refused at every start
+    std::filesystem::path temp_filename = filename;
+    temp_filename += ".tmp";
+    {
+        std::ofstream file(temp_filename, std::ios::binary);
+        file.exceptions(std::ifstream::failbit);
+        if (!file.is_open()) {
+            LOG_ERROR(Common_Filesystem, "Failed to open Vulkan driver pipeline cache file {}",
+                      Common::FS::PathToUTF8String(temp_filename));
+            return;
+        }
+        file.write(VULKAN_CACHE_MAGIC_NUMBER.data(), VULKAN_CACHE_MAGIC_NUMBER.size())
+            .write(reinterpret_cast<const char*>(&cache_version), sizeof(cache_version));
+
+        size_t cache_size = 0;
+        std::vector<char> cache_data;
+        if (pipeline_cache) {
+            pipeline_cache.Read(&cache_size, nullptr);
+            cache_data.resize(cache_size);
+            pipeline_cache.Read(&cache_size, cache_data.data());
+        }
+        file.write(cache_data.data(), cache_size);
+    }
+    std::error_code error;
+    std::filesystem::rename(temp_filename, filename, error);
+    if (error) {
+        LOG_ERROR(Common_Filesystem, "Failed to replace Vulkan driver pipeline cache file {}: {}",
+                  Common::FS::PathToUTF8String(filename), error.message());
+        Common::FS::RemoveFile(temp_filename);
         return;
     }
-    file.write(VULKAN_CACHE_MAGIC_NUMBER.data(), VULKAN_CACHE_MAGIC_NUMBER.size())
-        .write(reinterpret_cast<const char*>(&cache_version), sizeof(cache_version));
-
-    size_t cache_size = 0;
-    std::vector<char> cache_data;
-    if (pipeline_cache) {
-        pipeline_cache.Read(&cache_size, nullptr);
-        cache_data.resize(cache_size);
-        pipeline_cache.Read(&cache_size, cache_data.data());
-    }
-    file.write(cache_data.data(), cache_size);
 
     LOG_INFO(Render_Vulkan, "Vulkan driver pipelines cached at: {}",
              Common::FS::PathToUTF8String(filename));
@@ -1293,10 +1308,20 @@ vk::PipelineCache PipelineCache::LoadVulkanPipelineCache(const std::filesystem::
         std::vector<char> cache_data(cache_size);
         file.read(cache_data.data(), cache_size);
 
-        LOG_INFO(Render_Vulkan,
-                 "Loaded Vulkan driver pipeline cache: ", Common::FS::PathToUTF8String(filename));
-
-        return create_pipeline_cache(cache_size, cache_data.data());
+        file.close();
+        try {
+            vk::PipelineCache cache = create_pipeline_cache(cache_size, cache_data.data());
+            LOG_INFO(Render_Vulkan, "Loaded Vulkan driver pipeline cache: {}",
+                     Common::FS::PathToUTF8String(filename));
+            return cache;
+        } catch (const vk::Exception& e) {
+            // The driver refuses data it can't use (a damaged file): start empty instead of
+            // failing every start
+            LOG_ERROR(Render_Vulkan, "Vulkan driver pipeline cache refused ({}), deleting it",
+                      e.what());
+            Common::FS::RemoveFile(filename);
+            return create_pipeline_cache(0, nullptr);
+        }
 
     } catch (const std::ios_base::failure& e) {
         LOG_ERROR(Common_Filesystem, "{}", e.what());
