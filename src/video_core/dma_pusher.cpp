@@ -467,11 +467,13 @@ bool DmaPusher::CanResumeNativeAcquire() {
         return true;
     }
     // Usually the release is work the back has not executed yet: check again later. Once the
-    // back is idle, only the host GPU can still release it; waiting for that is expensive, so
-    // the back does it only then
-    if (split->Executed() == split->Pushed()) {
-        split->PushTask([this] { rasterizer->ReleaseFences(); });
-        split_acquire_position = split->Pushed();
+    // back is idle, a release it executed may still wait for the host GPU (one the fence
+    // manager delays until its fence): a fence after it makes the fencing thread write it
+    // once the GPU gets there, without anyone waiting for that meanwhile. Once per idle back.
+    if (const u64 pushed = split->Pushed(); split->Executed() == pushed &&
+                                            split_acquire_fenced != pushed) {
+        split->PushTask([this] { rasterizer->SignalReference(); });
+        split_acquire_fenced = split->Pushed();
     }
     return false;
 }
@@ -514,18 +516,13 @@ void DmaPusher::SplitPullerMethod(VideoCommon::GpuSplit& split,
             // value is pending until the host GPU reaches it, as on one thread): the front goes
             // on as soon as it has, the work after the acquire is queued behind the release.
             // One that still does not hold once the back is idle suspends the channel without
-            // stopping the front; it is checked again once the back has executed everything
-            // before it
+            // stopping the front (CanResumeNativeAcquire checks it again). Waiting for the host
+            // GPU here held up every channel: in Ocarina of Time these acquires wait for
+            // releases other channels submit later, a tenth of the frame went to it.
             puller.SetPendingAcquire(*semaphore);
             split_acquire_position = split.Pushed();
+            split_acquire_fenced = 0;
             if (split.DrainUnless([&] { return puller.IsPendingAcquireMet(*this); })) {
-                puller.ClearPendingAcquire();
-                return;
-            }
-            if (!puller.IsPendingAcquireMet(*this)) {
-                rasterizer->ReleaseFences();
-            }
-            if (puller.IsPendingAcquireMet(*this)) {
                 puller.ClearPendingAcquire();
             }
             return;
