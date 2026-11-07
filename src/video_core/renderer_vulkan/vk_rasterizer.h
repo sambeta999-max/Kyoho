@@ -172,7 +172,7 @@ private:
     /// split's front asks for when it waits for one (FlushListCopies)
     void RecordListCopies();
 
-    void UpdateDynamicStates();
+    void UpdateDynamicStates(GraphicsPipeline* draw_pipeline = nullptr);
 
     void HandleTransformFeedback();
 

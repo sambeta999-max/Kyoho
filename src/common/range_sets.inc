@@ -208,6 +208,11 @@ void RangeSet<AddressType>::Add(AddressType base_address, size_t size) {
 
 template <typename AddressType>
 void RangeSet<AddressType>::Subtract(AddressType base_address, size_t size) {
+    // Most subtractions miss every range (the buffer cache clears several sets per write): the
+    // lookup is far cheaper than the interval set's subtract
+    if (!Intersects(base_address, size)) {
+        return;
+    }
     m_impl->Subtract(base_address, size);
 }
 
@@ -219,6 +224,18 @@ void RangeSet<AddressType>::Clear() {
 template <typename AddressType>
 bool RangeSet<AddressType>::Empty() const {
     return m_impl->m_ranges_set.empty();
+}
+
+template <typename AddressType>
+bool RangeSet<AddressType>::Intersects(AddressType base_address, size_t size) const {
+    const auto& set = m_impl->m_ranges_set;
+    if (set.empty() || size == 0) {
+        return false;
+    }
+    const AddressType end_address = base_address + static_cast<AddressType>(size);
+    // The first range not entirely below the query overlaps it when it starts before its end
+    const auto it = set.lower_bound(typename RangeSetImpl::IntervalType{base_address, end_address});
+    return it != set.end() && it->lower() < end_address;
 }
 
 template <typename AddressType>
