@@ -1605,10 +1605,16 @@ void TextureCache<P>::InvalidateScale(Image& image) {
     image.image_view_infos.clear();
     for (size_t c : active_channel_ids) {
         auto& channel_info = channel_storage[c];
-
+        // After Invalidate every read of the tables reports a new descriptor, which reassigns
+        // the cached view id before use, so poisoning the ids only checks that. It walks every
+        // descriptor index a channel has ever used (bindless indices go up to 2^20) for each
+        // deleted image: about 0.1 ms per deletion in Ocarina of Time, which retires a few
+        // render targets every frame. Lichii 86efad39c bounds it the same way for Debug builds.
+#ifndef NDEBUG
         if constexpr (ENABLE_VALIDATION)
             for (auto& e : channel_info.image_view_ids)
                 e.second = CORRUPT_ID;
+#endif
         channel_info.graphics_image_table.Invalidate();
         channel_info.compute_image_table.Invalidate();
     }
@@ -2820,9 +2826,16 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
     }
     for (size_t c : active_channel_ids) {
         auto& channel_info = channel_storage[c];
+        // After Invalidate every read of the tables reports a new descriptor, which reassigns
+        // the cached view id before use, so poisoning the ids only checks that. It walks every
+        // descriptor index a channel has ever used (bindless indices go up to 2^20) for each
+        // deleted image: about 0.1 ms per deletion in Ocarina of Time, which retires a few
+        // render targets every frame. Lichii 86efad39c bounds it the same way for Debug builds.
+#ifndef NDEBUG
         if constexpr (ENABLE_VALIDATION)
             for (auto& e : channel_info.image_view_ids)
                 e.second = CORRUPT_ID;
+#endif
         channel_info.graphics_image_table.Invalidate();
         channel_info.compute_image_table.Invalidate();
     }

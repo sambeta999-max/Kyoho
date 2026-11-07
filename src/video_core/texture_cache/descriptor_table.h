@@ -31,8 +31,12 @@ public:
         return ret;
     }
 
+    // Every image deletion invalidates the tables of all channels, and Ocarina of Time deletes a
+    // few images every frame; clearing the whole bitmap (8K words or more per table) each time
+    // took most of a deletion. The clear waits for the next read and covers only the words
+    // marked since the last one.
     void Invalidate() noexcept {
-        std::ranges::fill(read_descriptors, 0);
+        invalidated = true;
     }
 
     [[nodiscard]] std::pair<T, bool> Read(Tegra::MemoryManager const& gpu_memory, u32 index) noexcept {
@@ -49,10 +53,14 @@ public:
         } else {
             gpu_memory.ReadBlockUnsafe(gpu_addr, std::addressof(result.first), sizeof(T));
         }
+        if (invalidated) [[unlikely]] {
+            ClearReadMarks();
+        }
         if ((read_descriptors[index / 64] & (1ULL << (index % 64))) != 0) {
             result.second = result.first != descriptors[index];
         } else {
             read_descriptors[index / 64] |= 1ULL << (index % 64);
+            marked_words_end = (std::max<size_t>)(marked_words_end, index / 64 + 1);
             result.second = true;
         }
         if (result.second) {
@@ -67,18 +75,24 @@ public:
         // Mario Brothership reallocates a lot of times, so use aggressive pre-alloc sizes
         // std::vector<T> by default uses quadratic growth, but that isn't even enough to satisfy brothership
         const size_t num_descriptors = ((limit + 0x80000) & (~0x7ffff)) + 1;
-        size_t old_size = read_descriptors.size();
+        ClearReadMarks();
         read_descriptors.resize(Common::DivCeil(num_descriptors, 64U));
-        old_size = (std::min)(old_size, read_descriptors.size());
-        std::fill(read_descriptors.begin(), read_descriptors.begin() + old_size, 0);
-        //
         descriptors.resize(num_descriptors);
+    }
+
+    void ClearReadMarks() noexcept {
+        const size_t end = (std::min)(marked_words_end, read_descriptors.size());
+        std::fill(read_descriptors.begin(), read_descriptors.begin() + end, 0);
+        marked_words_end = 0;
+        invalidated = false;
     }
 
     std::vector<u64> read_descriptors;
     std::vector<T> descriptors;
     GPUVAddr current_gpu_addr{};
     u32 current_limit{};
+    size_t marked_words_end{};
+    bool invalidated{};
 };
 
 } // namespace VideoCommon
