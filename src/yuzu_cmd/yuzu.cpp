@@ -215,7 +215,8 @@ void WriteBmp(const std::string& path, const std::vector<u8>& pixels, u32 width,
 // and buttons are held for frames too (EDEN_SCRIPT_HOLD_FPS a second, default 30): games that step
 // once a frame then move as far at any speed.
 // Loading runs in real time, so the frame a game is playable from varies. a<frame> waits from that
-// frame for the end of the load: a presentation gap over 0.5 s followed by 90 frames without one.
+// frame for the end of the load: a presentation gap over 0.5 s (up to 300 frames before it, or after
+// it) followed by 90 frames without one.
 // Times from ANCHOR_BASE on (with EDEN_SCRIPT_FPS) then count frames after the last gap.
 void RunScript(std::stop_token stop, SdlState* state, std::string script, std::string out) {
     constexpr double ANCHOR_BASE = 100000.0;
@@ -226,6 +227,23 @@ void RunScript(std::stop_token stop, SdlState* state, std::string script, std::s
         return static_cast<double>(state->system.GetPerfStats().GetTotalGameFrames());
     };
     double anchor = 0.0;
+    // Presentation gaps over 0.5 s, watched while waiting for actions: a load can end before the
+    // a<frame> action is reached (the menu takes the button at a different press each run)
+    double watched_frames = -1.0;
+    auto watched_time = std::chrono::steady_clock::now();
+    double last_gap = -1.0;
+    const auto watch_gaps = [&] {
+        const double now_frames = frames();
+        const auto now = std::chrono::steady_clock::now();
+        if (now_frames == watched_frames) {
+            return;
+        }
+        if (watched_frames >= 0.0 && now - watched_time > std::chrono::milliseconds(500)) {
+            last_gap = now_frames;
+        }
+        watched_frames = now_frames;
+        watched_time = now;
+    };
     const auto reached = [&](double at) {
         if (frames_per_unit > 0.0) {
             if (at >= ANCHOR_BASE) {
@@ -247,6 +265,7 @@ void RunScript(std::stop_token stop, SdlState* state, std::string script, std::s
         const double at = std::atof(action.c_str() + 1);
         while (!stop.stop_requested() && !reached(at)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            watch_gaps();
         }
         if (stop.stop_requested()) {
             return;
@@ -254,23 +273,15 @@ void RunScript(std::stop_token stop, SdlState* state, std::string script, std::s
         LOG_INFO(Frontend, "script: {} (frame {})", action,
                  state->system.GetPerfStats().GetTotalGameFrames());
         if (kind == 'a') {
-            double last = frames();
-            auto last_time = std::chrono::steady_clock::now();
-            double gap_frame = -1.0;
-            while (!stop.stop_requested() && (gap_frame < 0.0 || last - gap_frame < 90.0)) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(2));
-                const double now_frames = frames();
-                const auto now = std::chrono::steady_clock::now();
-                if (now_frames == last) {
-                    continue;
-                }
-                if (now - last_time > std::chrono::milliseconds(500)) {
-                    gap_frame = now_frames;
-                }
-                last = now_frames;
-                last_time = now;
+            // A gap up to 300 frames before this action counts: the load may have ended already
+            if (last_gap < 0.0 || frames() - last_gap > 300.0) {
+                last_gap = -1.0;
             }
-            anchor = gap_frame;
+            while (!stop.stop_requested() && (last_gap < 0.0 || frames() - last_gap < 90.0)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                watch_gaps();
+            }
+            anchor = last_gap;
             LOG_INFO(Frontend, "script: anchored at frame {}", anchor);
             continue;
         }
