@@ -218,6 +218,12 @@ void WriteBmp(const std::string& path, const std::vector<u8>& pixels, u32 width,
 // frame for the end of the load: a presentation gap over 0.5 s (up to 300 frames before it, or after
 // it) followed by 90 frames without one.
 // Times from ANCHOR_BASE on (with EDEN_SCRIPT_FPS) then count frames after the last gap.
+// P writes the counters of a build instrumented for profile-guided optimization (clang-cl with
+// -fprofile-generate and -DEDEN_PGO_GENERATE): it writes them only at a normal exit, and scripted
+// runs end with a kill.
+#ifdef EDEN_PGO_GENERATE
+extern "C" int __llvm_profile_write_file(void);
+#endif
 void RunScript(std::stop_token stop, SdlState* state, std::string script, std::string out) {
     constexpr double ANCHOR_BASE = 100000.0;
     const auto start = std::chrono::steady_clock::now();
@@ -283,6 +289,12 @@ void RunScript(std::stop_token stop, SdlState* state, std::string script, std::s
             }
             anchor = last_gap;
             LOG_INFO(Frontend, "script: anchored at frame {}", anchor);
+            continue;
+        }
+        if (kind == 'P') {
+#ifdef EDEN_PGO_GENERATE
+            LOG_INFO(Frontend, "script: profile written ({})", __llvm_profile_write_file());
+#endif
             continue;
         }
         if (kind == 'g') {
