@@ -253,6 +253,11 @@ void GenericEnvironment::Serialize(std::ofstream& file) const {
             file.write(reinterpret_cast<const char*>(&gp_passthrough_mask),
                        sizeof(gp_passthrough_mask));
         }
+        if (stage == Shader::Stage::Task || stage == Shader::Stage::Mesh) {
+            file.write(reinterpret_cast<const char*>(&mesh_registers), sizeof(mesh_registers))
+                .write(reinterpret_cast<const char*>(&mesh_primitive_header),
+                       sizeof(mesh_primitive_header));
+        }
     }
 }
 
@@ -571,6 +576,11 @@ void FileEnvironment::Deserialize(std::ifstream& file) {
         initial_offset = ProgramHeaderSize();
         if (stage == Shader::Stage::Geometry) {
             file.read(reinterpret_cast<char*>(&gp_passthrough_mask), sizeof(gp_passthrough_mask));
+        }
+        if (stage == Shader::Stage::Task || stage == Shader::Stage::Mesh) {
+            file.read(reinterpret_cast<char*>(&mesh_registers), sizeof(mesh_registers))
+                .read(reinterpret_cast<char*>(&mesh_primitive_header),
+                      sizeof(mesh_primitive_header));
         }
     }
     is_proprietary_driver = texture_bound == 2;
