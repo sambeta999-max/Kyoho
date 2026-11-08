@@ -142,6 +142,32 @@ public:
 
     void EraseResolveShadow(VkImage msaa_image);
 
+    /// What decides whether an image can stand in for another: its create info and view formats
+    struct PooledImageKey {
+        VkImageCreateFlags flags;
+        VkImageType type;
+        VkFormat format;
+        VkExtent3D extent;
+        u32 levels;
+        u32 layers;
+        VkSampleCountFlagBits samples;
+        VkImageUsageFlags usage;
+        u64 view_formats_hash;
+
+        bool operator==(const PooledImageKey& rhs) const noexcept {
+            return flags == rhs.flags && type == rhs.type && format == rhs.format &&
+                   extent.width == rhs.extent.width && extent.height == rhs.extent.height &&
+                   extent.depth == rhs.extent.depth && levels == rhs.levels &&
+                   layers == rhs.layers && samples == rhs.samples && usage == rhs.usage &&
+                   view_formats_hash == rhs.view_formats_hash;
+        }
+    };
+
+    /// An image of a deleted cache entry, free for a new entry with the same key
+    [[nodiscard]] vk::Image TakePooledImage(const PooledImageKey& key);
+
+    void RecycleImage(const PooledImageKey& key, vk::Image image);
+
     std::span<const VkFormat> ViewFormats(PixelFormat format) {
         return view_formats[static_cast<std::size_t>(format)];
     }
@@ -189,6 +215,17 @@ public:
     };
 
     std::vector<MsaaScratchImage> msaa_scratch_images;
+
+    struct PooledImage {
+        PooledImageKey key;
+        vk::Image image;
+        u64 tick;
+        u32 unused_frames;
+    };
+    /// Images of deleted cache entries. Ocarina of Time allocates its render targets from a ring
+    /// at new addresses every frame: each frame created ~20 images and deleted as many, and
+    /// binding their memory (vkBindImageMemory) cost ~100 us each on NVIDIA.
+    std::vector<PooledImage> image_pool;
     ::Common::unordered_map<VkImage, ResolveShadow> resolve_shadows;
     std::vector<std::pair<u64, ResolveShadow>> pending_resolve_shadows;
 };
@@ -387,6 +424,9 @@ private:
     Scheduler* scheduler{};
     TextureCacheRuntime* runtime{};
 
+    /// Key of original_image in the runtime's image pool, which takes it back on deletion
+    /// (declared first: original_image's initializer sets it)
+    std::optional<TextureCacheRuntime::PooledImageKey> pool_key;
     vk::Image original_image;
     vk::Image scaled_image;
 

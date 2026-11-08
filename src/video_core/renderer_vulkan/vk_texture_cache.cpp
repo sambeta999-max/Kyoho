@@ -351,7 +351,10 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
 
 [[nodiscard]] vk::Image MakeImage(const Device& device, const MemoryAllocator& allocator,
                                   const ImageInfo& info, std::span<const VkFormat> view_formats,
-                                  std::optional<VkFormat> format_override = {}) {
+                                  std::optional<VkFormat> format_override = {},
+                                  TextureCacheRuntime* pool = nullptr,
+                                  std::optional<TextureCacheRuntime::PooledImageKey>* pool_key =
+                                      nullptr) {
     if (info.type == ImageType::Buffer) {
         return vk::Image{};
     }
@@ -381,6 +384,30 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
 
         if (device.IsKhrImageFormatListSupported()) {
             image_ci.pNext = &image_format_list;
+        }
+    }
+    if (pool != nullptr) {
+        u64 view_formats_hash = view_formats.size();
+        if (image_ci.pNext != nullptr) {
+            for (const VkFormat view_format : view_formats) {
+                view_formats_hash =
+                    view_formats_hash * 0x100000001b3ULL ^ static_cast<u64>(view_format);
+            }
+        }
+        const TextureCacheRuntime::PooledImageKey key{
+            .flags = image_ci.flags,
+            .type = image_ci.imageType,
+            .format = image_ci.format,
+            .extent = image_ci.extent,
+            .levels = image_ci.mipLevels,
+            .layers = image_ci.arrayLayers,
+            .samples = image_ci.samples,
+            .usage = image_ci.usage,
+            .view_formats_hash = view_formats_hash,
+        };
+        *pool_key = key;
+        if (vk::Image image = pool->TakePooledImage(key)) {
+            return image;
         }
     }
     return allocator.CreateImage(image_ci);
@@ -2011,7 +2038,40 @@ void TextureCacheRuntime::ReleaseMsaaScratchImage(VkImage image) {
     }
 }
 
+vk::Image TextureCacheRuntime::TakePooledImage(const PooledImageKey& key) {
+    // The newest first: the oldest ones are the next to expire
+    for (auto it = image_pool.rbegin(); it != image_pool.rend(); ++it) {
+        if (it->key == key && scheduler.IsFree(it->tick)) {
+            vk::Image image = std::move(it->image);
+            image_pool.erase(std::next(it).base());
+            return image;
+        }
+    }
+    return vk::Image{};
+}
+
+void TextureCacheRuntime::RecycleImage(const PooledImageKey& key, vk::Image image) {
+    // Images are deleted frames after their last use (the texture cache's destruction ring); the
+    // tick covers commands recorded since. A new entry starts from an undefined layout, as with
+    // a new image.
+    static constexpr size_t MAX_POOLED_IMAGES = 256;
+    if (image_pool.size() >= MAX_POOLED_IMAGES) {
+        image_pool.erase(image_pool.begin());
+    }
+    image_pool.push_back(PooledImage{
+        .key = key,
+        .image = std::move(image),
+        .tick = scheduler.CurrentTick(),
+        .unused_frames = 0,
+    });
+}
+
 void TextureCacheRuntime::TickFrame() {
+    // Images nobody took again for a second go back to the allocator
+    static constexpr u32 MAX_UNUSED_POOL_FRAMES = 60;
+    std::erase_if(image_pool, [](PooledImage& pooled) {
+        return ++pooled.unused_frames > MAX_UNUSED_POOL_FRAMES;
+    });
     static constexpr u32 MAX_UNUSED_SCRATCH_FRAMES = 60;
     std::erase_if(msaa_scratch_images, [this](MsaaScratchImage& scratch) {
         if (!scheduler.IsFree(scratch.tick)) {
@@ -2031,7 +2091,7 @@ Image::Image(TextureCacheRuntime& runtime_, const ImageInfo& info_, GPUVAddr gpu
       runtime{&runtime_},
       original_image(MakeImage(runtime_.device, runtime_.memory_allocator,
                                HostImageInfo(info, FirstHostLevel(runtime_.device, info)),
-                               runtime->ViewFormats(info.format))),
+                               runtime->ViewFormats(info.format), {}, &runtime_, &pool_key)),
       aspect_mask(ImageAspectMask(info.format)) {
     host_level_offset = FirstHostLevel(runtime->device, info);
     if (host_level_offset != 0) {
@@ -2094,6 +2154,9 @@ Image::~Image() {
         if (scaled_image) {
             runtime->EraseResolveShadow(*scaled_image);
         }
+    }
+    if (runtime != nullptr && original_image && pool_key) {
+        runtime->RecycleImage(*pool_key, std::move(original_image));
     }
 }
 
