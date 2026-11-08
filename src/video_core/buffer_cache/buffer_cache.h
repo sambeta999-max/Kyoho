@@ -127,7 +127,6 @@ void BufferCache<P>::UnmapGPUMemory(size_t as_id, GPUVAddr gpu_addr, size_t size
 template <class P>
 void BufferCache<P>::WriteMemory(DAddr device_addr, u64 size, bool keep_page_gpu_data) {
     NoteListHostWrite(device_addr, size);
-    NoteCpuAccess(device_addr, size);
     // The written range lies within its pages: when they hold no GPU-written data, neither lookup
     // below finds any, so one answers both. From Lichii 8318201fa2 (WriteMemory in
     // src/video_core/buffer_cache/buffer_cache.h).
@@ -170,7 +169,6 @@ void BufferCache<P>::CachedWriteMemory(DAddr device_addr, u64 size) {
     }
 
     NoteListHostWrite(device_addr, size);
-    NoteCpuAccess(device_addr, size);
     tmp_buffer.resize_destructive(size);
     device_memory.ReadBlockUnsafe(device_addr, tmp_buffer.data(), size);
 
@@ -1735,15 +1733,19 @@ void BufferCache<P>::AddFenceDownload(DAddr device_addr, u64 size) {
         uncommitted_gpu_modified_ranges.Add(device_addr, size);
         return;
     }
-    // Still downloaded at the next fence: the GPU-written bytes on pages the guest CPU reads or
-    // writes, and on command list pages.
+    // Still downloaded at the next fence: the GPU-written bytes on pages the guest CPU reads, and
+    // on command list pages.
     // - Reactive flushing traps only the first CPU read of an area (GetFlushArea marks it
     //   preflushable); later reads see what the fence downloads brought. Without them Donkey
     //   Kong Bananza read stale culling results and drew ~45% more each frame.
-    // - A CPU write to a page with GPU-written bytes guest memory lacks downloads them first
-    //   (WriteMemory) with a full host GPU wait.
     // - The front of a split GPU thread reads the command lists a draw wrote after draining;
     //   each would otherwise wait for a download of its own.
+    // Pages the CPU only writes are not: such a write keeps the GPU's bytes on the page and puts
+    // its own in the host buffer (WriteMemory). WriteMemory also takes the GPU thread's cached
+    // writes (constant buffers and inline data, every draw): noting those pages downloaded
+    // ~80 ms a second of buffers in Ocarina of Time on the fencing thread, under the buffer cache
+    // lock the GPU thread waited for, and held up each fence's release (syncpoints released
+    // ~0.77 ms after their signal, ~0.2-0.5 ms without).
     // Pages only GPU work touches (Fast Fusion's storage buffers, 1-8 MiB a fence) stay on the
     // host GPU until something flushes them
     const GpuSplit* const split = GpuSplit::WithCommandListPages();
