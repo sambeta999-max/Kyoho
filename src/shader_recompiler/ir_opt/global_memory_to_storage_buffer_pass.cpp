@@ -36,6 +36,15 @@ struct StorageBufferAddr {
     u32 indirect{~0U};
 };
 
+/// Not std::ranges::find: with clang-cl, MSVC's STL (14.51) takes a 12-byte StorageBufferAddr for
+/// its vectorized find, whose static_assert rejects that size
+template <typename Range>
+bool Contains(const Range& range, const StorageBufferAddr& addr) {
+    return std::ranges::find_if(range, [&addr](const StorageBufferAddr& existing) {
+               return existing == addr;
+           }) != std::ranges::end(range);
+}
+
 /// Block iterator to a global memory instruction and the storage buffer it uses
 struct StorageInst {
     StorageBufferAddr storage_buffer;
@@ -799,7 +808,7 @@ small_vector<StorageBufferAddr, 16> DynamicArrayPointers(const IR::U32& low_addr
                     continue;
                 }
                 for (const StorageBufferAddr& pointer : array) {
-                    if (std::ranges::find(result, pointer) == result.end()) {
+                    if (!Contains(result, pointer)) {
                         result.push_back(pointer);
                     }
                 }
@@ -847,7 +856,7 @@ small_vector<StorageBufferAddr, 16> DynamicTableEntries(const TableLoad& load,
 void AddGlobalPointers(std::span<const StorageBufferAddr> pointers, const IR::Inst& inst,
                        StorageInfo& info) {
     for (const StorageBufferAddr& pointer : pointers) {
-        if (std::ranges::find(info.global_pointers, pointer) == info.global_pointers.end()) {
+        if (!Contains(info.global_pointers, pointer)) {
             info.global_pointers.push_back(pointer);
         }
         if (IsGlobalMemoryWrite(inst)) {
