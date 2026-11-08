@@ -171,9 +171,23 @@ void TextureCache<P>::RunGarbageCollector() {
 
 template <class P>
 void TextureCache<P>::TickFrame() {
+    if constexpr (requires { runtime.CurrentTick(); }) {
+        // Drivers take ~0.3 ms to free an image's memory: a few hundred retired at once would
+        // stall one frame, so at most a quarter of them (32 or more) go per frame
+        size_t budget = (std::max)(size_t{32}, gpu_sentenced_images.size() / 4);
+        while (budget != 0 && !gpu_sentenced_images.empty() &&
+               runtime.IsFree(gpu_sentenced_images.front().tick)) {
+            gpu_sentenced_bytes -= gpu_sentenced_images.front().bytes;
+            gpu_sentenced_images.pop_front();
+            --budget;
+        }
+    }
     // If we can obtain the memory info, use it instead of the estimate.
     if (runtime.CanReportMemoryUsage()) {
         total_used_memory = runtime.GetDeviceMemoryUsage();
+        // Deleted images keep their memory until destroyed; counting it kept the collector in
+        // aggressive mode after it had freed enough
+        total_used_memory -= (std::min)(total_used_memory, gpu_sentenced_bytes);
     }
     if (total_used_memory > minimum_memory) {
         RunGarbageCollector();
@@ -2920,7 +2934,14 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
         image_serials[image_id.index] = 0;
     }
     if (!immediate_delete) {
-        sentenced_images.Push(std::move(slot_images[image_id]));
+        if constexpr (requires { runtime.CurrentTick(); }) {
+            const u64 bytes = Common::AlignUp(tentative_size, 1024);
+            gpu_sentenced_images.push_back(
+                {runtime.CurrentTick(), bytes, std::move(slot_images[image_id])});
+            gpu_sentenced_bytes += bytes;
+        } else {
+            sentenced_images.Push(std::move(slot_images[image_id]));
+        }
     }
     slot_images.erase(image_id);
 

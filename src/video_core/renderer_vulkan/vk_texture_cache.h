@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <deque>
 #include <span>
 
 #include "video_core/texture_cache/texture_cache_base.h"
@@ -65,6 +66,11 @@ public:
     u64 GetDeviceLocalMemory() const;
 
     u64 GetDeviceMemoryUsage() const;
+
+    /// GPU progress: the texture cache frees a deleted image once the GPU is past its last use
+    [[nodiscard]] u64 CurrentTick() const noexcept;
+
+    [[nodiscard]] bool IsFree(u64 tick) const noexcept;
 
     bool CanReportMemoryUsage() const;
 
@@ -225,7 +231,7 @@ public:
     /// Images of deleted cache entries. Ocarina of Time allocates its render targets from a ring
     /// at new addresses every frame: each frame created ~20 images and deleted as many, and
     /// binding their memory (vkBindImageMemory) cost ~100 us each on NVIDIA.
-    std::vector<PooledImage> image_pool;
+    std::deque<PooledImage> image_pool;
     ::Common::unordered_map<VkImage, ResolveShadow> resolve_shadows;
     std::vector<std::pair<u64, ResolveShadow>> pending_resolve_shadows;
 };

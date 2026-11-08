@@ -569,6 +569,19 @@ private:
     static constexpr size_t TICKS_TO_DESTROY = 8;
 #endif
     DelayedDestructionRing<Image, TICKS_TO_DESTROY> sentenced_images;
+    /// Deleted images on runtimes that report GPU progress (CurrentTick, IsFree): destroyed, with
+    /// their device memory, once the GPU is past them rather than TICKS_TO_DESTROY frames later.
+    /// Leaving Link's house, Ocarina of Time retires 20-170 render targets a frame; spread over
+    /// the ring they piled up to ~1000 dead images (~15 GB on a 24 GB card), pushed the collector
+    /// into aggressive mode and came back too late for the runtime's image pool to reuse them.
+    /// From Lichii 446c34aa8b and 75385e994d (texture_cache.h, texture_cache_base.h).
+    struct GpuSentencedImage {
+        u64 tick;
+        u64 bytes;
+        Image image;
+    };
+    std::deque<GpuSentencedImage> gpu_sentenced_images;
+    u64 gpu_sentenced_bytes{};
     DelayedDestructionRing<ImageView, TICKS_TO_DESTROY> sentenced_image_view;
     DelayedDestructionRing<Framebuffer, TICKS_TO_DESTROY> sentenced_framebuffers;
 
