@@ -248,7 +248,12 @@ void Scheduler::RequestRenderpass(const Framebuffer* framebuffer) {
     const VkRenderPass renderpass = framebuffer->RenderPass();
     const VkFramebuffer framebuffer_handle = framebuffer->Handle();
     const VkExtent2D render_area = framebuffer->RenderArea();
-    if (renderpass == state.renderpass && framebuffer_handle == state.framebuffer &&
+    // A draw continues the active pass whenever the same framebuffer and area are bound. The
+    // render pass variant (a deferred clear's loadOp=CLEAR form) only matters at begin, and it is
+    // compatible with the base pass, so comparing the exact handle made every draw after a
+    // deferred clear restart the pass and load what was just cleared. From Lichii ac166ebc64
+    // (src/video_core/renderer_vulkan/vk_scheduler.cpp).
+    if (state.renderpass != VK_NULL_HANDLE && framebuffer_handle == state.framebuffer &&
         render_area.width == state.render_area.width &&
         render_area.height == state.render_area.height) {
         return;

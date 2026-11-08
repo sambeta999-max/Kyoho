@@ -3,6 +3,7 @@
 
 #include <cstdlib>
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <cstring>
 #include <string_view>
@@ -127,18 +128,27 @@ void GpuSplit::WaitForWriters() noexcept {
     }
 }
 
+/// Bits of the pages from page to last (inclusive) in page's bitmap word
+static u64 WordMask(u64 page, u64 last) noexcept {
+    const u64 first_bit = page % 64;
+    const u64 bits = (std::min<u64>)(64 - first_bit, last - page + 1);
+    return (bits == 64 ? ~u64{0} : (u64{1} << bits) - 1) << first_bit;
+}
+
 void GpuSplit::SetGpuWritten(DAddr address, u64 size) noexcept {
     if (size == 0) {
         return;
     }
-    const u64 first = address >> PageBits;
     const u64 last = std::min<u64>((address + size - 1) >> PageBits, DevicePages - 1);
-    for (u64 page = first; page <= last; ++page) {
+    // A word at a time: storage buffers of several MiB are marked on every draw that binds them.
+    // From Lichii c7e807d617 (Nx2MarkGpuWritten in src/video_core/nx2.h).
+    for (u64 page = address >> PageBits; page <= last;) {
+        const u64 mask = WordMask(page, last);
         auto& word = gpu_written[page / 64];
-        const u64 bit = u64{1} << (page % 64);
-        if ((word.load(std::memory_order_relaxed) & bit) == 0) {
-            word.fetch_or(bit, std::memory_order_release);
+        if ((word.load(std::memory_order_relaxed) & mask) != mask) {
+            word.fetch_or(mask, std::memory_order_release);
         }
+        page += std::popcount(mask);
     }
 }
 
@@ -146,13 +156,13 @@ bool GpuSplit::WasGpuWritten(DAddr address, u64 size) const noexcept {
     if (size == 0) {
         return false;
     }
-    const u64 first = address >> PageBits;
     const u64 last = std::min<u64>((address + size - 1) >> PageBits, DevicePages - 1);
-    for (u64 page = first; page <= last; ++page) {
-        const u64 bit = u64{1} << (page % 64);
-        if ((gpu_written[page / 64].load(std::memory_order_acquire) & bit) != 0) {
+    for (u64 page = address >> PageBits; page <= last;) {
+        const u64 mask = WordMask(page, last);
+        if ((gpu_written[page / 64].load(std::memory_order_acquire) & mask) != 0) {
             return true;
         }
+        page += std::popcount(mask);
     }
     return false;
 }
