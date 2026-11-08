@@ -112,6 +112,16 @@ void SetCurrentThreadToEfficiencyCores();
 void SetCurrentThreadToBackgroundWork();
 void SetCurrentThreadToAllCores();
 
+enum class PinnedRole : u32 { GpuFront, GpuBack, GuestCore };
+
+/// Whether the split GPU thread's front and back are pinned (Windows, EDEN_PIN_GPU_THREADS=1).
+[[nodiscard]] bool GpuThreadPinningRequested();
+
+/// The split GPU thread's front and back each get a physical performance core of their own and
+/// the guest cores keep off those two. Skipped, with one log line, on CPUs with too few cores
+/// and on other hosts. From Lichii 8f80816581 (src/common/thread.cpp).
+void PinCurrentThread(PinnedRole role);
+
 void RefreshThreadPolicies();
 void PollThreadPolicies();
 

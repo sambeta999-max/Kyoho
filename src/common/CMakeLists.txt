@@ -121,6 +121,8 @@ add_library(
     swap.h
     host_sampler.cpp
     host_sampler.h
+    core_pinning.cpp
+    core_pinning.h
     thread.cpp
     thread.h
     adpf.cpp

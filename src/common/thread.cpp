@@ -6,11 +6,14 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <chrono>
+#include <cstdlib>
 #include <limits>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "common/adpf.h"
+#include "common/core_pinning.h"
 #include "common/error.h"
 #include "common/logging.h"
 #include "common/assert.h"
@@ -548,6 +551,70 @@ void SetCurrentThreadToPerformanceCores() {
         return;
     }
     SetCurrentThreadCoreGroup(CoreGroup::Performance);
+#endif
+}
+
+bool GpuThreadPinningRequested() {
+    static const bool requested = [] {
+        const char* const value = std::getenv("EDEN_PIN_GPU_THREADS");
+        return value != nullptr && value[0] == '1';
+    }();
+    return requested;
+}
+
+void PinCurrentThread(PinnedRole role) {
+#ifdef _WIN32
+    struct PinnedCpuSets {
+        std::vector<ULONG> front;
+        std::vector<ULONG> back;
+        std::vector<ULONG> guest;
+    };
+    static const PinnedCpuSets pinned = [] {
+        std::vector<LogicalProcessor> processors;
+        ULONG length = 0;
+        GetSystemCpuSetInformation(nullptr, 0, &length, GetCurrentProcess(), 0);
+        std::vector<u8> buffer(length);
+        if (length != 0 &&
+            GetSystemCpuSetInformation(reinterpret_cast<PSYSTEM_CPU_SET_INFORMATION>(buffer.data()),
+                                       length, &length, GetCurrentProcess(), 0)) {
+            for (ULONG offset = 0; offset + sizeof(SYSTEM_CPU_SET_INFORMATION) <= length;) {
+                const auto* info =
+                    reinterpret_cast<const SYSTEM_CPU_SET_INFORMATION*>(buffer.data() + offset);
+                if (info->Size == 0) {
+                    break;
+                }
+                if (info->Type == CpuSetInformation) {
+                    const u32 core =
+                        (static_cast<u32>(info->CpuSet.Group) << 8) | info->CpuSet.CoreIndex;
+                    processors.push_back({static_cast<u32>(info->CpuSet.Id), core,
+                                          static_cast<u8>(info->CpuSet.EfficiencyClass)});
+                }
+                offset += info->Size;
+            }
+        }
+        const GpuThreadPinning plan = PlanGpuThreadPinning(processors);
+        if (plan.front.empty()) {
+            LOG_WARNING(Common,
+                        "GPU thread pinning skipped: {} physical performance cores, needs {}",
+                        plan.performance_cores, MinCoresForGpuThreadPinning);
+            return PinnedCpuSets{};
+        }
+        LOG_INFO(Common,
+                 "GPU thread pinning: front and back on a physical core each, guest cores on the "
+                 "other {} performance cores ({} logical processors)",
+                 plan.performance_cores - 2, plan.guest.size());
+        return PinnedCpuSets{{plan.front.begin(), plan.front.end()},
+                             {plan.back.begin(), plan.back.end()},
+                             {plan.guest.begin(), plan.guest.end()}};
+    }();
+    const std::vector<ULONG>& ids = role == PinnedRole::GpuFront  ? pinned.front
+                                    : role == PinnedRole::GpuBack ? pinned.back
+                                                                  : pinned.guest;
+    if (!ids.empty()) {
+        SetThreadSelectedCpuSets(GetCurrentThread(), ids.data(), static_cast<ULONG>(ids.size()));
+    }
+#else
+    (void)role;
 #endif
 }
 

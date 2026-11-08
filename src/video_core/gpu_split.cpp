@@ -600,6 +600,9 @@ void GpuSplit::Run(std::stop_token stop_token) {
     Common::SetCurrentThreadName("GPUBack");
     Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
     Common::SetCurrentThreadToPerformanceCores();
+    if (Common::GpuThreadPinningRequested()) {
+        Common::PinCurrentThread(Common::PinnedRole::GpuBack);
+    }
     system.RegisterHostThread();
     back_id = std::this_thread::get_id();
     u64 tail = 0;
