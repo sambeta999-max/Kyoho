@@ -5,6 +5,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 add_executable(tests
+    common/addon_config.cpp
     common/bit_field.cpp
     common/cityhash.cpp
     common/container_hash.cpp
@@ -16,6 +17,7 @@ add_executable(tests
     common/scratch_buffer.cpp
     common/undefined_fix.cpp
     common/unique_function.cpp
+    core/builtin_patches.cpp
     core/core_timing.cpp
     audio_core/batch_decoder.cpp
     core/graphics_supervisor.cpp
@@ -43,7 +45,7 @@ add_executable(tests
 
 create_target_directory_groups(tests)
 
-target_link_libraries(tests PRIVATE common core audio_core input_common video_core)
+target_link_libraries(tests PRIVATE common core audio_core input_common video_core frontend_common)
 target_link_libraries(tests PRIVATE ${PLATFORM_LIBRARIES} Catch2::Catch2WithMain Threads::Threads)
 # The NUP test writes containers with SHA-256 hashes, as the reader checks them
 if (TARGET OpenSSL::Crypto)
