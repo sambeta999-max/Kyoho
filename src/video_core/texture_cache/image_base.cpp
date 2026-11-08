@@ -138,7 +138,7 @@ void ImageBase::CheckBadOverlapState() {
     if (False(flags & ImageFlagBits::BadOverlap)) {
         return;
     }
-    if (!overlapping_images.empty()) {
+    if (num_overlaps != 0) {
         return;
     }
     flags &= ~ImageFlagBits::BadOverlap;

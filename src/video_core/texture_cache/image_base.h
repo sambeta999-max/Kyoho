@@ -122,10 +122,21 @@ struct ImageBase {
     boost::container::small_vector<SubresourceBase, 16> slice_subresources;
 
     std::vector<AliasedImage> aliased_images;
-    /// Images sharing memory with this one that it can't alias. A set: a render target pool that
-    /// hands out new sizes every frame (Ocarina of Time's shadow maps) leaves thousands of them
-    /// overlapping each other, and deleting one removes it from every other's list.
-    std::unordered_set<ImageId> overlapping_images;
+    /// Images sharing memory with this one that it can't alias. A render target pool that hands
+    /// out new sizes every frame (Ocarina of Time's shadow maps) leaves thousands of them
+    /// overlapping each other, hundreds more with each new one. A hash set made each new image
+    /// cost hundreds of node allocations (~2 ms a frame there); a deleted image now only lowers
+    /// the count of the others, leaving its reference in their lists to be dropped as stale (the
+    /// texture cache tells live ones by serial, as slots get reused).
+    struct OverlapRef {
+        ImageId id;
+        u32 serial;
+    };
+    std::vector<OverlapRef> overlapping_images;
+    /// Live entries of overlapping_images
+    u32 num_overlaps = 0;
+    /// Unique among the images the texture cache created, 0 for none
+    u32 serial = 0;
     ImageMapId map_view_id{};
 };
 

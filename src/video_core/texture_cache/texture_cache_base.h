@@ -443,6 +443,14 @@ private:
         return id.index < batch_deleted.size() && batch_deleted[id.index];
     }
 
+    /// Serial of the live image at each slot index, 0 for a free slot
+    std::vector<u32> image_serials;
+    u32 next_image_serial = 0;
+    [[nodiscard]] bool IsLiveOverlap(const ImageBase::OverlapRef& ref) const noexcept {
+        return ref.id.index < image_serials.size() && image_serials[ref.id.index] == ref.serial;
+    }
+    void AddOverlap(ImageBase& image, ImageId other_id, u32 other_serial);
+
     /// Mark an image as modified from the GPU
     void MarkModification(ImageBase& image) noexcept;
 

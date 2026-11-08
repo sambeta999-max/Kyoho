@@ -2071,6 +2071,15 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
 
     const ImageId new_image_id = slot_images.insert(runtime, new_info, gpu_addr, cpu_addr);
     Image& new_image = slot_images[new_image_id];
+    if (++next_image_serial == 0) {
+        // Wrapped (after billions of images): a stale reference could pass for a live one
+        ++next_image_serial;
+    }
+    new_image.serial = next_image_serial;
+    if (image_serials.size() <= new_image_id.index) {
+        image_serials.resize(new_image_id.index + 1);
+    }
+    image_serials[new_image_id.index] = new_image.serial;
 
     new_image.allocation_tick = frame_tick;
 
@@ -2123,16 +2132,20 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
         join_alias_indices.emplace(aliased_id, alias_index);
         new_image.flags |= ImageFlagBits::Alias;
     }
+    // Each pair once: the counts are not sets
+    std::ranges::sort(join_bad_overlap_ids);
+    const auto [dup_begin, dup_end] = std::ranges::unique(join_bad_overlap_ids);
+    join_bad_overlap_ids.erase(dup_begin, dup_end);
     for (const ImageId aliased_id : join_bad_overlap_ids) {
         ImageBase& aliased = slot_images[aliased_id];
-        aliased.overlapping_images.insert(new_image_id);
-        new_image.overlapping_images.insert(aliased_id);
+        AddOverlap(aliased, new_image_id, new_image.serial);
+        AddOverlap(new_image, aliased_id, aliased.serial);
         if (aliased.info.resources.levels == 1 && aliased.info.block.depth == 0 &&
-            aliased.overlapping_images.size() > 1) {
+            aliased.num_overlaps > 1) {
             aliased.flags |= ImageFlagBits::BadOverlap;
         }
         if (new_image.info.resources.levels == 1 && new_image.info.block.depth == 0 &&
-            new_image.overlapping_images.size() > 1) {
+            new_image.num_overlaps > 1) {
             new_image.flags |= ImageFlagBits::BadOverlap;
         }
     }
@@ -2656,6 +2669,18 @@ void TextureCache<P>::RegisterImage(ImageId image_id) {
 }
 
 template <class P>
+void TextureCache<P>::AddOverlap(ImageBase& image, ImageId other_id, u32 other_serial) {
+    auto& refs = image.overlapping_images;
+    if (refs.size() >= 2 * size_t{image.num_overlaps} + 16) {
+        std::erase_if(refs, [this](const ImageBase::OverlapRef& ref) {
+            return !IsLiveOverlap(ref);
+        });
+    }
+    refs.push_back({other_id, other_serial});
+    ++image.num_overlaps;
+}
+
+template <class P>
 void TextureCache<P>::UnregisterImage(ImageId image_id) {
     Image& image = slot_images[image_id];
     ASSERT_MSG(True(image.flags & ImageFlagBits::Registered),
@@ -2852,22 +2877,23 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
         ASSERT_MSG(num_removed_aliases == 1, "Invalid number of removed aliases: {}",
                    num_removed_aliases);
     }
-    for (const ImageId overlap_id : image.overlapping_images) {
-        if (IsBatchDeleted(overlap_id)) {
+    for (const ImageBase::OverlapRef& overlap : image.overlapping_images) {
+        if (IsBatchDeleted(overlap.id) || !IsLiveOverlap(overlap)) {
             continue;
         }
-        ImageBase& other_image = slot_images[overlap_id];
-        [[maybe_unused]] const size_t num_removed_overlaps =
-            other_image.overlapping_images.erase(image_id);
+        ImageBase& other_image = slot_images[overlap.id];
+        ASSERT_MSG(other_image.num_overlaps > 0, "Image with no overlaps left");
+        --other_image.num_overlaps;
         other_image.CheckBadOverlapState();
-        ASSERT_MSG(num_removed_overlaps == 1, "Invalid number of removed overlapps: {}",
-                   num_removed_overlaps);
     }
     for (const ImageViewId image_view_id : image_view_ids) {
         if (!immediate_delete) {
             sentenced_image_view.Push(std::move(slot_image_views[image_view_id]));
         }
         slot_image_views.erase(image_view_id);
+    }
+    if (image_id.index < image_serials.size()) {
+        image_serials[image_id.index] = 0;
     }
     if (!immediate_delete) {
         sentenced_images.Push(std::move(slot_images[image_id]));
