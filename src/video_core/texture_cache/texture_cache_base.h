@@ -572,7 +572,9 @@ private:
 
     // Join caching
     boost::container::small_vector<ImageId, 4> join_overlap_ids;
-    ::Common::unordered_set<ImageId> join_overlaps_found;
+    /// join_found_stamp at the index of each image the current join found overlapping
+    std::vector<u32> join_found_stamps;
+    u32 join_found_stamp = 0;
     boost::container::small_vector<ImageId, 4> join_left_aliased_ids;
     boost::container::small_vector<ImageId, 4> join_right_aliased_ids;
     ::Common::unordered_set<ImageId> join_ignore_textures;

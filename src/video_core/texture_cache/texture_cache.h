@@ -1892,7 +1892,26 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
     const bool broken_views = runtime.HasBrokenTextureViewFormats();
     const bool native_bgr = runtime.HasNativeBgr();
     join_overlap_ids.clear();
-    join_overlaps_found.clear();
+    // A new stamp marks the overlaps this join finds: hundreds per join where a ring allocator
+    // places render targets over older ones (Ocarina of Time), too many for a hash set cleared
+    // at each join
+    if (++join_found_stamp == 0) {
+        std::ranges::fill(join_found_stamps, 0U);
+        join_found_stamp = 1;
+    }
+    const auto mark_found = [this](ImageId id) {
+        if (join_found_stamps.size() <= id.index) {
+            join_found_stamps.resize(id.index + 1);
+        }
+        join_found_stamps[id.index] = join_found_stamp;
+    };
+    const auto was_found = [this](ImageId id) {
+        return id.index < join_found_stamps.size() &&
+               join_found_stamps[id.index] == join_found_stamp;
+    };
+    // The ImageBase of the new image for subresource checks, built again only after an overlap
+    // changed the new image (its constructor computes the whole layout)
+    std::optional<ImageBase> joined_base;
     join_left_aliased_ids.clear();
     join_right_aliased_ids.clear();
     join_ignore_textures.clear();
@@ -1916,7 +1935,7 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
             }
             return;
         }
-        join_overlaps_found.insert(overlap_id);
+        mark_found(overlap_id);
         constexpr bool strict_size = true;
         const std::optional<OverlapResult> solution = ResolveOverlap(
             new_info, gpu_addr, cpu_addr, overlap, strict_size, broken_views, native_bgr);
@@ -1933,18 +1952,23 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
             gpu_addr = solution->gpu_addr;
             cpu_addr = solution->cpu_addr;
             new_info.resources = solution->resources;
+            joined_base.reset();
             join_overlap_ids.push_back(overlap_id);
             join_copies_to_do.emplace_back(JoinCopy{false, overlap_id});
             return;
         }
         constexpr auto options = RelaxedOptions::Size | RelaxedOptions::Format;
-        const ImageBase new_image_base(new_info, gpu_addr, cpu_addr);
         if (IsSubresource(new_info, overlap, gpu_addr, options, broken_views, native_bgr)) {
             join_left_aliased_ids.push_back(overlap_id);
             overlap.flags |= ImageFlagBits::Alias;
             join_copies_to_do.emplace_back(JoinCopy{true, overlap_id});
-        } else if (IsSubresource(overlap.info, new_image_base, overlap.gpu_addr, options,
-                                 broken_views, native_bgr)) {
+            return;
+        }
+        if (!joined_base) {
+            joined_base.emplace(new_info, gpu_addr, cpu_addr);
+        }
+        if (IsSubresource(overlap.info, *joined_base, overlap.gpu_addr, options, broken_views,
+                          native_bgr)) {
             join_right_aliased_ids.push_back(overlap_id);
             overlap.flags |= ImageFlagBits::Alias;
             join_copies_to_do.emplace_back(JoinCopy{true, overlap_id});
@@ -1959,7 +1983,7 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
                                 region_check);
     }
     const auto region_check_gpu = [&](ImageId overlap_id, ImageBase& overlap) {
-        if (!join_overlaps_found.contains(overlap_id)) {
+        if (!was_found(overlap_id)) {
             if (True(overlap.flags & ImageFlagBits::Remapped)) {
                 join_ignore_textures.insert(overlap_id);
             }
