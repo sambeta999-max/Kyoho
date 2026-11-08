@@ -797,6 +797,9 @@ void RasterizerVulkan::Clear(u32 layer_count) {
     const bool stencil_partial = use_stencil && framebuffer->HasAspectStencilBit() &&
                                  regs.stencil_front_mask != 0xFF && regs.stencil_front_mask != 0;
     const bool ds_used = use_depth || use_stencil;
+    if (ds_used) {
+        texture_cache.NoteDepthStencilWrite();
+    }
     const bool ds_deferrable =
         !ds_used || ((!framebuffer->HasAspectDepthBit() || use_depth) &&
                      (!framebuffer->HasAspectStencilBit() || use_stencil) && !stencil_partial);

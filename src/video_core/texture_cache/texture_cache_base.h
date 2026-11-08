@@ -202,6 +202,12 @@ public:
     /// Handle feedback loops during draws.
     void CheckFeedbackLoop(std::span<const ImageViewInOut> views);
 
+    /// A clear wrote the bound depth or stencil buffer: the next draw that samples it ends the
+    /// render pass first (CheckFeedbackLoop)
+    void NoteDepthStencilWrite() noexcept {
+        feedback_depth_dirty = true;
+    }
+
     /// Get the sampler from the graphics/compute descriptor table in the specified index
     Sampler* GetSampler(u32 index, bool compute);
 
@@ -502,6 +508,9 @@ private:
     u64 last_feedback_loop_serial = 0;
     u64 last_feedback_texture_serial = 0;
     bool last_feedback_loop_result = false;
+    /// Whether the depth or stencil buffer may have been written since the last feedback loop
+    /// barrier
+    bool feedback_depth_dirty = true;
     FramebufferId last_framebuffer_id{};
     u64 last_framebuffer_serial = 0;
 

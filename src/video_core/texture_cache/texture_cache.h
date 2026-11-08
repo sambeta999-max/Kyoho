@@ -13,6 +13,7 @@
 #include <boost/container/small_vector.hpp>
 
 #include "common/alignment.h"
+#include "common/scope_exit.h"
 #include "common/settings.h"
 #include "common/slot_vector.h"
 #include "video_core/control/channel_state.h"
@@ -364,13 +365,36 @@ void TextureCache<P>::CheckFeedbackLoop(std::span<const ImageViewInOut> views) {
     if (!Settings::values.barrier_feedback_loops.GetValue()) {
         return;
     }
+    // The barrier ends the render pass, which orders the depth and stencil writes before it
+    // against the draws after it; a draw that samples the depth buffer without anything having
+    // written it since needs none. The draw rebinds the same attachment either way. From Lichii
+    // 3b1d6eb9cd ("vulkan: end fewer render passes on MoltenVK",
+    // src/video_core/texture_cache/texture_cache.h), which does this on every host. In the Ocarina
+    // of Time intro this ended ~1000 render passes a frame, each storing and reloading the
+    // full-size attachments.
+    const auto& regs = maxwell3d->regs;
+    const bool writes_depth_stencil = regs.depth_write_enabled != 0 || regs.stencil_enable != 0;
+    const auto barrier = [&] {
+        if (feedback_depth_dirty) {
+            runtime.BarrierFeedbackLoop();
+            feedback_depth_dirty = false;
+        }
+    };
+    SCOPE_EXIT {
+        if (writes_depth_stencil) {
+            feedback_depth_dirty = true;
+        }
+    };
 
     if (render_targets_serial == last_feedback_loop_serial &&
         texture_bindings_serial == last_feedback_texture_serial) {
         if (last_feedback_loop_result) {
-            runtime.BarrierFeedbackLoop();
+            barrier();
         }
         return;
+    }
+    if (render_targets_serial != last_feedback_loop_serial) {
+        feedback_depth_dirty = true;
     }
 
     if (rt_active_mask == 0) {
@@ -419,7 +443,7 @@ void TextureCache<P>::CheckFeedbackLoop(std::span<const ImageViewInOut> views) {
     last_feedback_texture_serial = texture_bindings_serial;
     last_feedback_loop_result = requires_barrier;
     if (requires_barrier) {
-        runtime.BarrierFeedbackLoop();
+        barrier();
     }
 }
 
