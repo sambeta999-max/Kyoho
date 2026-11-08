@@ -167,6 +167,19 @@ public:
     /// Front: asks the back to submit the host GPU work it recorded so far (copies of command
     /// list pages the front waits for), between two entries or at once when it is idle
     void RequestFlush();
+    /// Any thread but the front: asks the back to submit its deferred work after its current
+    /// entry. Nothing is left deferred while the back is idle (SubmitWhenIdle)
+    void RequestSubmit() noexcept {
+        flush_requested.store(true, std::memory_order_seq_cst);
+    }
+    /// Back: the scheduler deferred a submission (Vulkan::Scheduler::DeferFlush)
+    void NoteDeferredSubmit() noexcept {
+        deferred_submit.store(true, std::memory_order_relaxed);
+    }
+    /// The deferred submission went with another one
+    void ClearDeferredSubmit() noexcept {
+        deferred_submit.store(false, std::memory_order_relaxed);
+    }
 
     /// Notes device pages the front read command lists from that the GPU wrote: the buffer cache
     /// copies them to host memory after the work that writes them (BufferCache::NoteListWrite)
@@ -283,6 +296,12 @@ private:
     /// Back: submits the recorded host GPU work when the front asked for it
     void BackFlush();
     std::atomic<bool> flush_requested{};
+    /// Back, after an entry with a submission deferred: submits it before reporting the entry
+    /// done unless more entries come within a short spin
+    void SubmitWhenIdle(u64 next);
+    std::atomic<bool> deferred_submit{};
+    /// The front waits for the back (Drain, WaitUntil, Hold, WaitForWriters)
+    std::atomic<bool> front_waiting{};
 
     /// A bit per device page the GPU wrote, so the front checks command lists without the
     /// buffer cache's lock

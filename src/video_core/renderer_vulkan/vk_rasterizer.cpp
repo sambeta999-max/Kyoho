@@ -20,6 +20,7 @@
 #include "common/settings.h"
 #include "video_core/buffer_cache/buffer_cache.h"
 #include "video_core/gpu_logging/gpu_logging.h"
+#include "video_core/gpu_split.h"
 #include "video_core/control/channel_state.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/kepler_compute.h"
@@ -1119,6 +1120,16 @@ void RasterizerVulkan::FlushListCopies() {
     // others go with a later submission
     if (buffer_cache.LastListCopyTick() >= scheduler.CurrentTick()) {
         scheduler.Flush();
+    } else {
+        scheduler.FlushDeferred();
+    }
+}
+
+void RasterizerVulkan::SubmitDeferred() {
+    // Only the split's back defers submissions, and only it may submit while it runs
+    if (const VideoCommon::GpuSplit* const split = VideoCommon::GpuSplit::Active();
+        split == nullptr || split->OnBackThread()) {
+        scheduler.FlushDeferred();
     }
 }
 
@@ -1400,8 +1411,13 @@ void RasterizerVulkan::FlushCommands() {
         return;
     }
     draw_counter = 0;
-    scheduler.Flush();
+    // Fences with downloads or queries come here right after queueing (SignalFence): batched
+    // like the fences themselves. From Lichii 313463cd27 (FlushCommands in vk_rasterizer.cpp)
+    if (!scheduler.DeferFlush()) {
+        scheduler.Flush();
+    }
 }
+
 
 void RasterizerVulkan::TickFrame() {
     VideoCommon::DrawCapture::Get().TickFrame();

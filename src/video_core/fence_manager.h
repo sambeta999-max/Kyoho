@@ -152,6 +152,10 @@ public:
                 wait_cv.notify_all();
             });
             SignalFence(std::move(func));
+            // The fencing thread waits for the fence's submission, which the split's back may
+            // have deferred: waiting here on the back without submitting would deadlock. From
+            // Lichii 79f284eab8 (WaitPendingFences in fence_manager.h)
+            rasterizer.SubmitDeferred();
             std::unique_lock lk(wait_mutex);
             wait_cv.wait(
                 lk, [&wait_finished] { return wait_finished.load(std::memory_order_relaxed); });

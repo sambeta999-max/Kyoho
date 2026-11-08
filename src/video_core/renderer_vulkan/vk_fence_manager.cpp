@@ -1,8 +1,11 @@
 // SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <chrono>
 #include <memory>
+#include <thread>
 
+#include "video_core/gpu_split.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
 #include "video_core/renderer_vulkan/vk_fence_manager.h"
 #include "video_core/renderer_vulkan/vk_query_cache.h"
@@ -23,7 +26,9 @@ void InnerFence::Queue() {
     }
     // Get the current tick so we can wait for it
     wait_tick = scheduler.CurrentTick();
-    scheduler.Flush();
+    if (!scheduler.DeferFlush()) {
+        scheduler.Flush();
+    }
 }
 
 bool InnerFence::IsSignaled() const {
@@ -35,6 +40,26 @@ bool InnerFence::IsSignaled() const {
 
 void InnerFence::Wait() {
     if (is_stubbed) {
+        return;
+    }
+    // The split's back may have deferred the fence's submission (Scheduler::DeferFlush), and
+    // only it may submit while it runs: other threads (the fencing thread) ask it to and wait.
+    // From Lichii 660e5f0039 (InnerFence::Wait in vk_fence_manager.cpp)
+    if (VideoCommon::GpuSplit* const split = VideoCommon::GpuSplit::Active();
+        split != nullptr && !split->OnBackThread() && !scheduler.IsSubmitted(wait_tick)) {
+        split->RequestSubmit();
+        for (u32 spins = 0; !scheduler.IsSubmitted(wait_tick); ++spins) {
+            if (VideoCommon::GpuSplit::Active() == nullptr) {
+                scheduler.Wait(wait_tick);
+                return;
+            }
+            if (spins < 64) {
+                std::this_thread::yield();
+            } else {
+                std::this_thread::sleep_for(std::chrono::microseconds{50});
+            }
+        }
+        scheduler.GetMasterSemaphore().Wait(wait_tick);
         return;
     }
     scheduler.Wait(wait_tick);

@@ -103,6 +103,7 @@ public:
     GpuWrittenList ReadGpuWrittenCommandList(DAddr addr, std::span<u8> out) override;
     void NoteGpuWrittenCommandListSynced(DAddr page) override;
     void FlushListCopies() override;
+    void SubmitDeferred() override;
     void FlushRegion(DAddr addr, u64 size,
                      VideoCommon::CacheType which = VideoCommon::CacheType::All) override;
     bool HasCachedQueries(DAddr addr, u64 size) override;

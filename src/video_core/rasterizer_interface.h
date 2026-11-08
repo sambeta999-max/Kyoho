@@ -104,8 +104,12 @@ public:
         return GpuWrittenList::Unknown;
     }
 
-    /// Split GPU thread, on its back: submits the command list page copies recorded so far
+    /// Split GPU thread, on its back: submits the command list page copies recorded so far, and
+    /// the work whose submission was deferred (SubmitDeferred)
     virtual void FlushListCopies() {}
+
+    /// Split GPU thread, on its back: submits the work whose submission was deferred
+    virtual void SubmitDeferred() {}
 
     /// Split GPU thread: its front flushed this command list page with the back idle
     virtual void NoteGpuWrittenCommandListSynced([[maybe_unused]] DAddr page) {}

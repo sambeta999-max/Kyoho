@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <functional>
@@ -48,6 +49,18 @@ public:
 
     /// Sends the current execution context to the GPU and waits for it to complete.
     void Finish(VkSemaphore signal_semaphore = {}, VkSemaphore wait_semaphore = {});
+
+    /// On the split's back, a fence (or the FlushCommands after it) submits only if the last
+    /// submission is older than a window (EDEN_NX2_FENCE_FLUSH_US, default 500 us, 0 submits at
+    /// once); otherwise it goes with the next one. The back submits deferred work once it runs out
+    /// of entries and when another thread asks (GpuSplit::RequestSubmit). True when deferred.
+    bool DeferFlush();
+    /// Submits deferred work (DeferFlush); on the thread that owns the scheduler
+    void FlushDeferred();
+    /// Whether everything up to tick has been handed to the worker for submission
+    [[nodiscard]] bool IsSubmitted(u64 tick) const noexcept {
+        return tick < CurrentTick();
+    }
 
     /// Waits for the worker thread to finish executing everything. After this function returns it's
     /// safe to touch worker resources.
@@ -287,6 +300,9 @@ private:
 
     u64 SubmitExecution(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore);
 
+    /// After a submission: restarts the DeferFlush window, nothing deferred is left
+    void NoteSubmitted();
+
     void AllocateNewContext();
 
     void EndPendingOperations();
@@ -323,6 +339,9 @@ private:
     std::mutex reserve_mutex;
     std::mutex queue_mutex;
     std::condition_variable_any event_cv;
+
+    std::chrono::steady_clock::time_point last_flush{};
+    bool flush_pending{};
     std::jthread worker_thread;
 
     std::chrono::steady_clock::duration frame_interval{};

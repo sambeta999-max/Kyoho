@@ -31,6 +31,17 @@ namespace {
 /// Spins before sleeping, the back usually has more work within microseconds
 constexpr int SpinIterations = 4000;
 
+/// Marks the front as waiting for the back while it spins: the back submits deferred work at once
+struct FrontWaiting {
+    explicit FrontWaiting(std::atomic<bool>& flag_) : flag{flag_} {
+        flag.store(true, std::memory_order_relaxed);
+    }
+    ~FrontWaiting() {
+        flag.store(false, std::memory_order_relaxed);
+    }
+    std::atomic<bool>& flag;
+};
+
 void Relax(int& spins) {
     if (++spins < SpinIterations) {
 #if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
@@ -87,8 +98,29 @@ void GpuSplit::BackFlush() {
     }
 }
 
+void GpuSplit::SubmitWhenIdle(u64 next) {
+    // Submissions deferred by the scheduler go with the next one. When the front sends nothing
+    // more within a short spin, or waits for the back, the back submits them before it reports
+    // its last entry done: the fencing thread waits for them, and once the back is idle the
+    // front may use the scheduler itself (Drain), so the back may not submit after that
+    int spins = 0;
+    while (entry_head.load(std::memory_order_acquire) == next) {
+        if (++spins >= SpinIterations || front_waiting.load(std::memory_order_relaxed) ||
+            flush_requested.load(std::memory_order_relaxed) ||
+            hold_at.load(std::memory_order_relaxed) <= next ||
+            stopping.load(std::memory_order_relaxed)) {
+            BackFlush();
+            deferred_submit.store(false, std::memory_order_relaxed);
+            system.GPU().Renderer().ReadRasterizer()->SubmitDeferred();
+            return;
+        }
+        Pause();
+    }
+}
+
 void GpuSplit::WaitForWriters() noexcept {
     // The back publishes its position after every entry
+    FrontWaiting waiting{front_waiting};
     int spins = 0;
     while (entry_tail.load(std::memory_order_acquire) < last_writer) {
         Relax(spins);
@@ -425,6 +457,7 @@ u64 GpuSplit::ReadTarget(DAddr begin, DAddr end) {
 void GpuSplit::Hold(u64 target) {
     FlushStates();
     hold_at.store(target, std::memory_order_seq_cst);
+    FrontWaiting waiting{front_waiting};
     int spins = 0;
     for (;;) {
         const u64 tail = entry_tail.load(std::memory_order_seq_cst);
@@ -441,6 +474,7 @@ void GpuSplit::Hold(u64 target) {
 }
 
 void GpuSplit::WaitUntil(u64 target) noexcept {
+    FrontWaiting waiting{front_waiting};
     int spins = 0;
     while (entry_tail.load(std::memory_order_acquire) < target) {
         Relax(spins);
@@ -468,6 +502,7 @@ void GpuSplit::Drain(std::source_location where) {
         static auto last_log = std::chrono::steady_clock::now();
         const auto start = std::chrono::steady_clock::now();
         const bool busy = entry_tail.load(std::memory_order_acquire) != head;
+        FrontWaiting waiting{front_waiting};
         int spins = 0;
         while (entry_tail.load(std::memory_order_acquire) != head) {
             Relax(spins);
@@ -495,6 +530,7 @@ void GpuSplit::Drain(std::source_location where) {
         }
         return;
     }
+    FrontWaiting waiting{front_waiting};
     int spins = 0;
     while (entry_tail.load(std::memory_order_acquire) != head) {
         Relax(spins);
@@ -606,6 +642,9 @@ void GpuSplit::Run(std::stop_token stop_token) {
             }
             if (flush_requested.load(std::memory_order_relaxed)) [[unlikely]] {
                 BackFlush();
+            }
+            if (deferred_submit.load(std::memory_order_relaxed)) [[unlikely]] {
+                SubmitWhenIdle(tail + 1);
             }
             data_tail.store(entry.data_end, std::memory_order_release);
             entry_tail.store(tail + 1, std::memory_order_release);

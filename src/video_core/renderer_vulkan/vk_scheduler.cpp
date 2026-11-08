@@ -4,6 +4,8 @@
 // SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <chrono>
+#include <cstdlib>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -16,6 +18,7 @@
 #include "common/settings.h"
 #include "common/thread.h"
 #include "video_core/gpu_logging/gpu_logging.h"
+#include "video_core/gpu_split.h"
 #include "video_core/renderer_vulkan/vk_command_pool.h"
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
 #include "video_core/renderer_vulkan/vk_master_semaphore.h"
@@ -58,7 +61,42 @@ u64 Scheduler::Flush(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore) {
     // When flushing, we only send data to the worker thread; no waiting is necessary.
     const u64 signal_value = SubmitExecution(signal_semaphore, wait_semaphore);
     AllocateNewContext();
+    NoteSubmitted();
     return signal_value;
+}
+
+bool Scheduler::DeferFlush() {
+    // Ocarina of Time makes a fence per compute release, ~2,300 a second, and each submitted
+    // twice (the fence, then FlushCommands): the Vulkan worker spent ~3.5 ms a frame in
+    // vkQueueSubmit. From Lichii 660e5f0039 and 313463cd27 (Scheduler::DeferFlush).
+    static const s64 interval_us = [] {
+        const char* value = std::getenv("EDEN_NX2_FENCE_FLUSH_US");
+        return value == nullptr ? s64{500} : static_cast<s64>(std::atoll(value));
+    }();
+    VideoCommon::GpuSplit* const split = VideoCommon::GpuSplit::Active();
+    if (interval_us <= 0 || split == nullptr || !split->OnBackThread() ||
+        std::chrono::steady_clock::now() - last_flush >= std::chrono::microseconds{interval_us}) {
+        return false;
+    }
+    flush_pending = true;
+    split->NoteDeferredSubmit();
+    return true;
+}
+
+void Scheduler::FlushDeferred() {
+    if (flush_pending) {
+        Flush();
+    }
+}
+
+void Scheduler::NoteSubmitted() {
+    last_flush = std::chrono::steady_clock::now();
+    if (flush_pending) {
+        flush_pending = false;
+        if (VideoCommon::GpuSplit* const split = VideoCommon::GpuSplit::Active()) {
+            split->ClearDeferredSubmit();
+        }
+    }
 }
 
 void Scheduler::Finish(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore) {
@@ -67,6 +105,7 @@ void Scheduler::Finish(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore)
     SubmitExecution(signal_semaphore, wait_semaphore);
     Wait(presubmit_tick);
     AllocateNewContext();
+    NoteSubmitted();
 }
 
 void Scheduler::WaitWorker() {
