@@ -73,6 +73,15 @@ TextureCache<P>::TextureCache(Runtime& runtime_, Tegra::MaxwellDeviceMemoryManag
             (std::max)((std::min)(device_local_memory - min_vacancy_critical, min_spacing_critical),
                      DEFAULT_CRITICAL_MEMORY));
         minimum_memory = static_cast<u64>((device_local_memory - mem_threshold) / 2);
+        // Past what a frame needs, more device memory only keeps the textures of earlier scenes:
+        // on a 24 GB card the collector started at 9.3 GB and only got going at 20 GB, and
+        // Ocarina of Time's render targets, made at new addresses every frame, filled the card
+        // to ~20 GB within 40 s of play. Collect from MaxCriticalMemory on whatever the card.
+        // From Lichii 4d8a9629a6 (texture_cache.h), with 8 GiB rather than 5: Switch 2 titles
+        // use ~5 GB of device memory right after loading
+        critical_memory = (std::min)(critical_memory, MaxCriticalMemory);
+        expected_memory = (std::min)(expected_memory, critical_memory - 768_MiB);
+        minimum_memory = (std::min)(minimum_memory, expected_memory - 1_GiB);
     } else {
         expected_memory = DEFAULT_EXPECTED_MEMORY + 512_MiB;
         critical_memory = DEFAULT_CRITICAL_MEMORY + 1_GiB;
