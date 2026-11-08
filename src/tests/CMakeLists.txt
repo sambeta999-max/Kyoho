@@ -15,6 +15,7 @@ add_executable(tests
     common/range_map.cpp
     common/ring_buffer.cpp
     common/scratch_buffer.cpp
+    common/slot_vector.cpp
     common/undefined_fix.cpp
     common/unique_function.cpp
     core/builtin_patches.cpp
@@ -23,6 +24,7 @@ add_executable(tests
     core/graphics_supervisor.cpp
     core/native_gpu_characteristics.cpp
     core/nup_container.cpp
+    core/priority_queue.cpp
     core/program_metadata.cpp
     core/internal_network/network.cpp
     shader_recompiler/ampere_decode.cpp
