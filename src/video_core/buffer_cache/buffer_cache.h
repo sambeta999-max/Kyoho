@@ -207,10 +207,19 @@ std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DA
     };
     area->preemtive = !IsRegionGpuModified(device_addr_start_aligned,
                                            device_addr_end_aligned - device_addr_start_aligned);
-    memory_tracker.MarkRegionAsPreflushable(device_addr_start_aligned,
-                                            device_addr_end_aligned - device_addr_start_aligned);
-    // Later reads of the area are not trapped: they rely on the downloads at each fence
-    NoteCpuAccess(device_addr_start_aligned, device_addr_end_aligned - device_addr_start_aligned);
+    // Mark only data the GPU wrote: a mark sends later GPU writes in the range to a download at
+    // each fence, and later reads of it rely on those. A clean area is kept by the core until the
+    // next GPU write here arms the range again (ArmReadTraps). From Eglantine 06e211e0d0 (via
+    // Lichii 9a435b584a) and Lichii 41a81ab5e3, GetFlushArea in buffer_cache.h.
+    if (!area->preemtive) {
+        memory_tracker.MarkRegionAsPreflushable(device_addr_start_aligned,
+                                                device_addr_end_aligned - device_addr_start_aligned);
+        NoteCpuAccess(device_addr_start_aligned,
+                      device_addr_end_aligned - device_addr_start_aligned);
+    } else {
+        read_trapped_ranges.Subtract(device_addr_start_aligned,
+                                     device_addr_end_aligned - device_addr_start_aligned);
+    }
     return area;
 }
 
@@ -1733,6 +1742,8 @@ void BufferCache<P>::AddFenceDownload(DAddr device_addr, u64 size) {
         uncommitted_gpu_modified_ranges.Add(device_addr, size);
         return;
     }
+    // The parts no fence downloads must reach the CPU's next read of them
+    ArmReadTraps(device_addr, size);
     // Still downloaded at the next fence: the GPU-written bytes on pages the guest CPU reads, and
     // on command list pages.
     // - Reactive flushing traps only the first CPU read of an area (GetFlushArea marks it
@@ -2484,6 +2495,8 @@ void BufferCache<P>::DownloadBufferMemory(Buffer& buffer, DAddr device_addr, u64
 
 template <class P>
 void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
+    read_trapped_ranges.Subtract(slot_buffers[buffer_id].CpuAddr(),
+                                 slot_buffers[buffer_id].SizeBytes());
     if (buffer_id == inline_buffer_id) {
         // The garbage collector can delete the inline index buffer; recreate it on next use.
         inline_buffer_id = NULL_BUFFER_ID;

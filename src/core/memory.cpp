@@ -703,7 +703,24 @@ struct Memory::Impl {
             gpu_device_memory = &system.Host1x().MemoryManager();
         }
         const size_t core = system.GetCurrentHostThreadID();
+        if (core >= Core::Hardware::NUM_CPU_CORES) [[unlikely]] {
+            // A service thread has no slot in the arrays below: it keeps no area and asks on
+            // each read. From Eglantine 06e211e0d0 (src/core/memory.cpp).
+            Common::ScratchBuffer<u32> scratch;
+            gpu_device_memory->ApplyOpOnPointer(p, scratch, [&](DAddr address) {
+                (void)system.GPU().OnCPURead(address, size);
+            });
+            return;
+        }
         auto& current_area = rasterizer_read_areas[core];
+        // GPU writes that no fence downloads end every core's area, so the next read of them asks
+        // the caches and flushes. From Lichii 41a81ab5e3 and Eglantine 06e211e0d0
+        // (read_trap_generation in src/core/memory.cpp).
+        if (const u64 generation = VideoCore::read_area_generation.load(std::memory_order_acquire);
+            read_area_generations[core] != generation) {
+            current_area = {};
+            read_area_generations[core] = generation;
+        }
         gpu_device_memory->ApplyOpOnPointer(p, scratch_buffers[core], [&](DAddr address) {
             const DAddr end_address = address + size;
             if (current_area.start_address <= address && end_address <= current_area.end_address)
@@ -783,6 +800,7 @@ struct Memory::Impl {
     Common::PageTable* current_page_table = nullptr;
 
     std::array<VideoCore::RasterizerDownloadArea, Core::Hardware::NUM_CPU_CORES> rasterizer_read_areas{};
+    std::array<u64, Core::Hardware::NUM_CPU_CORES> read_area_generations{};
     std::array<GPUDirtyState, Core::Hardware::NUM_CPU_CORES> rasterizer_write_areas{};
     std::array<Common::ScratchBuffer<u32>, Core::Hardware::NUM_CPU_CORES> scratch_buffers{};
     std::span<Core::GPUDirtyMemoryManager> gpu_dirty_managers;

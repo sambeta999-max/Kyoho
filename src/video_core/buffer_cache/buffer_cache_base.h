@@ -506,6 +506,24 @@ private:
     /// Notes device pages the guest CPU wrote or read (AddFenceDownload)
     void NoteCpuAccess(DAddr device_addr, u64 size);
 
+    /// GPU writes that the next fence does not download: ends the CPU cores' read areas, so their
+    /// next read of the range asks GetFlushArea, which flushes it once and has later writes there
+    /// downloaded at fences. A range stays armed until a core reads it clean again, so repeated
+    /// writes cost nothing. From Lichii 41a81ab5e3 (ArmReadTraps in buffer_cache_base.h).
+    void ArmReadTraps(DAddr device_addr, u64 size) {
+        const DAddr begin = Common::AlignDown(device_addr, Core::DEVICE_PAGESIZE);
+        const DAddr end = Common::AlignUp(device_addr + size, Core::DEVICE_PAGESIZE);
+        u64 armed_bytes = 0;
+        read_trapped_ranges.ForEachInRange(begin, end - begin, [&](DAddr lower, DAddr upper) {
+            armed_bytes += upper - lower;
+        });
+        if (armed_bytes == end - begin) {
+            return;
+        }
+        read_trapped_ranges.Add(begin, end - begin);
+        VideoCore::read_area_generation.fetch_add(1, std::memory_order_release);
+    }
+
     [[nodiscard]] BufferId FindBuffer(DAddr device_addr, u32 size, bool sparse_compatible);
 
     void SynchronizeBufferWrites(Buffer& buffer);
@@ -601,6 +619,8 @@ private:
 
     MemoryTracker memory_tracker;
     Common::RangeSet<DAddr> uncommitted_gpu_modified_ranges;
+    /// Ranges armed since a core last read them clean (ArmReadTraps)
+    Common::RangeSet<DAddr> read_trapped_ranges;
     /// A bit per device page the guest CPU wrote or read, once AsyncBufferDownloads is off
     static constexpr size_t FENCE_DOWNLOAD_PAGES = size_t{1} << (36 - 12);
     std::vector<u64> cpu_accessed_pages;
