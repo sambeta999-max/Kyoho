@@ -84,6 +84,7 @@ bool DmaPusher::Step() {
                 return false;
             }
             puller.ClearPendingAcquire();
+            suspensions.fetch_add(1, std::memory_order_release);
             AcquireBarrier();
         }
     } else if (!puller.ResumeNativeAcquire(*this)) {
@@ -179,12 +180,41 @@ bool DmaPusher::Step() {
         }
         // A split GPU thread flushed the pages above when it had to
         const bool use_safe = split ? false : (Settings::IsDMALevelDefault() ? Settings::IsGPULevelHigh() : Settings::IsDMALevelSafe());
+        // The words as submitted (Switch 2). The GPU thread reaches a submission tens of
+        // milliseconds after it, by when the game may have refilled its command memory for the
+        // next frame: Yoshi and the Mysterious Book rewrites its movie blit list in place every
+        // frame, and read late, a frame blitted the next picture, the next blitted it again, and
+        // the picture the movie then showed was a stale one from its ring, half a second old.
+        // Not for a resumed entry (the words after the acquire may be new by now), a list copied
+        // during or before a suspension of its channel (the game writes those before releasing
+        // the acquire), a list on pages the GPU writes (the split reads those
+        // after the work that writes them), nor with safe reads of memory the GPU wrote.
+        // From Lichii cce6d44af2 and 256b1dc346 (src/video_core/dma_pusher.cpp), ported from
+        // Wael3rd/Eglantine-MKW bd3119a86f.
+        const bool submitted =
+            command_resume_offset == 0 &&
+            dma_pushbuffer_subindex < command_list.submitted_offsets.size() &&
+            (command_list.snapshot_suspensions & 1) == 0 &&
+            command_list.snapshot_suspensions == suspensions.load(std::memory_order_acquire) &&
+            !split_safe && !split_copied &&
+            !(use_safe && memory_manager.IsMemoryDirty(dma_state.dma_get,
+                                                       size_t{header.size} * sizeof(u32)));
         if (split && command_resume_offset != 0 && split_saved_address == dma_state.dma_get &&
             split_saved_commands.size() == header.size) {
             // A channel resumed in the middle of a segment goes on with the words the front
             // fetched, as a PBDMA does; the guest may have reused that memory since
             const std::span<const CommandHeader> commands{split_saved_commands};
             command_resume_offset += ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
+        } else if (submitted) {
+            const std::span<const CommandHeader> commands{
+                command_list.submitted_words.data() +
+                    command_list.submitted_offsets[dma_pushbuffer_subindex],
+                header.size};
+            command_resume_offset += ProcessCommands(commands, 0);
+            if (split && puller.HasPendingNativeAcquire()) {
+                split_saved_commands.assign(commands.begin(), commands.end());
+                split_saved_address = dma_state.dma_get;
+            }
         } else if (split_copied) {
             const std::span<const CommandHeader> commands{command_headers.data(), header.size};
             command_resume_offset += ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
@@ -541,6 +571,8 @@ void DmaPusher::SplitPullerMethod(VideoCommon::GpuSplit& split,
             if (split.DrainUnless([&] { return puller.IsPendingAcquireMet(*this); })) {
                 puller.ClearPendingAcquire();
                 AcquireBarrier();
+            } else {
+                suspensions.fetch_add(1, std::memory_order_release);
             }
             return;
         }

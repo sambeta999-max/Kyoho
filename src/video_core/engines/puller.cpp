@@ -230,6 +230,7 @@ void Puller::AcquireOrSuspend(DmaPusher& dma_pusher, const HostSemaphore& semaph
         dma_pusher.rasterizer->ReleaseFences();
         if (!IsAcquired(dma_pusher, semaphore)) {
             pending_acquire = semaphore;
+            dma_pusher.suspensions.fetch_add(1, std::memory_order_release);
             return;
         }
     }
@@ -255,6 +256,7 @@ bool Puller::ResumeNativeAcquire(DmaPusher& dma_pusher) {
         return false;
     }
     pending_acquire.reset();
+    dma_pusher.suspensions.fetch_add(1, std::memory_order_release);
     dma_pusher.AcquireBarrier();
     return true;
 }

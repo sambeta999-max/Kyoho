@@ -7,6 +7,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <condition_variable>
 #include <span>
 #include <vector>
@@ -122,6 +123,15 @@ struct CommandList final {
 
     boost::container::small_vector<CommandListHeader, 512> command_lists;
     boost::container::small_vector<CommandHeader, 512> prefetch_command_list;
+    /// The entries' words when they were submitted (Switch 2), each entry's at
+    /// submitted_offsets[i]: executed instead of the memory, which the game may already be
+    /// refilling for a later frame by the time the GPU thread gets to them.
+    std::vector<CommandHeader> submitted_words;
+    std::vector<u32> submitted_offsets;
+    /// DmaPusher::suspensions when the words were copied. A list copied during a suspension, or
+    /// that waited behind one, reads memory instead: games write the commands it runs before
+    /// they release the acquire.
+    u64 snapshot_suspensions = 0;
 };
 
 /// @brief The DmaPusher class implements DMA submission to FIFOs, providing an area of memory that the
@@ -131,6 +141,10 @@ struct CommandList final {
 /// details on this implementation.
 class DmaPusher final {
 public:
+    /// Counts suspensions on a semaphore acquire and the resumes after them, so it is odd while
+    /// the channel is suspended (see CommandList::snapshot_suspensions)
+    std::atomic<u64> suspensions{0};
+
     explicit DmaPusher(Core::System& system_, MemoryManager& memory_manager_, Control::ChannelState& channel_state_);
     ~DmaPusher();
 

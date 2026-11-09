@@ -410,6 +410,32 @@ NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandL
         }
     }
 
+    // Keep the words as submitted (DmaPusher::Step): the GPU thread reaches them later, after the
+    // game may have refilled the command memory. EDEN_NX2_PB_SNAPSHOT=0 executes from memory.
+    // From Lichii cce6d44af2 and 256b1dc346 (src/core/hle/service/nvdrv/devices/nvhost_gpu.cpp).
+    static const bool snapshot = [] {
+        const char* const value = std::getenv("EDEN_NX2_PB_SNAPSHOT");
+        return value == nullptr || value[0] != '0';
+    }();
+    if (snapshot && UsesNativeAbi() && channel_state->memory_manager && channel_state->payload) {
+        // Before the copy: a suspension during it must count as one after it
+        entries.snapshot_suspensions =
+            channel_state->payload->dma_pusher.suspensions.load(std::memory_order_acquire);
+        size_t words = 0;
+        for (const auto& entry : entries.command_lists) {
+            words += entry.size;
+        }
+        entries.submitted_words.resize(words);
+        entries.submitted_offsets.reserve(entries.command_lists.size());
+        size_t offset = 0;
+        for (const auto& entry : entries.command_lists) {
+            entries.submitted_offsets.push_back(static_cast<u32>(offset));
+            channel_state->memory_manager->ReadBlockUnsafe(
+                entry.addr, entries.submitted_words.data() + offset, entry.size * sizeof(u32));
+            offset += entry.size;
+        }
+    }
+
     const u32 native_completion = UsesNativeAbi() && flags.increment_value.Value() && !flags.fence_increment.Value() ? params.fence.value : 0;
     if (native_completion > 64) return NvResult::BadParameter;
     params.fence.id = channel_syncpoint;
