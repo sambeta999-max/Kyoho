@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <condition_variable>
 #include <cstddef>
 #include <memory>
@@ -50,7 +51,7 @@ public:
     void LogBacktrace(KernelCore& kernel);
 
     // Wait for an interrupt.
-    void Idle();
+    void Idle(KernelCore& kernel);
 
     // Interrupt this core.
     void Interrupt();
@@ -71,7 +72,7 @@ private:
     std::condition_variable m_on_interrupt;
     Core::ArmInterface* m_arm_interface{};
     KThread* m_current_thread{};
-    bool m_is_interrupted{};
+    std::atomic<bool> m_is_interrupted{};
     bool m_is_single_core{};
 };
 

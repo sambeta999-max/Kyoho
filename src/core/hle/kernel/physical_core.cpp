@@ -4,6 +4,10 @@
 // SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <chrono>
+#include <cstdlib>
+#include <thread>
+
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "core/core.h"
@@ -221,9 +225,34 @@ void PhysicalCore::LogBacktrace(KernelCore& kernel) {
     }
 }
 
-void PhysicalCore::Idle() {
+void PhysicalCore::Idle(KernelCore& kernel) {
+    // Guest job systems hand work between cores many times per frame; blocking at once adds the
+    // host's thread wake-up latency to every handoff. EDEN_NX2_IDLE_SPIN_US=<n>: poll for that
+    // many microseconds before blocking. Switch 2 titles poll 100 us by default outside Android.
+    // From Lichii cc3d73762a and f26ad432ae (src/core/hle/kernel/physical_core.cpp).
+    static const long long spin_setting = [] {
+        const char* text = std::getenv("EDEN_NX2_IDLE_SPIN_US");
+        return text ? std::strtoll(text, nullptr, 10) : -1LL;
+    }();
+    long long spin_us = spin_setting;
+    if (spin_us < 0) {
+#ifdef __ANDROID__
+        spin_us = 0;
+#else
+        const KProcess* process = kernel.ApplicationProcess();
+        spin_us = process != nullptr && process->UsesPAuthReturns() ? 100 : 0;
+#endif
+    }
+    const auto spin = std::chrono::microseconds{spin_us};
+    if (spin.count() > 0) {
+        const auto deadline = std::chrono::steady_clock::now() + spin;
+        while (!m_is_interrupted.load(std::memory_order_acquire) &&
+               std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::yield();
+        }
+    }
     std::unique_lock lk{m_guard};
-    m_on_interrupt.wait(lk, [this] { return m_is_interrupted; });
+    m_on_interrupt.wait(lk, [this] { return m_is_interrupted.load(); });
 }
 
 bool PhysicalCore::IsInterrupted() const {
