@@ -1394,7 +1394,8 @@ void BufferCache<P>::BindHostComputeStorageBuffers() {
         }
 
         if (is_written) {
-            MarkWrittenBuffer(binding.buffer_id, binding.device_addr, size, true);
+            MarkWrittenBuffer(binding.buffer_id, binding.device_addr,
+                              (std::min)(size, binding.written_size), true);
         }
 
         if constexpr (NEEDS_BIND_STORAGE_INDEX) {
@@ -2593,7 +2594,7 @@ Binding BufferCache<P>::StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
     // Every draw rebinds each storage buffer: a locked layout lookup, page walks and maybe a range
     // walk each time. Answers hold until the page table changes. After Eglantine c8415d0e80
     // (Frizti/Lichii ddf7952a14, src/video_core/buffer_cache/buffer_cache.h).
-    const bool reads_size_word = !table_entry && !native_pointer;
+    const bool reads_size_word = !table_entry && (!native_pointer || is_written);
     const u64 next_qword = reads_size_word ? gpu_memory->Read<u64>(ssbo_addr + 8) : 0;
     struct CachedBinding {
         size_t owner; ///< MemoryManager id + 1, 0 when empty
@@ -2673,12 +2674,24 @@ Binding BufferCache<P>::StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
         if (is_written) {
             binding_size = aligned_size;
         }
-        return Binding{
+        Binding result{
             .device_addr = *aligned_device_addr,
             .gpu_addr = aligned_gpu_addr,
             .size = binding_size,
             .buffer_id = BufferId{},
         };
+        // A written binding marks itself GPU-modified, and its fence downloads put the host copy
+        // over guest memory. Fast Fusion's culling pass appends through 0x140-byte counter
+        // records (the word after the pointer is that 0x140); marking the rest of their
+        // 0x1200-byte mapping as well left the CPU's exposure at its 4.0 limit and the races
+        // washed out (with 1921abd17d). Where the next word reads as a smaller size, the program
+        // still reaches the whole binding but only that much is marked.
+        const u32 packed_size = static_cast<u32>(next_qword);
+        if (native_pointer && is_written && static_cast<u32>(next_qword >> 32) == 0 &&
+            packed_size != 0 && packed_size < size) {
+            result.written_size = static_cast<u32>(gpu_addr - aligned_gpu_addr) + packed_size;
+        }
+        return result;
     }();
     std::rotate(set.begin(), set.end() - 1, set.end());
     set[0] = {owner, gpu_addr, next_qword, serial, flags, binding};

@@ -94,6 +94,7 @@ struct Binding {
     BufferId buffer_id;
     u32 segment_first{};
     u32 segment_count{};
+    u32 written_size{~0U}; ///< Bytes from device_addr a written binding marks GPU-modified
 };
 
 struct MultiRangeSegment {
