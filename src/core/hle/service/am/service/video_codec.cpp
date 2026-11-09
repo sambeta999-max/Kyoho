@@ -307,6 +307,10 @@ private:
     // anyway, its size change reached the player while it was still flushing and the player never
     // learned the size of its pictures. Holding later pictures stalls Donkey Kong Bananza's
     // looping video, so only the first one after Configure waits.
+    // The hold ends at the next request, though, and Yoshi submits up to 7 inputs before it
+    // flushes: when the worker decoded them in time, their pictures were written and their
+    // records were still handed out after the flush, and the movie stayed red. Written pictures
+    // nobody popped are dropped too, and their images are reused.
     void Flush(HLERequestContext& ctx) {
         const std::scoped_lock lock{decoder_mutex, mutex};
         DropInput();
@@ -315,6 +319,10 @@ private:
             decoder->Flush();
         }
         pending.clear();
+        for (const Properties& record : properties) {
+            Recycle(record.image);
+        }
+        properties.clear();
         end_of_stream_queued = false;
         SignalSubmissionReady();
         ReplyResult(ctx, ResultSuccess);
@@ -344,6 +352,15 @@ private:
         free_images.push_back({image, release});
         RequestWrite();
         return fence;
+    }
+
+    /// Takes back an image whose picture was dropped after it was written (mutex held). Each
+    /// written picture advances the syncpoint once: the image waits for one more, so fences
+    /// handed out later still name the pictures written into their images.
+    void Recycle(u32 image) {
+        free_images.push_back({image, std::nullopt});
+        ++next_target;
+        RequestWrite();
     }
 
     // u32 image handle, a reserved word and a reserved u64
@@ -655,6 +672,7 @@ private:
             const u32 image = free_images.front().first;
             const auto release = free_images.front().second;
             free_images.pop_front();
+            const u64 generation = input_generation;
             lock.unlock();
             WaitForRelease(release);
             std::optional<Properties> record;
@@ -717,7 +735,10 @@ private:
                 record = Properties{image, frame.width, frame.height, u64(frame.pts), false};
             }
             lock.lock();
-            if (record) {
+            if (record && generation != input_generation) {
+                // Flushed while it was written
+                Recycle(image);
+            } else if (record) {
                 properties.push_back(*record);
             }
             nv_module->GetContainer().GetSyncpointManager().IncrementSyncpointMaxExt(*syncpoint, 1);
