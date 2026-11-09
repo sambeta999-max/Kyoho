@@ -241,6 +241,19 @@ private:
     void InvalidateTranslations() {
         translation_generation.fetch_add(1, std::memory_order_acq_rel);
     }
+    /// Ends the runs of host-contiguous pages (TrackContinuityImpl) that reach `page` from the
+    /// pages before it. Remapping or unmapping `page` reset its own run, but a run recorded at an
+    /// earlier page by an earlier mapping still went on into it, and a block access starting
+    /// there read or wrote the old memory.
+    void EndContinuityBefore(size_t page) {
+        for (size_t distance = 1; distance <= page; ++distance) {
+            const size_t index = page - distance;
+            if (tracked_entries.GetOrDefault(index).continuity_tracker < distance) {
+                break;
+            }
+            tracked_entries.GetAndFault(index).continuity_tracker = static_cast<u32>(distance - 1);
+        }
+    }
     using CounterType = u8;
     using CounterAtomicType = std::atomic_uint8_t;
     static constexpr size_t subentries = 8 / sizeof(CounterType);

@@ -214,6 +214,7 @@ void DeviceMemoryManager<Traits>::Map(DAddr address, VAddr virtual_address, size
     std::scoped_lock lk(mapping_guard);
 
     tracked_entries.CommitRegion(start_page_d, start_page_d + num_pages);
+    EndContinuityBefore(start_page_d);
     for (size_t i = 0; i < num_pages; i++) {
         const VAddr new_vaddress = virtual_address + i * Memory::YUZU_PAGESIZE;
         // Untracked pages are walked one at a time; a run left by an earlier mapping of these
@@ -265,6 +266,7 @@ void DeviceMemoryManager<Traits>::Unmap(DAddr address, size_t size) {
     std::scoped_lock lk(mapping_guard);
 
     tracked_entries.CommitRegion(start_page_d, start_page_d + num_pages); // should already be committed, but just in case
+    EndContinuityBefore(start_page_d);
     for (size_t i = 0; i < num_pages; i++) {
         auto& entry = tracked_entries.GetUnchecked(start_page_d + i);
         auto phys_addr = entry.compressed_physical_ptr;
@@ -294,6 +296,7 @@ void DeviceMemoryManager<Traits>::MapPhysical(DAddr address, PAddr dram_offset, 
     const size_t num_pages = Common::AlignUp(size, Memory::YUZU_PAGESIZE) >> Memory::YUZU_PAGEBITS;
     std::scoped_lock lk(mapping_guard);
     tracked_entries.CommitRegion(start_page_d, start_page_d + num_pages);
+    EndContinuityBefore(start_page_d);
     for (size_t i = 0; i < num_pages; i++) {
         auto& entry = tracked_entries.GetUnchecked(start_page_d + i);
         const PAddr offset = dram_offset + i * Memory::YUZU_PAGESIZE;
