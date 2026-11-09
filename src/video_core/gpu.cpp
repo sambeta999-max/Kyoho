@@ -178,14 +178,47 @@ struct GPU::Impl {
         // reads, and the SDK calibrates CPU against GPU time from both; 614.4 MHz ticks, divided
         // further by the fast GPU time setting, put every GPU timestamp far behind the CPU's.
         // After Lichii 2940d9fab (src/video_core/gpu_timestamp.h).
+        //
+        // GPU Clocks Boost and Overclock shrink only the time since the last present (by 4 and
+        // 16): GPU durations within a frame look shorter, which games that size their dynamic
+        // resolution from GPU marker durations (Ocarina of Time stayed at 854x480) read as GPU
+        // headroom, while a timestamp never runs ahead of the CPU clock and trails it by less than
+        // the time since that present, so CPU/GPU calibrations (Star Fox's frame throttle) keep
+        // one clock domain. The clock is latched with the present (a change applies at the next
+        // one, keeping timestamps monotonic), and timestamps are exact before the first present.
+        // From Lichii ce9be9d14a (src/video_core/gpu_timestamp.h, src/video_core/gpu.cpp).
         if (Common::WallClock::GuestCNTFRQ() == Common::WallClock::CNTFRQ_NX2) {
-            return static_cast<u64>(system.CoreTiming().GetGlobalTimeNs().count());
+            const u64 now = static_cast<u64>(system.CoreTiming().GetGlobalTimeNs().count());
+            const u64 anchor = ampere_anchor.load(std::memory_order_relaxed);
+            const u64 present_ns = anchor >> 2;
+            if (present_ns == 0 || now <= present_ns) {
+                return now;
+            }
+            return present_ns +
+                   (now - present_ns) / AmpereClockDivisor(static_cast<Settings::GpuClock>(anchor & 3));
         }
         const u64 gpu_tick = system.CoreTiming().GetGPUTicks();
         return gpu_tick / GpuClockMultiplier(Settings::values.gpu_clock.GetValue());
     }
 
+    /// How much faster Boost and Overclock make Switch 2 GPU work look
+    [[nodiscard]] static constexpr u64 AmpereClockDivisor(Settings::GpuClock clock) {
+        switch (clock) {
+        case Settings::GpuClock::Boost:
+            return 4;
+        case Settings::GpuClock::Overclock:
+            return 16;
+        default:
+            return 1;
+        }
+    }
+
     void RendererFrameEndNotify() {
+        // The present's CoreTiming time and the GPU clock latched with it, in one word
+        const u64 present_ns = static_cast<u64>(system.CoreTiming().GetGlobalTimeNs().count());
+        ampere_anchor.store(present_ns << 2 |
+                                static_cast<u64>(Settings::values.gpu_clock.GetValue()),
+                            std::memory_order_relaxed);
         system.GetPerfStats().EndGameFrame();
     }
 
@@ -376,6 +409,8 @@ struct GPU::Impl {
 
     std::list<std::function<void()>> sync_requests;
     std::atomic<u64> current_sync_fence{};
+    /// Last present time << 2 | GPU clock latched with it (GetTicks)
+    std::atomic<u64> ampere_anchor{};
     u64 last_sync_fence{};
     std::mutex sync_request_mutex;
     std::condition_variable sync_request_cv;
