@@ -153,8 +153,14 @@ public:
     /// Cycle timing
     u64 cpu_ticks{};
     s64 downcount{};
+    /// Wakes the timer thread (event, and the high resolution wait's event on Windows)
+    void Wake();
+
     Common::Event event{};
     Common::Event pause_event{};
+#ifdef _WIN32
+    void* wake_handle = nullptr;
+#endif
     std::function<void()> on_thread_init{};
     std::jthread timer_thread;
     mutable std::mutex basic_lock;

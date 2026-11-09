@@ -7,6 +7,9 @@
 #include <chrono>
 #include <cstdlib>
 #include <thread>
+#if defined(_M_X64) || defined(__x86_64__)
+#include <immintrin.h>
+#endif
 
 #include "common/scope_exit.h"
 #include "common/settings.h"
@@ -244,8 +247,25 @@ void PhysicalCore::Idle(KernelCore& kernel) {
 #endif
     }
     const auto spin = std::chrono::microseconds{spin_us};
+    // Poll with PAUSE instead of a yield syscall, reading the clock every 16 pauses
+    // (EDEN_NX2_IDLE_PAUSE=0 yields as before). From Frizti/Fritchii ca40d1fc1c
+    // (zortos293/Lichii#641), src/core/hle/kernel/physical_core.cpp.
+    static const bool idle_pause = [] {
+        const char* text = std::getenv("EDEN_NX2_IDLE_PAUSE");
+        return text == nullptr || text[0] != '0';
+    }();
     if (spin.count() > 0) {
         const auto deadline = std::chrono::steady_clock::now() + spin;
+#if defined(_M_X64) || defined(__x86_64__)
+        if (idle_pause) {
+            for (u32 n = 1; !m_is_interrupted.load(std::memory_order_acquire); ++n) {
+                _mm_pause();
+                if ((n & 15) == 0 && std::chrono::steady_clock::now() >= deadline) {
+                    break;
+                }
+            }
+        } else
+#endif
         while (!m_is_interrupted.load(std::memory_order_acquire) &&
                std::chrono::steady_clock::now() < deadline) {
             std::this_thread::yield();
