@@ -369,6 +369,10 @@ private:
     /// Whether the copies of an alias write every level and layer of an image whole
     [[nodiscard]] bool AliasCoversImage(const ImageBase& image, const AliasedImage& alias) const;
 
+    /// Whether GPU-modified overlaps of a new image (the ones JoinImages copies and the ones it
+    /// can't) cover every byte of its guest memory, and no overlap is CPU-modified
+    [[nodiscard]] bool GpuOwnsGuestMemory(const ImageBase& new_image) const;
+
     /// Create a new image and join perfectly matching existing images
     /// Remove joined images from the cache
     [[nodiscard]] ImageId JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DAddr cpu_addr);

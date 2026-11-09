@@ -1906,6 +1906,54 @@ ImageId TextureCache<P>::InsertImage(const ImageInfo& info, GPUVAddr gpu_addr,
 }
 
 template <class P>
+bool TextureCache<P>::GpuOwnsGuestMemory(const ImageBase& new_image) const {
+    if (True(new_image.flags & ImageFlagBits::Sparse)) {
+        return false;
+    }
+    boost::container::small_vector<std::pair<VAddr, VAddr>, 8> ranges;
+    for (const auto& copy_object : join_copies_to_do) {
+        const ImageBase& overlap = slot_images[copy_object.id];
+        if (True(overlap.flags & ImageFlagBits::CpuModified) ||
+            True(overlap.flags & ImageFlagBits::Sparse)) {
+            // Guest memory newer than the overlap's contents, or memory that isn't one range
+            return false;
+        }
+        if (False(overlap.flags & ImageFlagBits::GpuModified)) {
+            continue;
+        }
+        // The conditions under which JoinImages copies an alias
+        if (copy_object.is_alias &&
+            (!overlap.IsSafeGpuCopy() || overlap.info.num_samples != new_image.info.num_samples ||
+             join_alias_indices.find(copy_object.id) == join_alias_indices.end())) {
+            continue;
+        }
+        ranges.emplace_back(overlap.cpu_addr, overlap.cpu_addr + overlap.guest_size_bytes);
+    }
+    // Overlaps that can't be copied (another format or layout of the memory) leave their texels
+    // out of the new image, but their memory is no newer for it: the GPU wrote it last
+    for (const ImageId bad_id : join_bad_overlap_ids) {
+        const ImageBase& overlap = slot_images[bad_id];
+        if (True(overlap.flags & ImageFlagBits::CpuModified) ||
+            True(overlap.flags & ImageFlagBits::Sparse)) {
+            return false;
+        }
+        if (True(overlap.flags & ImageFlagBits::GpuModified)) {
+            ranges.emplace_back(overlap.cpu_addr, overlap.cpu_addr + overlap.guest_size_bytes);
+        }
+    }
+    std::ranges::sort(ranges);
+    VAddr covered_end = new_image.cpu_addr;
+    const VAddr end = new_image.cpu_addr + new_image.guest_size_bytes;
+    for (const auto& [begin, range_end] : ranges) {
+        if (begin > covered_end) {
+            break;
+        }
+        covered_end = std::max(covered_end, range_end);
+    }
+    return covered_end >= end;
+}
+
+template <class P>
 bool TextureCache<P>::AliasCoversImage(const ImageBase& image, const AliasedImage& alias) const {
     const Extent2D block{
         .width = DefaultBlockWidth(image.info.format),
@@ -2222,7 +2270,29 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
             }
         }
     }
-    if (!copies_gpu_contents) {
+    // Nor does one whose guest memory GPU-modified overlaps own byte for byte, none of them
+    // CPU-modified: the GPU wrote that memory last and the CPU hasn't written it since (that marks
+    // the overlap CPU-modified), so the guest copy is older than the overlaps. The copies bring
+    // in what they can; the texels they don't reach (the extra rows of a slightly taller image in
+    // the same allocation, or memory an overlap of another format wrote) would get stale guest
+    // memory from an upload, never what the GPU last wrote there, so they are left as they are.
+    // Splatoon Raiders' character creation resizes its dynamic resolution targets every frame,
+    // and they move in memory with the size: their uploads (5-32 MiB, a dozen a frame) took about half
+    // of the GPU back thread and held it at 20 fps, too slow for the game to raise the resolution
+    // to the maximum, where the targets stop changing (60 fps after this).
+    // EDEN_TC_GPU_OWNED_JOIN=0 uploads them.
+    static const bool gpu_owned_join = [] {
+        const char* const value = std::getenv("EDEN_TC_GPU_OWNED_JOIN");
+        return value == nullptr || value[0] != '0';
+    }();
+    if (gpu_owned_join && !covered && (copies_gpu_contents || !join_bad_overlap_ids.empty())) {
+        covered = GpuOwnsGuestMemory(new_image);
+    }
+    if (!copies_gpu_contents && covered) {
+        new_image.flags &= ~ImageFlagBits::CpuModified;
+        TrackImage(new_image, new_image_id);
+        runtime.TransitionImageLayout(new_image);
+    } else if (!copies_gpu_contents) {
         runtime.TransitionImageLayout(new_image);
     } else if (covered) {
         new_image.flags &= ~ImageFlagBits::CpuModified;
