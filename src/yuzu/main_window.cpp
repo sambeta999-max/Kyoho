@@ -1822,7 +1822,7 @@ bool MainWindow::LoadROM(const QString& filename, Service::AM::FrontendAppletPar
             tr("You are using the deconstructed ROM directory format for this game, which is an "
                "outdated format that has been superseded by others such as NCA, NAX, XCI, or "
                "NSP. Deconstructed ROM directories lack icons, metadata, and update "
-               "support.<br>For an explanation of the various Switch formats Eden supports, "
+               "support.<br>For an explanation of the various Switch formats Kyoho supports, "
                "out our user handbook. This message will not be shown again."));
     }
 
@@ -1889,7 +1889,7 @@ bool MainWindow::SelectAndSetCurrentUser(
 
 void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletParameters params,
                           StartGameType type) {
-    LOG_INFO(Frontend, "Eden starting...");
+    LOG_INFO(Frontend, "Kyoho starting...");
 
     if (params.program_id == 0 ||
         params.program_id > static_cast<u64>(Service::AM::AppletProgramId::MaxProgramId)) {
@@ -4400,7 +4400,7 @@ void MainWindow::OnCheckGraphicsBackend() {
         UISettings::values.gui_force_x11.SetValue(true);
         GraphicsBackend::SetForceX11(true);
         QMessageBox::information(this, tr("Restart Required"),
-                                 tr("Restart Eden to apply the X11 backend."));
+                                 tr("Restart Kyoho to apply the X11 backend."));
     }
 }
 #endif
@@ -4519,8 +4519,8 @@ bool MainWindow::ConfirmClose() {
         UISettings::values.confirm_before_stopping.GetValue() == ConfirmStop::Ask_Based_On_Game)
         return true;
 
-    const auto text = tr("Are you sure you want to close Eden?");
-    return question(this, tr("Eden"), text);
+    const auto text = tr("Are you sure you want to close Kyoho?");
+    return question(this, tr("Kyoho"), text);
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {
@@ -4608,7 +4608,7 @@ bool MainWindow::ConfirmChangeGame() {
 
     // Use custom question to link controller navigation
     return question(
-        this, tr("Eden"),
+        this, tr("Kyoho"),
         tr("Are you sure you want to stop the emulation? Any unsaved progress will be lost."),
         QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
 }
@@ -4617,10 +4617,10 @@ bool MainWindow::ConfirmForceLockedExit() {
     if (QtCommon::emu_thread == nullptr)
         return true;
 
-    const auto text = tr("The currently running application has requested Eden to not exit.\n\n"
+    const auto text = tr("The currently running application has requested Kyoho to not exit.\n\n"
                          "Would you like to bypass this and exit anyway?");
 
-    return question(this, tr("Eden"), text);
+    return question(this, tr("Kyoho"), text);
 }
 
 void MainWindow::RequestGameExit() {

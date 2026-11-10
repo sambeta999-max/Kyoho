@@ -729,15 +729,16 @@ endif()
 
 # TODO: Icon/install handling n such should be put into dist/CMakeLists.txt
 if(ENABLE_QT AND UNIX AND NOT APPLE)
-    install(FILES "dist/dev.eden_emu.eden.desktop"
+    install(FILES "dist/io.github.sambeta999_max.kyoho.desktop"
         DESTINATION "share/applications")
-    install(FILES "dist/dev.eden_emu.eden.svg"
-        DESTINATION "share/icons/hicolor/scalable/apps")
+    install(FILES "dist/branding/kyoho.svg"
+        DESTINATION "share/icons/hicolor/scalable/apps"
+        RENAME "io.github.sambeta999_max.kyoho.svg")
 
     # TODO: these files need to be updated.
-    install(FILES "dist/dev.eden_emu.eden.xml"
+    install(FILES "dist/io.github.sambeta999_max.kyoho.xml"
         DESTINATION "share/mime/packages")
-    install(FILES "dist/dev.eden_emu.eden.metainfo.xml"
+    install(FILES "dist/io.github.sambeta999_max.kyoho.metainfo.xml"
         DESTINATION "share/metainfo")
 endif()
 

@@ -496,9 +496,8 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
         const u16 loader_id = u16(Core::SystemResultStatus::ErrorLoader);
         const u16 error_id = u16(load_result) - loader_id;
         LOG_CRITICAL(Frontend,
-            "While attempting to load the ROM requested, an error occurred. Please "
-            "refer to the Eden wiki for more information or the Eden discord for "
-            "additional help.\n\nError Code: {:04X}-{:04X}\nError Description: {}",
+            "While attempting to load the ROM requested, an error occurred."
+            "\n\nError Code: {:04X}-{:04X}\nError Description: {}",
             loader_id, error_id, Loader::ResultStatus(error_id));
         return SDL_APP_FAILURE;
     }

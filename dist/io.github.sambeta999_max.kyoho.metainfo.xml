@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!--
+SPDX-FileCopyrightText: 2025 Eden Emulator Project
+SPDX-License-Identifier: GPL-3.0-or-later
+-->
+
+<!--
+SPDX-FileCopyrightText: 2021 yuzu Emulator Project
+SPDX-License-Identifier: CC0-1.0
+-->
+
+<component type="desktop-application">
+  <id>io.github.sambeta999_max.kyoho</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <name>Kyoho</name>
+  <summary>Nintendo Switch and Switch 2 emulator</summary>
+  <description>
+    <p>Kyoho is an experimental, open-source Nintendo Switch and Switch 2 emulator written in C++. It is built on Eden and keeps the work of the Eden, yuzu and Sudachi projects.</p>
+  </description>
+  <categories>
+    <category>Game</category>
+    <category>Emulator</category>
+  </categories>
+  <keywords>
+    <keyword>switch</keyword>
+    <keyword>emulator</keyword>
+  </keywords>
+  <url type="homepage">https://github.com/sambeta999-max/Kyoho</url>
+  <url type="bugtracker">https://github.com/sambeta999-max/Kyoho/issues</url>
+  <url type="vcs-browser">https://github.com/sambeta999-max/Kyoho</url>
+  <launchable type="desktop-id">io.github.sambeta999_max.kyoho.desktop</launchable>
+  <provides>
+    <binary>kyoho</binary>
+    <binary>eden-cli</binary>
+  </provides>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+    <control>gamepad</control>
+    <internet>offline-only</internet>
+  </supports>
+  <requires>
+    <memory>8192</memory>
+  </requires>
+  <recommends>
+    <memory>16384</memory>
+  </recommends>
+  <project_license>GPL-3.0-or-later</project_license>
+  <developer_name>Kyoho contributors</developer_name>
+  <content_rating type="oars-1.0"/>
+</component>
