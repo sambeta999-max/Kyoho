@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <cstdlib>
 #include <limits>
 #include <optional>
 #include <type_traits>
@@ -221,6 +222,44 @@ vk::Image MemoryAllocator::CreateImage(const VkImageCreateInfo &ci) const
     VkImage handle{};
     VmaAllocation allocation{};
     VmaAllocationInfo alloc_info{};
+    // NVIDIA prefers a dedicated allocation for every render target, and VMA follows: each image
+    // was its own allocation in the kernel, created and freed with it. Splatoon Raiders' dynamic
+    // resolution makes new render targets of new sizes every frame (~250 a second), and the
+    // kernel calls took ~8% of the GPU thread. Images up to 32 MiB (half a VMA block, where VMA
+    // itself would go dedicated) share VMA's blocks instead (EDEN_IMAGE_SUBALLOC=0 restores the
+    // old behaviour).
+    static const bool suballocate = [] {
+        const char* const value = std::getenv("EDEN_IMAGE_SUBALLOC");
+        return value == nullptr || value[0] != '0';
+    }();
+    if (suballocate && (ci.flags & VK_IMAGE_CREATE_SPARSE_BINDING_BIT) == 0) {
+        const auto& dld = device.GetDispatchLoader();
+        const VkDevice logical = *device.GetLogical();
+        vk::Check(dld.vkCreateImage(logical, &ci, nullptr, &handle));
+        VkMemoryRequirements requirements{};
+        dld.vkGetImageMemoryRequirements(logical, handle, &requirements);
+        constexpr VkDeviceSize MAX_SUBALLOCATED_SIZE = 32ULL << 20;
+        if (requirements.size <= MAX_SUBALLOCATED_SIZE) {
+            VmaAllocationCreateInfo shared_ci = alloc_ci;
+            shared_ci.flags |= VMA_ALLOCATION_CREATE_STRATEGY_MIN_MEMORY_BIT;
+            // The AUTO usages need the resource's create info: vmaAllocateMemory rejects them
+            shared_ci.usage = VMA_MEMORY_USAGE_UNKNOWN;
+            VkResult result =
+                vmaAllocateMemory(allocator, &requirements, &shared_ci, &allocation, &alloc_info);
+            if (result == VK_SUCCESS) {
+                result = vmaBindImageMemory(allocator, allocation, handle);
+                if (result != VK_SUCCESS) {
+                    vmaFreeMemory(allocator, allocation);
+                }
+            }
+            if (result == VK_SUCCESS) {
+                return vk::Image(handle, ci.usage, logical, allocator, allocation, dld);
+            }
+        }
+        dld.vkDestroyImage(logical, handle, nullptr);
+        handle = VK_NULL_HANDLE;
+        allocation = VK_NULL_HANDLE;
+    }
     vk::Check(vmaCreateImage(allocator, &ci, &alloc_ci, &handle, &allocation, &alloc_info));
 
     // Log GPU memory allocation for images
