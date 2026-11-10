@@ -71,7 +71,8 @@ Switch 2 games that have been run during development, and how far they got when 
 | Pokémon Pokopia | Enters the 3D world | Not tested further |
 | Yoshi demo | Title and intro movie | Not tested further |
 | Nintendo Switch 2 Welcome Tour | Title | Not tested further |
-| Mario Tennis Fever | Menus | Black ground in a menu scene |
+| Mario Tennis Fever | Tutorial match | — |
+| Nintendo Switch Sports Resort | Tennis menu | The ground is black in most runs |
 | Minecraft | Does not render | The game brings its own Vulkan driver, which is not supported |
 
 Frame rates are from the test machine and are not a promise for yours. Most entries were last checked in early November 2026; the first two are checked most often.
