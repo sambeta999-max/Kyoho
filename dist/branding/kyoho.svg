@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-FileCopyrightText: Copyright 2026 Kyoho Emulator Project -->
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <title>Kyoho</title>
+  <defs>
+    <radialGradient id="grape" cx="0.36" cy="0.30" r="0.80">
+      <stop offset="0" stop-color="#8f79d2"/>
+      <stop offset="0.28" stop-color="#55348f"/>
+      <stop offset="0.70" stop-color="#2e1556"/>
+      <stop offset="1" stop-color="#180931"/>
+    </radialGradient>
+    <linearGradient id="leaf" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#3f9a2f"/>
+      <stop offset="1" stop-color="#a6dc3f"/>
+    </linearGradient>
+    <linearGradient id="word" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#9566de"/>
+      <stop offset="1" stop-color="#4a2388"/>
+    </linearGradient>
+  </defs>
+  <g fill="#fff" stroke="#fff" stroke-width="26" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M256,164.2 C252,134.2 262,108.2 258,86.2 M222,92.2 L294,82.2" fill="none" stroke-width="41"/>
+    <path d="M0,0 Q-30,-5 -62,-28 Q-46,-38 -44,-50 Q-70,-66 -74,-100 Q-48,-98 -34,-108 Q-22,-140 0,-160 Q22,-140 34,-108 Q48,-98 74,-100 Q70,-66 44,-50 Q46,-38 62,-28 Q30,-5 0,0 Z" transform="translate(264 116.2) rotate(70) scale(0.86)" stroke-width="30.2326"/>
+    <circle cx="107" cy="196" r="56"/>
+    <circle cx="208" cy="193" r="57"/>
+    <circle cx="304" cy="197" r="55"/>
+    <circle cx="405" cy="195" r="56"/>
+    <circle cx="159" cy="275" r="57"/>
+    <circle cx="254" cy="272" r="56"/>
+    <circle cx="356" cy="274" r="55"/>
+    <circle cx="206" cy="350" r="57"/>
+    <circle cx="306" cy="352" r="56"/>
+    <circle cx="256" cy="429" r="57"/>
+  </g>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M256,164.2 C252,134.2 262,108.2 258,86.2 M222,92.2 L294,82.2" stroke="#3d220e" stroke-width="25"/>
+    <path d="M256,164.2 C252,134.2 262,108.2 258,86.2 M222,92.2 L294,82.2" stroke="#8a5a2b" stroke-width="15"/>
+  </g>
+  <g transform="translate(264 116.2) rotate(70) scale(0.86)" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M0,0 Q-30,-5 -62,-28 Q-46,-38 -44,-50 Q-70,-66 -74,-100 Q-48,-98 -34,-108 Q-22,-140 0,-160 Q22,-140 34,-108 Q48,-98 74,-100 Q70,-66 44,-50 Q46,-38 62,-28 Q30,-5 0,0 Z" fill="url(#leaf)" stroke="#1f5a1e" stroke-width="5.81395"/>
+    <path d="M0,-6 L0,-138 M0,-34 L-46,-30 M0,-34 L46,-30 M0,-62 L-56,-88 M0,-62 L56,-88" fill="none" stroke="#e4f7a0" stroke-opacity="0.85" stroke-width="3.72093"/>
+  </g>
+  <g>
+    <circle cx="107" cy="196" r="56" fill="url(#grape)" stroke="#150727" stroke-width="5"/>
+    <ellipse cx="86.8" cy="173.6" rx="14.6" ry="8.4" transform="rotate(-38 86.8 173.6)" fill="#fff" fill-opacity="0.62"/>
+    <circle cx="102.5" cy="160.7" r="3.9" fill="#fff" fill-opacity="0.55"/>
+    <circle cx="208" cy="193" r="57" fill="url(#grape)" stroke="#150727" stroke-width="5"/>
+    <ellipse cx="187.5" cy="170.2" rx="14.8" ry="8.5" transform="rotate(-38 187.5 170.2)" fill="#fff" fill-opacity="0.62"/>
+    <circle cx="203.4" cy="157.1" r="4.0" fill="#fff" fill-opacity="0.55"/>
+    <circle cx="304" cy="197" r="55" fill="url(#grape)" stroke="#150727" stroke-width="5"/>
+    <ellipse cx="284.2" cy="175.0" rx="14.3" ry="8.2" transform="rotate(-38 284.2 175.0)" fill="#fff" fill-opacity="0.62"/>
+    <circle cx="299.6" cy="162.3" r="3.9" fill="#fff" fill-opacity="0.55"/>
+    <circle cx="405" cy="195" r="56" fill="url(#grape)" stroke="#150727" stroke-width="5"/>
+    <ellipse cx="384.8" cy="172.6" rx="14.6" ry="8.4" transform="rotate(-38 384.8 172.6)" fill="#fff" fill-opacity="0.62"/>
+    <circle cx="400.5" cy="159.7" r="3.9" fill="#fff" fill-opacity="0.55"/>
+    <circle cx="159" cy="275" r="57" fill="url(#grape)" stroke="#150727" stroke-width="5"/>
+    <ellipse cx="138.5" cy="252.2" rx="14.8" ry="8.5" transform="rotate(-38 138.5 252.2)" fill="#fff" fill-opacity="0.62"/>
+    <circle cx="154.4" cy="239.1" r="4.0" fill="#fff" fill-opacity="0.55"/>
+    <circle cx="254" cy="272" r="56" fill="url(#grape)" stroke="#150727" stroke-width="5"/>
+    <ellipse cx="233.8" cy="249.6" rx="14.6" ry="8.4" transform="rotate(-38 233.8 249.6)" fill="#fff" fill-opacity="0.62"/>
+    <circle cx="249.5" cy="236.7" r="3.9" fill="#fff" fill-opacity="0.55"/>
+    <circle cx="356" cy="274" r="55" fill="url(#grape)" stroke="#150727" stroke-width="5"/>
+    <ellipse cx="336.2" cy="252.0" rx="14.3" ry="8.2" transform="rotate(-38 336.2 252.0)" fill="#fff" fill-opacity="0.62"/>
+    <circle cx="351.6" cy="239.3" r="3.9" fill="#fff" fill-opacity="0.55"/>
+    <circle cx="206" cy="350" r="57" fill="url(#grape)" stroke="#150727" stroke-width="5"/>
+    <ellipse cx="185.5" cy="327.2" rx="14.8" ry="8.5" transform="rotate(-38 185.5 327.2)" fill="#fff" fill-opacity="0.62"/>
+    <circle cx="201.4" cy="314.1" r="4.0" fill="#fff" fill-opacity="0.55"/>
+    <circle cx="306" cy="352" r="56" fill="url(#grape)" stroke="#150727" stroke-width="5"/>
+    <ellipse cx="285.8" cy="329.6" rx="14.6" ry="8.4" transform="rotate(-38 285.8 329.6)" fill="#fff" fill-opacity="0.62"/>
+    <circle cx="301.5" cy="316.7" r="3.9" fill="#fff" fill-opacity="0.55"/>
+    <circle cx="256" cy="429" r="57" fill="url(#grape)" stroke="#150727" stroke-width="5"/>
+    <ellipse cx="235.5" cy="406.2" rx="14.8" ry="8.5" transform="rotate(-38 235.5 406.2)" fill="#fff" fill-opacity="0.62"/>
+    <circle cx="251.4" cy="393.1" r="4.0" fill="#fff" fill-opacity="0.55"/>
+  </g>
+</svg>
