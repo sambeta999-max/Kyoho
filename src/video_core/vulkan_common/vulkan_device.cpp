@@ -1695,6 +1695,20 @@ u64 Device::GetDeviceMemoryUsage() const {
     return result;
 }
 
+u64 Device::GetDeviceMemoryBudget() const {
+    if (!extensions.memory_budget) {
+        return 0;
+    }
+    VkPhysicalDeviceMemoryBudgetPropertiesEXT budget{};
+    budget.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
+    physical.GetMemoryProperties(&budget);
+    u64 result{};
+    for (const size_t heap : valid_heap_memory) {
+        result += budget.heapBudget[heap];
+    }
+    return result;
+}
+
 void Device::CollectPhysicalMemoryInfo() {
     // Calculate limits using memory budget
     VkPhysicalDeviceMemoryBudgetPropertiesEXT budget{};

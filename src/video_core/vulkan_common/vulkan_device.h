@@ -993,6 +993,10 @@ FN_MAX_LIMIT_LIST
 
     u64 GetDeviceMemoryUsage() const;
 
+    /// What the driver lets this process use of the heaps GetDeviceMemoryUsage() counts
+    /// (VK_EXT_memory_budget), 0 without the extension
+    u64 GetDeviceMemoryBudget() const;
+
     u32 GetSetsPerPool() const {
         return sets_per_pool;
     }

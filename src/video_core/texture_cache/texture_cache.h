@@ -78,8 +78,16 @@ TextureCache<P>::TextureCache(Runtime& runtime_, Tegra::MaxwellDeviceMemoryManag
         // Ocarina of Time's render targets, made at new addresses every frame, filled the card
         // to ~20 GB within 40 s of play. Collect from MaxCriticalMemory on whatever the card.
         // From Lichii 4d8a9629a6 (texture_cache.h), with 8 GiB rather than 5: Switch 2 titles
-        // use ~5 GB of device memory right after loading
-        critical_memory = (std::min)(critical_memory, MaxCriticalMemory);
+        // use ~5 GB of device memory right after loading.
+        // Larger cards get 5/8 of the driver's budget: at 8 GiB Splatoon Raiders' island sat at
+        // the collector's expected line, and each frame's dynamically sized render targets were
+        // downloaded (waiting for the host GPU) before they were deleted. From Lichii 69695aa53e
+        // (ApplyThresholdOverrides in src/video_core/texture_cache/texture_cache.h).
+        u64 max_critical = MaxCriticalMemory;
+        if constexpr (requires { runtime.GetDeviceMemoryBudget(); }) {
+            max_critical = (std::max)(max_critical, runtime.GetDeviceMemoryBudget() / 8 * 5);
+        }
+        critical_memory = (std::min)(critical_memory, max_critical);
         expected_memory = (std::min)(expected_memory, critical_memory - 768_MiB);
         minimum_memory = (std::min)(minimum_memory, expected_memory - 1_GiB);
     } else {
