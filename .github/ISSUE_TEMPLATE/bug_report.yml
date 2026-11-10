@@ -3,7 +3,7 @@ description: File a bug report
 body:
   - type: markdown
     attributes:
-      value: Tech support does not belong here. You should only file an issue here if you think you have experienced an actual bug with Eden.
+      value: Tech support does not belong here. You should only file an issue here if you think you have experienced an actual bug with Kyoho. Bugs that also happen in Eden itself, and Switch 1 games in general, are better reported to Eden.
   - type: checkboxes
     attributes:
       label: Is there an existing issue for this?
@@ -15,7 +15,7 @@ body:
     attributes:
       label: Affected Build(s)
       description: List the affected build(s) that this issue applies to.
-      placeholder: Mainline 1234 / Early Access 1234
+      placeholder: Commit hash or release name, as shown in the title bar
     validations:
       required: true
   - type: textarea

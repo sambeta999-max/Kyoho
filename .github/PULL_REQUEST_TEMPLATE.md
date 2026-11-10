@@ -1,5 +1,7 @@
-- [ ] I have read and followed the [Contribution Guidelines](https://git.eden-emu.dev/eden-emu/eden/src/branch/master/CONTRIBUTING.md#code-contributions).
-- [ ] I have read and followed the [AI Policy](https://git.eden-emu.dev/eden-emu/eden/src/branch/master/docs/policies/AI.md).
-- [ ] I have read and followed the [Coding Guidelines](https://git.eden-emu.dev/eden-emu/eden/src/branch/master/docs/policies/Coding.md) to the best of my ability.
+- [ ] I have read the [contribution notes](../blob/HEAD/CONTRIBUTING.md) and the [coding guidelines](../blob/HEAD/docs/policies/Coding.md).
+- [ ] Any AI assistance is disclosed in the commit messages.
+- [ ] Code ported from another project names the source commit and files, and keeps its copyright notices.
+
+**What was tested** (game, scene, hardware; say so if it was only built):
 
 -------------------

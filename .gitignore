@@ -70,3 +70,11 @@ externals/generated
 
 # Local credentials
 .env
+
+
+# Local tooling, profiles and scratch output
+.mcp.json
+.kilo/
+/host-samples-*.txt
+/build-lto/
+__pycache__/
