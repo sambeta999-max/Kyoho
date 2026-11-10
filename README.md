@@ -79,9 +79,9 @@ Frame rates are from the test machine and are not a promise for yours. Most entr
 
 ## Downloads and setup
 
-There are no prebuilt releases yet. When there are, they will be on this repository's [releases page](../../releases). Until then, [build it](#building).
+Windows builds are on the [releases page](../../releases). Download `Kyoho-<version>-windows-x64.zip`, extract the whole folder and run **kyoho.exe** from there. The Microsoft Visual C++ runtime is included. You need 64-bit Windows 10 or 11 and a GPU with a current Vulkan driver.
 
-On Windows the emulator is **kyoho.exe**. Extract or build the whole folder and run it from there.
+The releases are early, experimental builds and are marked as pre-releases. There are no Linux, macOS or Android builds; on those systems, [build it](#building) yourself.
 
 Games, keys and firmware are not included. Use only games and system files you dumped from your own console.
 
